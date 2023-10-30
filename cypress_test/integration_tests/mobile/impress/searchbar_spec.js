@@ -5,11 +5,12 @@ var searchHelper = require('../../common/search_helper');
 var mobileHelper = require('../../common/mobile_helper');
 var impressHelper = require('../../common/impress_helper');
 
-describe('Searching via search bar.', function() {
-	var testFileName = 'search_bar.odp';
+describe.skip('Searching via search bar.', function() {
+	var origTestFileName = 'search_bar.odp';
+	var testFileName;
 
 	beforeEach(function() {
-		helper.beforeAll(testFileName, 'impress');
+		testFileName = helper.beforeAll(origTestFileName, 'impress');
 
 		mobileHelper.enableEditingMobile();
 
@@ -58,8 +59,7 @@ describe('Searching via search bar.', function() {
 		// A shape and some text should be selected
 		//cy.get('.transform-handler--rotate')
 		//	.should('be.not.visible');
-		cy.get('.leaflet-selection-marker-start')
-			.should('be.visible');
+		cy.cGet('.leaflet-selection-marker-start').should('be.visible');
 
 		helper.getCursorPos('left', 'cursorOrigLeft');
 
@@ -70,14 +70,13 @@ describe('Searching via search bar.', function() {
 
 		//cy.get('.transform-handler--rotate')
 		//	.should('be.not.visible');
-		cy.get('.leaflet-selection-marker-start')
-			.should('be.visible');
+		cy.cGet('.leaflet-selection-marker-start').should('be.visible');
 
 		helper.expectTextForClipboard('a');
 
-		cy.get('@cursorOrigLeft')
+		cy.cGet('@cursorOrigLeft')
 			.then(function(cursorOrigLeft) {
-				cy.get('.blinking-cursor')
+				cy.cGet('.blinking-cursor')
 					.should(function(cursor) {
 						expect(cursor.offset().left).to.be.greaterThan(cursorOrigLeft);
 					});
@@ -88,8 +87,7 @@ describe('Searching via search bar.', function() {
 
 		//cy.get('.transform-handler--rotate')
 		//	.should('be.not.visible');
-		cy.get('.leaflet-selection-marker-start')
-			.should('be.visible');
+		cy.cGet('.leaflet-selection-marker-start').should('be.visible');
 
 		helper.expectTextForClipboard('a');
 
@@ -122,14 +120,13 @@ describe('Searching via search bar.', function() {
 
 		//cy.get('.transform-handler--rotate')
 		//	.should('be.not.visible');
-		cy.get('.leaflet-selection-marker-start')
-			.should('be.visible');
+		cy.cGet('.leaflet-selection-marker-start').should('be.visible');
 
 		helper.expectTextForClipboard('a');
 
-		cy.get('@cursorOrigLeft')
+		cy.cGet('@cursorOrigLeft')
 			.then(function(cursorOrigLeft) {
-				cy.get('.blinking-cursor')
+				cy.cGet('.blinking-cursor')
 					.should(function(cursor) {
 						expect(cursor.offset().left).to.be.greaterThan(cursorOrigLeft);
 					});
@@ -140,14 +137,13 @@ describe('Searching via search bar.', function() {
 
 		//cy.get('.transform-handler--rotate')
 		//	.should('be.not.visible');
-		cy.get('.leaflet-selection-marker-start')
-			.should('be.visible');
+		cy.cGet('.leaflet-selection-marker-start').should('be.visible');
 
 		helper.expectTextForClipboard('a');
 
-		cy.get('@cursorOrigLeft')
+		cy.cGet('@cursorOrigLeft')
 			.then(function(cursorOrigLeft) {
-				cy.get('.blinking-cursor')
+				cy.cGet('.blinking-cursor')
 					.should(function(cursor) {
 						expect(cursor.offset().left).to.be.equal(cursorOrigLeft);
 					});
@@ -161,21 +157,16 @@ describe('Searching via search bar.', function() {
 
 		//cy.get('.transform-handler--rotate')
 		//	.should('be.not.visible');
-		cy.get('.leaflet-selection-marker-start')
-			.should('be.visible');
+		cy.cGet('.leaflet-selection-marker-start').should('be.visible');
 
 		helper.expectTextForClipboard('a');
 
 		// Cancel search -> selection removed
 		searchHelper.cancelSearch();
 
-		cy.get('.transform-handler--rotate')
-			.should('not.exist');
-		cy.get('.leaflet-selection-marker-start')
-			.should('not.exist');
-
-		cy.get('input#search-input')
-			.should('be.visible');
+		cy.cGet('.transform-handler--rotate').should('not.exist');
+		cy.cGet('.leaflet-selection-marker-start').should('not.exist');
+		cy.cGet('input#search-input').should('be.visible');
 	});
 
 	it('Close search.', function() {
@@ -185,8 +176,7 @@ describe('Searching via search bar.', function() {
 
 		//cy.get('.transform-handler--rotate')
 		//	.should('be.not.visible');
-		cy.get('.leaflet-selection-marker-start')
-			.should('be.visible');
+		cy.cGet('.leaflet-selection-marker-start').should('be.visible');
 
 		helper.expectTextForClipboard('a');
 

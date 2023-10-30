@@ -4,8 +4,9 @@ var helper = require('../../common/helper');
 var mobileHelper = require('../../common/mobile_helper');
 var nextcloudHelper = require('../../common/nextcloud_helper');
 
-describe('Nextcloud specific tests.', function() {
-	var testFileName = 'nextcloud.ods';
+describe(['tagnextcloud'], 'Nextcloud specific tests.', function() {
+	var origTestFileName = 'nextcloud.ods';
+	var testFileName;
 
 	afterEach(function() {
 		helper.afterAll(testFileName, this.currentTest.state);
@@ -14,7 +15,7 @@ describe('Nextcloud specific tests.', function() {
 	it('Insert image from storage.', function() {
 		helper.upLoadFileToNextCloud('image_to_insert.png', 'calc');
 
-		helper.beforeAll(testFileName, 'calc', undefined, true);
+		testFileName = helper.beforeAll(origTestFileName, 'calc', undefined, true);
 
 		mobileHelper.enableEditingMobile();
 
@@ -26,7 +27,7 @@ describe('Nextcloud specific tests.', function() {
 	});
 
 	it('Save as.', function() {
-		helper.beforeAll(testFileName, 'calc');
+		testFileName = helper.beforeAll(origTestFileName, 'calc');
 
 		// Click on edit button
 		mobileHelper.enableEditingMobile();
@@ -34,25 +35,25 @@ describe('Nextcloud specific tests.', function() {
 		nextcloudHelper.saveFileAs('1' + testFileName);
 
 		// Close the document
-		cy.get('#mobile-edit-button')
+		cy.cGet('#mobile-edit-button')
 			.should('be.visible');
 
-		cy.get('#tb_actionbar_item_closemobile')
+		cy.cGet('#toolbar-mobile-back')
 			.then(function(item) {
 				cy.wrap(item)
 					.click();
 				Cypress.env('IFRAME_LEVEL', '');
 			});
 
-		cy.get('tr[data-file=\'1' + testFileName + '\']')
+		cy.cGet('tr[data-file=\'1' + testFileName + '\']')
 			.should('be.visible');
 
-		cy.get('tr[data-file=\'' + testFileName + '\']')
+		cy.cGet('tr[data-file=\'' + testFileName + '\']')
 			.should('be.visible');
 	});
 
 	it('Share.', function() {
-		helper.beforeAll(testFileName, 'calc');
+		testFileName = helper.beforeAll(origTestFileName, 'calc');
 
 		mobileHelper.enableEditingMobile();
 

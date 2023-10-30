@@ -12,26 +12,21 @@
 #include <Unit.hpp>
 #include <UnitHTTP.hpp>
 #include <helpers.hpp>
+#include <wsd/Storage.hpp>
 
 #include <Poco/Net/HTTPRequest.h>
 
+#include <string>
+
 class UnitWopiHttpRedirect : public WopiTestServer
 {
-    enum class Phase
-    {
-        Load,
-        Redirected,
-        GetFile,
-        Redirected2,
-        Loaded
-    } _phase;
+    STATE_ENUM(Phase, Load, Redirected, GetFile, Redirected2, Done) _phase;
 
     const std::string params = "access_token=anything";
-    static constexpr auto testname = "UnitWopiHttpRedirect";
 
 public:
     UnitWopiHttpRedirect()
-        : WopiTestServer(testname)
+        : WopiTestServer("UnitWopiHttpRedirect")
         , _phase(Phase::Load)
     {
     }
@@ -48,116 +43,81 @@ public:
         std::string redirectUri2 = "/wopi/files/2/contents";
         Poco::RegularExpression regContentsRedirected(redirectUri2);
 
-        LOG_INF("Fake wopi host request URI [" << uriReq.toString() << "]:\n");
+        LOG_INF("FakeWOPIHost: Request URI [" << uriReq.toString() << "]:\n");
 
         // CheckFileInfo - returns redirect response
         if (request.getMethod() == "GET" && regInfo.match(uriReq.getPath()))
         {
-            LOG_INF("Fake wopi host request, handling CheckFileInfo (1/2)");
+            LOG_INF("FakeWOPIHost: Handling CheckFileInfo (1/2)");
 
             assertCheckFileInfoRequest(request);
 
             LOK_ASSERT_MESSAGE("Expected to be in Phase::Load", _phase == Phase::Load);
             _phase = Phase::Redirected;
 
-            std::ostringstream oss;
-            oss << "HTTP/1.1 302 Found\r\n"
-                "Location: " << helpers::getTestServerURI() << redirectUri << "?" << params << "\r\n"
-                "\r\n";
-
-            socket->send(oss.str());
-            socket->shutdown();
+            http::Response httpResponse(http::StatusCode::Found);
+            httpResponse.set("Location", helpers::getTestServerURI() + redirectUri + '?' + params);
+            socket->sendAndShutdown(httpResponse);
 
             return true;
         }
         // CheckFileInfo - for redirected URI
         else if (request.getMethod() == "GET" && regRedirected.match(uriReq.getPath()) && !regContents.match(uriReq.getPath()))
         {
-            LOG_INF("Fake wopi host request, handling CheckFileInfo: (2/2)");
+            LOG_INF("FakeWOPIHost: Handling CheckFileInfo: (2/2)");
 
             assertCheckFileInfoRequest(request);
 
-            LOK_ASSERT_MESSAGE("Expected to be in Phase::Redirected or Phase::Loaded", _phase == Phase::Redirected || _phase == Phase::Loaded);
+            LOK_ASSERT_MESSAGE("Expected to be in Phase::Redirected or Phase::Done",
+                               _phase == Phase::Redirected || _phase == Phase::Done);
             if (_phase == Phase::Redirected)
-                _phase = Phase::GetFile;
+                TRANSITION_STATE(_phase, Phase::GetFile);
 
-            Poco::LocalDateTime now;
-            const std::string fileName(uriReq.getPath() == "/wopi/files/3" ? "he%llo.txt" : "hello.txt");
-            Poco::JSON::Object::Ptr fileInfo = new Poco::JSON::Object();
+            Poco::JSON::Object::Ptr fileInfo = getDefaultCheckFileInfoPayload(uriReq);
+            const std::string fileName(uriReq.getPath() == "/wopi/files/3" ? "he%llo.txt"
+                                                                           : "hello.txt");
             fileInfo->set("BaseFileName", fileName);
-            fileInfo->set("Size", _fileContent.size());
-            fileInfo->set("Version", "1.0");
-            fileInfo->set("OwnerId", "test");
-            fileInfo->set("UserId", "test");
-            fileInfo->set("UserFriendlyName", "test");
-            fileInfo->set("UserCanWrite", "true");
-            fileInfo->set("PostMessageOrigin", "localhost");
-            fileInfo->set("LastModifiedTime", Util::getIso8601FracformatTime(_fileLastModifiedTime));
-            fileInfo->set("EnableOwnerTermination", "true");
 
             std::ostringstream jsonStream;
             fileInfo->stringify(jsonStream);
-            std::string responseString = jsonStream.str();
 
-            const std::string mimeType = "application/json; charset=utf-8";
-
-            std::ostringstream oss;
-            oss << "HTTP/1.1 200 OK\r\n"
-                "Last-Modified: " << Util::getHttpTime(_fileLastModifiedTime) << "\r\n"
-                "User-Agent: " WOPI_AGENT_STRING "\r\n"
-                "Content-Length: " << responseString.size() << "\r\n"
-                "Content-Type: " << mimeType << "\r\n"
-                "\r\n"
-                << responseString;
-
-            socket->send(oss.str());
-            socket->shutdown();
+            http::Response httpResponse(http::StatusCode::OK);
+            httpResponse.set("Last-Modified", Util::getHttpTime(getFileLastModifiedTime()));
+            httpResponse.setBody(jsonStream.str(), "application/json; charset=utf-8");
+            socket->sendAndShutdown(httpResponse);
 
             return true;
         }
         // GetFile - first try
         else if (request.getMethod() == "GET" && regContents.match(uriReq.getPath()))
         {
-            LOG_TST("Fake wopi host request, handling GetFile: " << uriReq.getPath());
+            LOG_TST("FakeWOPIHost: Handling GetFile: " << uriReq.getPath());
 
             assertGetFileRequest(request);
 
             LOK_ASSERT_MESSAGE("Expected to be in Phase::GetFile", _phase == Phase::GetFile);
-            _phase = Phase::Redirected2;
+            TRANSITION_STATE(_phase, Phase::Redirected2);
 
-            std::ostringstream oss;
-            oss << "HTTP/1.1 302 Found\r\n"
-                "Location: " << helpers::getTestServerURI() << redirectUri2 << "?" << params << "\r\n"
-                "\r\n";
-
-            socket->send(oss.str());
-            socket->shutdown();
+            http::Response httpResponse(http::StatusCode::Found);
+            httpResponse.set("Location", helpers::getTestServerURI() + redirectUri2 + '?' + params);
+            socket->sendAndShutdown(httpResponse);
 
             return true;
         }
         // GetFile - redirected
         else if (request.getMethod() == "GET" && regContentsRedirected.match(uriReq.getPath()))
         {
-            LOG_TST("Fake wopi host request, handling GetFile: " << uriReq.getPath());
+            LOG_TST("FakeWOPIHost: Handling GetFile: " << uriReq.getPath());
 
             assertGetFileRequest(request);
 
             LOK_ASSERT_MESSAGE("Expected to be in Phase::Redirected2", _phase == Phase::Redirected2);
-            _phase = Phase::Loaded;
+            TRANSITION_STATE(_phase, Phase::Done);
 
-            const std::string mimeType = "text/plain; charset=utf-8";
-
-            std::ostringstream oss;
-            oss << "HTTP/1.1 200 OK\r\n"
-                "Last-Modified: " << Util::getHttpTime(_fileLastModifiedTime) << "\r\n"
-                "User-Agent: " WOPI_AGENT_STRING "\r\n"
-                "Content-Length: " << _fileContent.size() << "\r\n"
-                "Content-Type: " << mimeType << "\r\n"
-                "\r\n"
-                << _fileContent;
-
-            socket->send(oss.str());
-            socket->shutdown();
+            http::Response httpResponse(http::StatusCode::OK);
+            httpResponse.set("Last-Modified", Util::getHttpTime(getFileLastModifiedTime()));
+            httpResponse.setBody(getFileContent(), "text/plain; charset=utf-8");
+            socket->sendAndShutdown(httpResponse);
 
             exitTest(TestResult::Ok);
 
@@ -176,25 +136,103 @@ public:
                 initWebsocket("/wopi/files/1?" + params);
 
                 WSD_CMD("load url=" + getWopiSrc());
-                SocketPoll::wakeupWorld();
 
                 break;
             }
             case Phase::Redirected:
             case Phase::Redirected2:
             case Phase::GetFile:
+            case Phase::Done:
             {
-                break;
-            }
-            case Phase::Loaded:
-            {
-                exitTest(TestResult::Ok);
                 break;
             }
         }
     }
 };
 
-UnitBase* unit_create_wsd(void) { return new UnitWopiHttpRedirect(); }
+class UnitWopiHttpRedirectLoop : public WopiTestServer
+{
+    STATE_ENUM(Phase, Load, Redirected) _phase;
+
+    const std::string params = "access_token=anything";
+
+public:
+    UnitWopiHttpRedirectLoop()
+        : WopiTestServer("UnitWopiHttpRedirectLoop")
+        , _phase(Phase::Load)
+    {
+    }
+
+    virtual bool handleHttpRequest(const Poco::Net::HTTPRequest& request,
+                                   Poco::MemoryInputStream& /*message*/,
+                                   std::shared_ptr<StreamSocket>& socket) override
+    {
+        Poco::URI uriReq(request.getURI());
+        Poco::RegularExpression regInfo("/wopi/files/[0-9]+");
+        static unsigned redirectionCount = 0;
+
+        LOG_INF("FakeWOPIHost: Request URI [" << uriReq.toString() << "]:\n");
+
+        // CheckFileInfo - always returns redirect response
+        if (request.getMethod() == "GET" && regInfo.match(uriReq.getPath()))
+        {
+            LOG_INF("FakeWOPIHost: Handling CheckFileInfo");
+
+            assertCheckFileInfoRequest(request);
+
+            std::string sExpectedMessage = "It is expected to stop requesting after " +
+                                           std::to_string(RedirectionLimit) + " redirections";
+            LOK_ASSERT_MESSAGE(sExpectedMessage, redirectionCount <= RedirectionLimit);
+
+            LOK_ASSERT_MESSAGE("Expected to be in Phase::Load or Phase::Redirected",
+                               _phase == Phase::Load || _phase == Phase::Redirected);
+
+            if (redirectionCount == RedirectionLimit)
+            {
+                exitTest(TestResult::Ok);
+                return true;
+            }
+
+            TRANSITION_STATE(_phase, Phase::Redirected);
+
+            http::Response httpResponse(http::StatusCode::Found);
+            const std::string location = helpers::getTestServerURI() + "/wopi/files/" +
+                                         std::to_string(redirectionCount) + '?' + params;
+            httpResponse.set("Location", location);
+            socket->sendAndShutdown(httpResponse);
+
+            redirectionCount++;
+
+            return true;
+        }
+
+        return false;
+    }
+
+    void invokeWSDTest() override
+    {
+        switch (_phase)
+        {
+            case Phase::Load:
+            {
+                initWebsocket("/wopi/files/0?" + params);
+
+                WSD_CMD("load url=" + getWopiSrc());
+
+                break;
+            }
+            case Phase::Redirected:
+            {
+                break;
+            }
+        }
+    }
+};
+
+UnitBase** unit_create_wsd_multi(void)
+{
+    return new UnitBase* [3]
+    { new UnitWopiHttpRedirect(), new UnitWopiHttpRedirectLoop(), nullptr };
+}
 
 /* vim:set shiftwidth=4 softtabstop=4 expandtab: */

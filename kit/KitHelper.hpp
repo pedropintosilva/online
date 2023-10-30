@@ -50,10 +50,11 @@ namespace LOKitHelper
         const auto type = static_cast<LibreOfficeKitDocumentType>(loKitDocument->pClass->getDocumentType(loKitDocument));
 
         const int parts = loKitDocument->pClass->getParts(loKitDocument);
+        const int part = loKitDocument->pClass->getPart(loKitDocument);
         std::ostringstream oss;
         oss << "type=" << documentTypeToString(type)
             << " parts=" << parts
-            << " current=" << loKitDocument->pClass->getPart(loKitDocument);
+            << " current=" << part;
 
         long width, height;
         loKitDocument->pClass->getDocumentSize(loKitDocument, &width, &height);
@@ -61,11 +62,20 @@ namespace LOKitHelper
             << " height=" << height
             << " viewid=" << loKitDocument->pClass->getView(loKitDocument);
 
+        if (type == LOK_DOCTYPE_SPREADSHEET)
+        {
+            long lastColumn, lastRow;
+            loKitDocument->pClass->getDataArea(loKitDocument, part, &lastColumn, &lastRow);
+            oss << " lastcolumn=" << lastColumn
+                << " lastrow=" << lastRow;
+        }
+
         if (type == LOK_DOCTYPE_SPREADSHEET || type == LOK_DOCTYPE_PRESENTATION || type == LOK_DOCTYPE_DRAWING)
         {
             std::ostringstream hposs;
             std::ostringstream sposs;
-            std::ostringstream mposs;
+            std::ostringstream rtlposs;
+            std::string mode;
             for (int i = 0; i < parts; ++i)
             {
                 ptrValue = loKitDocument->pClass->getPartInfo(loKitDocument, i);
@@ -84,13 +94,22 @@ namespace LOKitHelper
                         if (prop.second == "1")
                             sposs << i << ',';
                     }
-                    else if (name == "masterPageCount")
+                    else if (name == "rtllayout")
                     {
-                        if (mposs.str().empty())
-                            mposs << prop.second;
+                        if (prop.second == "1")
+                            rtlposs << i << ',';
+                    }
+                    else if (name == "mode" && mode.empty())
+                    {
+                        std::ostringstream modess;
+                        modess << prop.second;
+                        mode = modess.str();
                     }
                 }
             }
+
+            if (!mode.empty())
+                oss << " mode=" << mode;
 
             std::string hiddenparts = hposs.str();
             if (!hiddenparts.empty())
@@ -106,10 +125,11 @@ namespace LOKitHelper
                 oss << " selectedparts=" << selectedparts;
             }
 
-            std::string masterpagecount = mposs.str();
-            if (!masterpagecount.empty())
+            std::string rtlparts = rtlposs.str();
+            if (!rtlparts.empty())
             {
-                oss << " masterpagecount=" << masterpagecount;
+                rtlparts.pop_back(); // Remove last ','
+                oss << " rtlparts=" << rtlparts;
             }
 
             for (int i = 0; i < parts; ++i)

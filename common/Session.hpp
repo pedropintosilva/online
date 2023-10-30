@@ -39,14 +39,18 @@ public:
     int createCanonicalId(const std::string &viewProps)
     {
         if (viewProps.empty())
+        {
+            LOG_ERR("Cannot create canonical id for empty viewProps");
             return 0;
+        }
+
         for (const auto& it : _canonicalIds)
         {
             if (it.first == viewProps)
                 return it.second;
         }
 
-        const std::size_t id = _canonicalIds.size() + 1;
+        const std::size_t id = (_canonicalIds.size() + 1) + 1000;
         _canonicalIds[viewProps] = id;
         return id;
     }
@@ -77,14 +81,31 @@ public:
     const std::string& getName() const { return _name; }
     bool isDisconnected() const { return _disconnected; }
 
-    virtual void setReadOnly(bool bValue = true) { _isReadOnly = bValue; }
+    /// Controls whether writing in the Storage is enabled in this session.
+    /// If set to false, will setReadOnly(true) and setAllowChangeComments(false).
+    void setWritable(bool writable)
+    {
+        _isWritable = writable;
+        if (!writable)
+        {
+            setReadOnly(true);
+            setAllowChangeComments(false);
+        }
+    }
+
+    /// True iff the session can write in the Storage.
+    bool isWritable() const { return _isWritable; }
+
+    /// Controls whether editing is enabled in this session.
+    virtual void setReadOnly(bool readonly) { _isReadOnly = readonly; }
     bool isReadOnly() const { return _isReadOnly; }
 
-    void setAllowChangeComments(bool bValue = true)
-    {
-        _isAllowChangeComments = bValue;
-    }
+    /// Controls whether commenting is enabled in this session
+    void setAllowChangeComments(bool allow) { _isAllowChangeComments = allow; }
     bool isAllowChangeComments() const { return _isAllowChangeComments; }
+
+    /// Returns true iff the view is either non-readonly or can change comments.
+    bool isEditable() const { return !isReadOnly() || isAllowChangeComments(); }
 
     /// overridden to prepend client ids on messages by the Kit
     virtual bool sendBinaryFrame(const char* buffer, int length);
@@ -120,12 +141,21 @@ public:
     template <std::size_t N>
     bool sendTextFrame(const char (&buffer)[N])
     {
-        return (buffer != nullptr && N > 0 ? sendTextFrame(buffer, N) : false);
+        static_assert(N > 0, "Cannot have string literal with size zero");
+        return sendTextFrame(buffer, N - 1);
     }
 
     bool sendTextFrame(const char* buffer)
     {
-        return (buffer != nullptr ? sendTextFrame(buffer, std::strlen(buffer)) : false);
+        return buffer != nullptr && sendTextFrame(buffer, std::strlen(buffer));
+    }
+
+    template <std::size_t N>
+    bool sendTextFrameAndLogError(const char (&buffer)[N])
+    {
+        static_assert(N > 0, "Cannot have string literal with size zero");
+        LOG_ERR(buffer);
+        return sendTextFrame(buffer, N - 1);
     }
 
     bool sendTextFrameAndLogError(const std::string& text)
@@ -137,7 +167,7 @@ public:
     bool sendTextFrameAndLogError(const char* buffer)
     {
         LOG_ERR(buffer);
-        return (buffer != nullptr ? sendTextFrame(buffer, std::strlen(buffer)) : false);
+        return buffer != nullptr && sendTextFrame(buffer, std::strlen(buffer));
     }
 
     virtual void handleMessage(const std::vector<char> &data) override;
@@ -180,6 +210,8 @@ public:
 
     void setUserExtraInfo(const std::string& userExtraInfo) { _userExtraInfo = userExtraInfo; }
 
+    void setUserPrivateInfo(const std::string& userPrivateInfo) { _userPrivateInfo = userPrivateInfo; }
+
     void setUserName(const std::string& userName) { _userName = userName; }
 
     const std::string& getUserName() const {return _userName; }
@@ -198,6 +230,8 @@ public:
 
     const std::string& getLang() const { return _lang; }
 
+    const std::string& getTimezone() const { return _timezone; }
+
     bool getHaveDocPassword() const { return _haveDocPassword; }
 
     void setHaveDocPassword(const bool val) { _haveDocPassword = val; }
@@ -208,20 +242,13 @@ public:
 
     const std::string& getUserExtraInfo() const { return _userExtraInfo; }
 
+    const std::string& getUserPrivateInfo() const { return _userPrivateInfo; }
+
     const std::string& getDocURL() const { return  _docURL; }
 
     const std::string& getJailedFilePath() const { return _jailedFilePath; }
 
     const std::string& getJailedFilePathAnonym() const { return _jailedFilePathAnonym; }
-
-    int  getCanonicalViewId() { return _canonicalViewId; }
-    // Only called by kit.
-    void setCanonicalViewId(int viewId) { _canonicalViewId = viewId; }
-    // Only called by wsd.
-    template<class T> void createCanonicalViewId(SessionMap<T> &map)
-    {
-        _canonicalViewId = map.createCanonicalId(_watermarkText);
-    }
 
     const std::string& getDeviceFormFactor() const { return _deviceFormFactor; }
 
@@ -232,6 +259,8 @@ public:
     const std::string& getEnableMacrosExecution() const { return _enableMacrosExecution; }
 
     const std::string& getMacroSecurityLevel() const { return _macroSecurityLevel; }
+
+    bool getAccessibilityState() const { return _accessibilityState; }
 
 protected:
     Session(const std::shared_ptr<ProtocolHandlerInterface> &handler,
@@ -248,6 +277,8 @@ protected:
     }
 
     void dumpState(std::ostream& os) override;
+
+    inline void logPrefix(std::ostream& os) const { os << _name << ": "; }
 
 private:
 
@@ -272,10 +303,14 @@ private:
     // Whether websocket received close frame.  Closing Handshake
     std::atomic<bool> _isCloseFrame;
 
-    /// Whether the session is opened as readonly
+    /// Whether the session can write in storage.
+    bool _isWritable;
+
+    /// Whether the session can edit the document.
     bool _isReadOnly;
 
-    /// If the session is read-only, are comments allowed
+    /// Whether the session can add/change comments.
+    /// Must have _isWritable=true, regardless of _isReadOnly.
     bool _isAllowChangeComments;
 
     /// The actual URL, also in the child, even if the child never accesses that.
@@ -314,6 +349,9 @@ private:
     /// Extra info per user, mostly mail, avatar, links, etc.
     std::string _userExtraInfo;
 
+    /// Private info per user, not shared with others.
+    std::string _userPrivateInfo;
+
     /// In case a watermark has to be rendered on each tile.
     std::string _watermarkText;
 
@@ -323,13 +361,13 @@ private:
     /// Language for the document based on what the user has in the UI.
     std::string _lang;
 
-    /// the canonical id unique to the set of rendering properties of this session
-    int _canonicalViewId;
+    /// Timezone of the user.
+    std::string _timezone;
 
     /// The form factor of the device where the client is running: desktop, tablet, mobile.
     std::string _deviceFormFactor;
 
-    /// The start value of Auto Spell Checking wheter it is enabled or disabled on start.
+    /// The start value of Auto Spell Checking whether it is enabled or disabled on start.
     std::string _spellOnline;
 
     /// Disable dialogs interactivity.
@@ -340,6 +378,9 @@ private:
 
     /// Level of Macro security.
     std::string _macroSecurityLevel;
+
+    /// Specifies whether accessibility support is enabled for this session.
+    bool _accessibilityState;
 };
 
 /* vim:set shiftwidth=4 softtabstop=4 expandtab: */

@@ -5,10 +5,11 @@ var mobileHelper = require('../../common/mobile_helper');
 var writerHelper = require('../../common/writer_helper');
 
 describe.skip('Spell checking menu.', function() {
-	var testFileName = 'spellchecking.odt';
+	var origTestFileName = 'spellchecking.odt';
+	var testFileName;
 
 	beforeEach(function() {
-		helper.beforeAll(testFileName, 'writer');
+		testFileName = helper.beforeAll(origTestFileName, 'writer');
 
 		// Click on edit button
 		mobileHelper.enableEditingMobile();
@@ -23,7 +24,7 @@ describe.skip('Spell checking menu.', function() {
 		writerHelper.selectAllTextOfDoc();
 
 		// Open context menu
-		cy.get('.leaflet-marker-icon')
+		cy.cGet('.leaflet-marker-icon')
 			.then(function(markers) {
 				expect(markers.length).to.have.greaterThan(1);
 				for (var i = 0; i < markers.length; i++) {
@@ -44,43 +45,29 @@ describe.skip('Spell checking menu.', function() {
 				mobileHelper.longPressOnDocument(XPos, YPos);
 			});
 
-		cy.get('#mobile-wizard-content')
-			.should('be.visible');
+		cy.cGet('#mobile-wizard-content').should('be.visible');
 	}
 
 	it('Apply suggestion.', function() {
 		openContextMenu();
-
-		cy.contains('.context-menu-link', 'hello')
-			.click();
-
+		cy.cGet('body').contains('.context-menu-link', 'hello').click();
 		writerHelper.selectAllTextOfDoc();
-
 		helper.expectTextForClipboard('hello');
 	});
 
 	it('Ignore one.', function() {
 		openContextMenu();
-
-		cy.contains('.context-menu-link', 'Ignore')
-			.click();
-
+		cy.cGet('body').contains('.context-menu-link', 'Ignore').click();
 		openContextMenu();
-
 		// We don't get the spell check context menu any more
-		cy.contains('.context-menu-link', 'Paste');
+		cy.cGet('body').contains('.context-menu-link', 'Paste');
 	});
 
 	it('Ignore all.', function() {
 		openContextMenu();
-
-		cy.contains('.context-menu-link', 'Ignore All')
-			.click();
-
+		cy.cGet('body').contains('.context-menu-link', 'Ignore All').click();
 		openContextMenu();
-
 		// We don't get the spell check context menu any more
-		cy.contains('.context-menu-link', 'Paste')
-			.should('be.visible');
+		cy.cGet('body').contains('.context-menu-link', 'Paste').should('be.visible');
 	});
 });

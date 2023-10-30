@@ -116,7 +116,7 @@ static inline int64_t findEndOfToken(const char* p, int64_t off, int64_t len)
 
 int64_t Header::parse(const char* p, int64_t len)
 {
-    LOG_TRC("Reading header given " << len << " bytes: " << std::string(p, std::min(len, 80L)));
+    LOG_TRC("Parsing header given " << len << " bytes: " << std::string(p, std::min<int64_t>(len, 80L)));
     if (len < 4)
     {
         // Incomplete; we need at least \r\n\r\n.
@@ -155,11 +155,11 @@ int64_t Header::parse(const char* p, int64_t len)
 
         _chunked = getTransferEncoding() == "chunked";
 
-        LOG_TRC("Read " << data.tellg() << " bytes of header:\n"
-                        << std::string(p, data.tellg())
-                        << "\nhasContentLength: " << hasContentLength()
+        LOG_TRC("Read " << data.tellg()
+                        << " bytes of header. hasContentLength: " << hasContentLength()
                         << ", contentLength: " << (hasContentLength() ? getContentLength() : -1)
-                        << ", chunked: " << getChunkedTransferEncoding());
+                        << ", chunked: " << getChunkedTransferEncoding() << ":\n"
+                        << std::string(p, data.tellg()));
 
         // We consumed the full header, including the blank line.
         return endPos + 1;
@@ -307,7 +307,13 @@ int64_t Request::readData(const char* p, const int64_t len)
     if (_stage == Stage::Header)
     {
         // First line is the status line.
+#if !MOBILEAPP
         if (p == nullptr || len < MinRequestHeaderLen)
+#else
+        // Fix infinite loop on mobile by skipping the minimum request header
+        // length check
+        if (p == nullptr)
+#endif
         {
             LOG_TRC("Request::readData: len < MinRequestHeaderLen");
             return 0;
@@ -396,7 +402,7 @@ int64_t Request::readData(const char* p, const int64_t len)
 #ifdef DEBUG_HTTP
             LOG_TRC("After Header: "
                     << available << " bytes availble\n"
-                    << Util::dumpHex(std::string(p, std::min(available, 1 * 1024L))));
+                    << Util::dumpHex(std::string(p, std::min(available, 1 * 1024UL))));
 #endif //DEBUG_HTTP
         }
 
@@ -473,9 +479,9 @@ int64_t Response::readData(const char* p, int64_t len)
             // Assume we have a body unless we have reason to expect otherwise.
             _parserStage = ParserStage::Body;
 
-            if (_statusLine.statusCategory() == StatusLine::StatusCodeClass::Informational
-                || _statusLine.statusCode() == 204 /*No Content*/
-                || _statusLine.statusCode() == 304 /*Not Modified*/) // || HEAD request
+            if (_statusLine.statusCategory() == StatusLine::StatusCodeClass::Informational ||
+                _statusLine.statusCode() == http::StatusCode::NoContent ||
+                _statusLine.statusCode() == http::StatusCode::NotModified) // || HEAD request
             // || 2xx on CONNECT request
             {
                 // No body, we are done.
@@ -615,7 +621,8 @@ int64_t Response::readData(const char* p, int64_t len)
             const int64_t wrote = _onBodyWriteCb(p, available);
             if (wrote < 0)
             {
-                LOG_ERR("Error writing http response payload. Write handler returned "
+                LOG_ERR("Error writing received http response payload into the body-callback. "
+                        "Write handler returned "
                         << wrote << " instead of " << available);
                 return wrote;
             }
@@ -626,7 +633,7 @@ int64_t Response::readData(const char* p, int64_t len)
                 _recvBodySize += wrote;
                 if (_header.hasContentLength() && _recvBodySize >= _header.getContentLength())
                 {
-                    LOG_TRC("Wrote all content, finished.");
+                    LOG_TRC("Wrote all received content into the body-callback, finished.");
                     _parserStage = ParserStage::Finished;
                 }
             }
@@ -650,7 +657,7 @@ std::shared_ptr<Session> Session::create(std::string host, Protocol protocol, in
     std::string portString;
     if (!net::parseUri(host, scheme, hostname, portString))
     {
-        LOG_ERR("Invalid URI [" << host << "] to http::Session::create.");
+        LOG_ERR_S("Invalid URI [" << host << "] to http::Session::create");
         throw std::runtime_error("Invalid URI [" + host + "] to http::Session::create.");
     }
 

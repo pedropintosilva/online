@@ -91,43 +91,6 @@ namespace Log
 
     bool IsShutdown = false;
 
-    // We need a signal safe means of writing messages
-    //   $ man 7 signal
-    void signalLog(const char *message)
-    {
-        while (true)
-        {
-            const int length = std::strlen(message);
-            const int written = write(STDERR_FILENO, message, length);
-            if (written < 0)
-            {
-                if (errno == EINTR)
-                    continue; // ignore.
-                else
-                    break;
-            }
-
-            message += written;
-            if (message[0] == '\0')
-                break;
-        }
-    }
-
-    // We need a signal safe means of writing messages
-    //   $ man 7 signal
-    void signalLogNumber(std::size_t num)
-    {
-        int i;
-        char buf[22];
-        buf[21] = '\0';
-        for (i = 20; i > 0 && num > 0; --i)
-        {
-            buf[i] = '0' + num % 10;
-            num /= 10;
-        }
-        signalLog(buf + i + 1);
-    }
-
     /// Convert an unsigned number to ascii with 0 padding.
     template <int Width> void to_ascii_fixed(char* buf, std::size_t num)
     {
@@ -301,13 +264,6 @@ namespace Log
         return buffer;
     }
 
-    void signalLogPrefix()
-    {
-        char buffer[1024];
-        prefix<sizeof(buffer) - 1>(buffer, "SIG");
-        signalLog(buffer);
-    }
-
     void initialize(const std::string& name,
                     const std::string& logLevel,
                     const bool withColor,
@@ -368,20 +324,10 @@ namespace Log
         Static.setLevel(level);
 
         const std::time_t t = std::time(nullptr);
-        oss.str("");
-        oss.clear();
-
-        oss << "Initializing " << name << '.';
-
-        // TODO: replace with std::put_time when we move to gcc 5+.
-        char buf[32];
-        if (strftime(buf, sizeof(buf), "%a %F %T%z", std::localtime(&t)) > 0)
-        {
-            oss << " Local time: " << buf << '.';
-        }
-
-        oss <<  " Log level is [" << logger->getLevel() << "].";
-        LOG_INF(oss.str());
+        struct tm tm;
+        LOG_INF("Initializing " << name << ". Local time: "
+                                << std::put_time(localtime_r(&t, &tm), "%a %F %T %z")
+                                << ". Log level is [" << logger->getLevel() << "].");
     }
 
     Poco::Logger& logger()

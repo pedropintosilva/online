@@ -3,7 +3,7 @@
  * L.Control.StatusBar
  */
 
-/* global $ w2ui _ _UNO */
+/* global $ app w2ui _ _UNO */
 L.Control.StatusBar = L.Control.extend({
 
 	initialize: function () {
@@ -12,10 +12,11 @@ L.Control.StatusBar = L.Control.extend({
 	onAdd: function (map) {
 		this.map = map;
 		map.on('doclayerinit', this.onDocLayerInit, this);
-		map.on('commandvalues', this.onCommandValues, this);
+		map.on('languagesupdated', this.onLanguagesUpdated, this);
 		map.on('commandstatechanged', this.onCommandStateChanged, this);
 		map.on('contextchange', this.onContextChange, this);
 		map.on('updatepermission', this.onPermissionChanged, this);
+		map.on('updatestatepagenumber', this.onPageChange, this);
 		this.create();
 
 		$(window).resize(function() {
@@ -65,7 +66,22 @@ L.Control.StatusBar = L.Control.extend({
 	},
 
 	_updateToolbarsVisibility: function(context) {
-		window.updateVisibilityForToolbar(w2ui['actionbar'], context);
+		var isReadOnly = this.map.isReadOnlyMode();
+		var statusbar = w2ui['actionbar'];
+		if (isReadOnly) {
+			statusbar.disable('LanguageStatus');
+			statusbar.hide('InsertMode');
+			statusbar.hide('break6');
+			statusbar.hide('StatusSelectionMode');
+			statusbar.hide('break7');
+		} else {
+			statusbar.enable('LanguageStatus');
+			statusbar.show('InsertMode');
+			statusbar.show('break6');
+			statusbar.show('StatusSelectionMode');
+			statusbar.show('break7');
+		}
+		window.updateVisibilityForToolbar(statusbar, context);
 	},
 
 	onContextChange: function(event) {
@@ -157,8 +173,22 @@ L.Control.StatusBar = L.Control.extend({
 		else if (id === 'signstatus') {
 			this.map.sendUnoCommand('.uno:Signature');
 		}
+		else if (subItem && subItem.id === 'morelanguages') {
+			this.map.fire('morelanguages', { applyto: 'all' });
+		}
+		else if (subItem && subItem.id === 'langpara') {
+			this.map.fire('morelanguages', { applyto: 'paragraph' });
+		}
+		else if (subItem && subItem.id === 'langselection') {
+			this.map.fire('morelanguages', { applyto: 'selection' });
+		}
 	},
-
+	onPageChange: function(e) {
+		var statusbar = w2ui['actionbar'];
+		var state = e.state;
+		state = this.toLocalePattern('Page %1 of %2', 'Page (\\d+) of (\\d+)', state, '%1', '%2');
+		this.updateToolbarItem(statusbar, 'StatePageNumber', $('#StatePageNumber').html(state ? state : '&nbsp;&nbsp;&nbsp;&nbsp;&nbsp').parent().html());
+	},
 	create: function() {
 		var toolbar = $('#toolbar-down');
 		var that = this;
@@ -168,10 +198,10 @@ L.Control.StatusBar = L.Control.extend({
 				name: 'actionbar',
 				items: [
 					{type: 'html',  id: 'search',
-						html: '<div style="padding: 3px 5px 4px 10px;" class="cool-font">' +
+						html: '<div class="cool-font">' +
 					'<label for="search-input" class="visuallyhidden" aria-hidden="false">Search:</label>' +
 					'<input size="15" id="search-input" placeholder="' + _('Search') + '"' +
-					'style="padding: 3px; border-radius: 2px; border: 1px solid silver"/>' +
+					'style="padding: 3px; border-radius: var(--border-radius); border: 1px solid var(--color-border)"/>' +
 					'</div>'
 					},
 					{type: 'button',  id: 'searchprev', img: 'prev', hint: _UNO('.uno:UpSearch'), disabled: true},
@@ -264,7 +294,8 @@ L.Control.StatusBar = L.Control.extend({
 	onDocLayerInit: function () {
 		var statusbar = w2ui['actionbar'];
 		var docType = this.map.getDocType();
-		var isReadOnly = this.map.isPermissionReadOnly();
+		var isReadOnly = this.map.isReadOnlyMode();
+		var canUserWrite = this.map.canUserWrite();
 
 		switch (docType) {
 		case 'spreadsheet':
@@ -316,8 +347,8 @@ L.Control.StatusBar = L.Control.extend({
 					},
 					{type: 'break', id: 'break9', mobile: false},
 					{
-						type: 'html', id: 'PermissionMode', mobile: false, tablet: false,
-						html: this._getPermissionModeHtml(isReadOnly)
+						type: 'html', id: 'PermissionMode', mobile: false, tablet: true,
+						html: this._getPermissionModeHtml(isReadOnly, canUserWrite)
 					}
 				]);
 			}
@@ -352,8 +383,8 @@ L.Control.StatusBar = L.Control.extend({
 					},
 					{type: 'break', id: 'break8', mobile: false},
 					{
-						type: 'html', id: 'PermissionMode', mobile: false, tablet: false,
-						html: this._getPermissionModeHtml(isReadOnly)
+						type: 'html', id: 'PermissionMode', mobile: false, tablet: true,
+						html: this._getPermissionModeHtml(isReadOnly, canUserWrite)
 					}
 				]);
 			}
@@ -373,16 +404,31 @@ L.Control.StatusBar = L.Control.extend({
 					},
 					{type: 'break', id: 'break8', mobile: false},
 					{
-						type: 'html', id: 'PermissionMode', mobile: false, tablet: false,
-						html: this._getPermissionModeHtml(isReadOnly)
+						type: 'html', id: 'PermissionMode', mobile: false, tablet: true,
+						html: this._getPermissionModeHtml(isReadOnly, canUserWrite)
 					}
 				]);
 			}
-
-		// FALLTHROUGH intended
+			break;
 		case 'drawing':
-			if (statusbar)
-				statusbar.show('prev', 'next');
+			if (!window.mode.isMobile()) {
+				statusbar.insert('left', [
+					{type: 'break', id: 'break1'},
+					{
+						type: 'html', id: 'PageStatus',
+						html: '<div id="PageStatus" class="cool-font" title="' + _('Number of Pages') + '" style="padding: 5px 5px;">&nbsp;&nbsp;&nbsp;&nbsp;&nbsp</div>'
+					},
+					{type: 'break', id: 'break2', mobile: false, tablet: false},
+					{type: 'menu-radio', id: 'LanguageStatus',
+						mobile: false
+					},
+					{type: 'break', id: 'break8', mobile: false},
+					{
+						type: 'html', id: 'PermissionMode', mobile: false, tablet: true,
+						html: this._getPermissionModeHtml(isReadOnly, canUserWrite)
+					}
+				]);
+			}
 			break;
 		}
 
@@ -395,7 +441,7 @@ L.Control.StatusBar = L.Control.extend({
 
 		var showStatusbar = this.map.uiManager.getSavedStateOrDefault('ShowStatusbar');
 		if (showStatusbar)
-			$('#toolbar-down').show();
+			this.map.uiManager.toggleStatusBar();
 		else
 			this.map.uiManager.hideStatusBar(true);
 	},
@@ -417,16 +463,26 @@ L.Control.StatusBar = L.Control.extend({
 		this.map._onGotFocus();
 	},
 
-	_getPermissionModeHtml: function(isReadOnly) {
-		return '<div id="PermissionMode" class="cool-font ' +
-			(isReadOnly
-				? ' status-readonly-mode" title="' + _('Permission Mode') + '" style="padding: 5px 5px;"> ' + _('Read-only') + ' </div>'
-				: ' status-edit-mode" title="' + _('Permission Mode') + '" style="padding: 5px 5px;"> ' + _('Edit') + ' </div>');
+	_getPermissionModeHtml: function(isReadOnly, canUserWrite) {
+		var permissionModeDiv = '<div id="PermissionMode" class="cool-font ';
+		if (isReadOnly && !canUserWrite) {
+			permissionModeDiv += ' status-readonly-mode" title="' + _('Permission Mode') + '" style="padding: 5px 5px;"> ' + _('Read-only') + ' </div>';
+		} else if (isReadOnly && canUserWrite) {
+			permissionModeDiv += ' status-readonly-transient-mode" style="display: none;"></div>';
+		} else {
+			permissionModeDiv += ' status-edit-mode" title="' + _('Permission Mode') + '" style="padding: 5px 5px;"> ' + _('Edit') + ' </div>';
+		}
+		return permissionModeDiv;
 	},
 
 	onPermissionChanged: function(event) {
 		var isReadOnly = event.perm === 'readonly';
-		$('#PermissionMode').parent().html(this._getPermissionModeHtml(isReadOnly));
+		if (isReadOnly) {
+			$('#toolbar-down').addClass('readonly');
+		} else {
+			$('#toolbar-down').removeClass('readonly');
+		}
+		$('#PermissionMode').parent().html(this._getPermissionModeHtml(isReadOnly, this.map.canUserWrite()));
 	},
 
 	onCommandStateChanged: function(e) {
@@ -491,52 +547,56 @@ L.Control.StatusBar = L.Control.extend({
 			}
 		}
 		else if (commandName === '.uno:StatePageNumber') {
-			state = this.toLocalePattern('Page %1 of %2', 'Page (\\d+) of (\\d+)', state, '%1', '%2');
-			this.updateToolbarItem(statusbar, 'StatePageNumber', $('#StatePageNumber').html(state ? state : '&nbsp;&nbsp;&nbsp;&nbsp;&nbsp').parent().html());
+			this.onPageChange(e);
 		}
 		else if (commandName === '.uno:StateWordCount') {
 			state = this.toLocalePattern('%1 words, %2 characters', '([\\d,]+) words, ([\\d,]+) characters', state, '%1', '%2');
 			this.updateToolbarItem(statusbar, 'StateWordCount', $('#StateWordCount').html(state ? state : '&nbsp;&nbsp;&nbsp;&nbsp;&nbsp').parent().html());
 		}
 		else if (commandName === '.uno:PageStatus') {
-			state = this.toLocalePattern('Slide %1 of %2', 'Slide (\\d+) of (\\d+)', state, '%1', '%2');
+			if (this.map.getDocType() === 'presentation')
+				state = this.toLocalePattern('Slide %1 of %2', 'Slide (\\d+) of (\\d+)', state, '%1', '%2');
+			else
+				state = this.toLocalePattern('Page %1 of %2', 'Slide (\\d+) of (\\d+)', state, '%1', '%2');
 			this.updateToolbarItem(statusbar, 'PageStatus', $('#PageStatus').html(state ? state : '&nbsp;&nbsp;&nbsp;&nbsp;&nbsp').parent().html());
 		}
 	},
 
-	onCommandValues: function(e) {
-		if (e.commandName === '.uno:LanguageStatus' && L.Util.isArray(e.commandValues)) {
-			var translated, neutral;
-			var constLang = '.uno:LanguageStatus?Language:string=';
-			var constDefault = 'Default_RESET_LANGUAGES';
-			var constNone = 'Default_LANGUAGE_NONE';
-			var resetLang = _('Reset to Default Language');
-			var noneLang = _('None (Do not check spelling)');
-			var languages = [];
-			e.commandValues.forEach(function (language) {
-				languages.push({ translated: _(language.split(';')[0]), neutral: language });
-			});
-			languages.sort(function (a, b) {
-				return a.translated < b.translated ? -1 : a.translated > b.translated ? 1 : 0;
-			});
+	onLanguagesUpdated: function() {
+		var translated, neutral;
+		var constLang = '.uno:LanguageStatus?Language:string=';
+		var constDefault = 'Default_RESET_LANGUAGES';
+		var constNone = 'Default_LANGUAGE_NONE';
+		var resetLang = _('Reset to Default Language');
+		var noneLang = _('None (Do not check spelling)');
+		var languages = app.languages;
 
-			var toolbaritems = [];
-			toolbaritems.push({ text: noneLang,
-			 id: 'nonelanguage',
-			 uno: constLang + constNone });
+		var toolbaritems = [];
+		toolbaritems.push({ text: noneLang,
+			id: 'nonelanguage',
+			uno: constLang + constNone });
 
 
-			for (var lang in languages) {
-				translated = languages[lang].translated;
-				neutral = languages[lang].neutral;
-				var splitNeutral = neutral.split(';');
-				toolbaritems.push({ id: neutral, text: translated, uno: constLang + encodeURIComponent('Default_' + splitNeutral[0]) });
-			}
+		for (var lang in languages) {
+			if (languages.length > 10 && app.favouriteLanguages.indexOf(languages[lang].iso) < 0)
+				continue;
 
-			toolbaritems.push({ id: 'reset', text: resetLang, uno: constLang + constDefault });
-
-			w2ui['actionbar'].set('LanguageStatus', {items: toolbaritems});
+			translated = languages[lang].translated;
+			neutral = languages[lang].neutral;
+			var splitNeutral = neutral.split(';');
+			toolbaritems.push({ id: neutral, text: translated, uno: constLang + encodeURIComponent('Default_' + splitNeutral[0]) });
 		}
+
+		toolbaritems.push({ id: 'reset', text: resetLang, uno: constLang + constDefault });
+
+		toolbaritems.push({ id: 'morelanguages', text: _('Set Language for All text') });
+
+		if (this.map.getDocType() === 'text') {
+			toolbaritems.push({ id: 'langpara', text: _('Set Language for Paragraph') });
+			toolbaritems.push({ id: 'langselection', text: _('Set Language for Selection') });
+		}
+
+		w2ui['actionbar'].set('LanguageStatus', {items: toolbaritems});
 	},
 });
 

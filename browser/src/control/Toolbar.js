@@ -3,7 +3,7 @@
  * Toolbar handler
  */
 
-/* global app $ window vex sanitizeUrl brandProductName brandProductURL _ Hammer */
+/* global app $ window sanitizeUrl brandProductName brandProductURL _ */
 L.Map.include({
 
 	// a mapping of uno commands to more readable toolbar items
@@ -181,7 +181,7 @@ L.Map.include({
 	applyFont: function (fontName) {
 		if (!fontName)
 			return;
-		if (this.isPermissionEdit()) {
+		if (this.isEditMode()) {
 			var msg = 'uno .uno:CharFontName {' +
 				'"CharFontName.FamilyName": ' +
 					'{"type": "string", "value": "' + fontName + '"}}';
@@ -190,7 +190,7 @@ L.Map.include({
 	},
 
 	applyFontSize: function (fontSize) {
-		if (this.isPermissionEdit()) {
+		if (this.isEditMode()) {
 			var msg = 'uno .uno:FontHeight {' +
 				'"FontHeight.Height": ' +
 				'{"type": "float", "value": "' + fontSize + '"}}';
@@ -226,8 +226,19 @@ L.Map.include({
 			options = '';
 		}
 
+		// printing: don't export form fields, irrelevant, and can be buggy
+		// comments are irrelevant, too
+		if (id === 'print' && format === 'pdf' && options === '')
+			options = '{\"ExportFormFields\":{\"type\":\"boolean\",\"value\":\"false\"},' +
+						'\"ExportNotes\":{\"type\":\"boolean\",\"value\":\"false\"}}';
+
+		// download: don't export comments into PDF by default
+		if (id == 'export' && format === 'pdf' && options === '')
+			options = '{\"ExportNotes\":{\"type\":\"boolean\",\"value\":\"false\"}}';
+
 		if (!window.ThisIsAMobileApp)
 			this.showBusy(_('Downloading...'), false);
+
 		app.socket.sendMessage('downloadas ' +
 			'name=' + encodeURIComponent(name) + ' ' +
 			'id=' + id + ' ' +
@@ -262,6 +273,14 @@ L.Map.include({
 			'options=' + options);
 	},
 
+	exportAs: function (url) {
+		if (url === undefined || url == null) {
+			return;
+		}
+
+		app.socket.sendMessage('exportas url=wopi:' + encodeURIComponent(url));
+	},
+
 	renameFile: function (filename) {
 		if (!filename) {
 			return;
@@ -275,7 +294,7 @@ L.Map.include({
 			this.fire('error', {cmd: 'setStyle', kind: 'incorrectparam'});
 			return;
 		}
-		if (this.isPermissionEdit()) {
+		if (this.isEditMode()) {
 			var msg = 'uno .uno:StyleApply {' +
 					'"Style":{"type":"string", "value": "' + style + '"},' +
 					'"FamilyName":{"type":"string", "value":"' + familyName + '"}' +
@@ -289,7 +308,7 @@ L.Map.include({
 			this.fire('error', {cmd: 'setLayout', kind: 'incorrectparam'});
 			return;
 		}
-		if (this.isPermissionEdit()) {
+		if (this.isEditMode()) {
 			var msg = 'uno .uno:AssignLayout {' +
 					'"WhatPage":{"type":"unsigned short", "value": "' + this.getCurrentPartNumber() + '"},' +
 					'"WhatLayout":{"type":"unsigned short", "value": "' + layout + '"}' +
@@ -321,14 +340,39 @@ L.Map.include({
 		}
 	},
 
-	sendUnoCommand: function (command, json) {
+	sendUnoCommand: function (command, json, force) {
+		if ((command.startsWith('.uno:Sidebar') && !command.startsWith('.uno:SidebarShow')) ||
+			command.startsWith('.uno:SlideChangeWindow') || command.startsWith('.uno:CustomAnimation') ||
+			command.startsWith('.uno:MasterSlidesPanel') || command.startsWith('.uno:ModifyPage') ||
+			command.startsWith('.uno:Navigator')) {
+
+			// sidebar control is present only in desktop/tablet case
+			if (this.sidebar) {
+				if (this.sidebar.isVisible()) {
+					this.sidebar.setupTargetDeck(command);
+				} else {
+					// we don't know which deck was active last, show first then switch if needed
+					app.socket.sendMessage('uno .uno:SidebarShow');
+
+					this.sidebar.setupTargetDeck(command);
+					return;
+				}
+			}
+		}
+
 		// To exercise the Trace Event functionality, uncomment this
 		// app.socket.emitInstantTraceEvent('cool-unocommand:' + command);
 
 		var isAllowedInReadOnly = false;
-		var allowedCommands = ['.uno:Save', '.uno:WordCountDialog', '.uno:EditAnnotation',
-			'.uno:InsertAnnotation', '.uno:DeleteAnnotation', '.uno:Signature',
-			'.uno:ShowResolvedAnnotations'];
+		var allowedCommands = ['.uno:Save', '.uno:WordCountDialog',
+			'.uno:Signature', '.uno:ShowResolvedAnnotations',
+			'.uno:ToolbarMode?Mode:string=notebookbar_online.ui', '.uno:ToolbarMode?Mode:string=Default'];
+		if (this.isPermissionEditForComments()) {
+			allowedCommands.push('.uno:InsertAnnotation','.uno:DeleteCommentThread', '.uno:DeleteAnnotation', '.uno:DeleteNote',
+				'.uno:DeleteComment', '.uno:ReplyComment', '.uno:ReplyToAnnotation', '.uno:ResolveComment',
+				'.uno:ResolveCommentThread', '.uno:ResolveComment', '.uno:EditAnnotation', '.uno:ExportToEPUB', '.uno:ExportToPDF',
+				'.uno:ExportDirectToPDF');
+		}
 
 		for (var i in allowedCommands) {
 			if (allowedCommands[i] === command) {
@@ -351,16 +395,18 @@ L.Map.include({
 
 		if (this.uiManager.isUIBlocked())
 			return;
-		if (this.dialog.hasOpenedDialog())
+		if ((this.dialog.hasOpenedDialog() || (this.jsdialog && this.jsdialog.hasDialogOpened()))
+			&& !command.startsWith('.uno:ToolbarMode') && !force) {
+			console.debug('Cannot execute: ' + command + ' when dialog is opened.');
 			this.dialog.blinkOpenDialog();
-		else if (this.isPermissionEdit() || isAllowedInReadOnly) {
+		} else if (this.isEditMode() || isAllowedInReadOnly) {
 			if (!this.messageNeedsToBeRedirected(command))
 				app.socket.sendMessage('uno ' + command + (json ? ' ' + JSON.stringify(json) : ''));
 		}
 	},
 
 	toggleCommandState: function (unoState) {
-		if (this.isPermissionEdit()) {
+		if (this.isEditMode()) {
 			if (!unoState.startsWith('.uno:')) {
 				unoState = '.uno:' + unoState;
 			}
@@ -380,477 +426,310 @@ L.Map.include({
 		this.fire('selectbackground', {file: file});
 	},
 
-	_doVexOpenHelpFile: function(data, id, map) {
+	onHelpOpen: function(id, map, productName) {
+		var i;
+		// Display keyboard shortcut or online help
+		if (id === 'keyboard-shortcuts') {
+			document.getElementById('online-help').style.display='none';
+			// Display help according to document opened
+			if (map.getDocType() === 'text') {
+				document.getElementById('text-shortcuts').style.display='block';
+			}
+			else if (map.getDocType() === 'spreadsheet') {
+				document.getElementById('spreadsheet-shortcuts').style.display='block';
+			}
+			else if (map.getDocType() === 'presentation') {
+				document.getElementById('presentation-shortcuts').style.display='block';
+			}
+			else if (map.getDocType() === 'drawing') {
+				document.getElementById('drawing-shortcuts').style.display='block';
+			}
+		} else /* id === 'online-help' */ {
+			document.getElementById('keyboard-shortcuts').style.display='none';
+			if (window.socketProxy) {
+				var helpdiv = document.getElementById('online-help');
+				var imgList = helpdiv.querySelectorAll('img');
+				for (var p = 0; p < imgList.length; p++) {
+					var imgSrc = imgList[p].src;
+					imgSrc = imgSrc.substring(imgSrc.indexOf('/images'));
+					imgList[p].src = window.makeWsUrl('/browser/dist'+ imgSrc);
+				}
+			}
+			// Display help according to document opened
+			if (map.getDocType() === 'text') {
+				var x = document.getElementsByClassName('text');
+				for (i = 0; i < x.length; i++) {
+					x[i].style.display = 'block';
+				}
+			}
+			else if (map.getDocType() === 'spreadsheet') {
+				x = document.getElementsByClassName('spreadsheet');
+				for (i = 0; i < x.length; i++) {
+					x[i].style.display = 'block';
+				}
+			}
+			else if (map.getDocType() === 'presentation' || map.getDocType() === 'drawing') {
+				x = document.getElementsByClassName('presentation');
+				for (i = 0; i < x.length; i++) {
+					x[i].style.display = 'block';
+				}
+			}
+		}
+
+		var contentElement = document.getElementById(id);
+
+		// Let's translate
+		var max;
+		var translatableContent = contentElement.querySelectorAll('h1');
+		for (i = 0, max = translatableContent.length; i < max; i++) {
+			translatableContent[i].innerHTML = translatableContent[i].innerHTML.toLocaleString();
+		}
+		translatableContent = contentElement.querySelectorAll('h2');
+		for (i = 0, max = translatableContent.length; i < max; i++) {
+			translatableContent[i].innerHTML = translatableContent[i].innerHTML.toLocaleString();
+		}
+		translatableContent = contentElement.querySelectorAll('h3');
+		for (i = 0, max = translatableContent.length; i < max; i++) {
+			translatableContent[i].innerHTML = translatableContent[i].innerHTML.toLocaleString();
+		}
+		translatableContent = contentElement.querySelectorAll('h4');
+		for (i = 0, max = translatableContent.length; i < max; i++) {
+			translatableContent[i].innerHTML = translatableContent[i].innerHTML.toLocaleString();
+		}
+		translatableContent = contentElement.querySelectorAll('td');
+		for (i = 0, max = translatableContent.length; i < max; i++) {
+			var orig = translatableContent[i].innerHTML;
+			var trans = translatableContent[i].innerHTML.toLocaleString();
+			// Try harder to get translation of keyboard shortcuts (html2po trims starting <kbd> and ending </kbd>)
+			if (orig === trans && orig.indexOf('kbd') != -1) {
+				var trimmedOrig = orig.replace(/^(<kbd>)/,'').replace(/(<\/kbd>$)/,'');
+				var trimmedTrans = trimmedOrig.toLocaleString();
+				if (trimmedOrig !== trimmedTrans) {
+					trans = '<kbd>' + trimmedTrans + '</kbd>';
+				}
+			}
+			translatableContent[i].innerHTML = trans;
+		}
+		translatableContent = contentElement.querySelectorAll('p');
+		for (i = 0, max = translatableContent.length; i < max; i++) {
+			translatableContent[i].innerHTML = translatableContent[i].innerHTML.toLocaleString();
+		}
+		translatableContent = contentElement.querySelectorAll('button'); // TOC
+		for (i = 0, max = translatableContent.length; i < max; i++) {
+			translatableContent[i].innerHTML = translatableContent[i].innerHTML.toLocaleString();
+		}
+
+		//translatable screenshots
+		var supportedLanguage = ['fr', 'it', 'de', 'es', 'pt-BR'];
+		var currentLanguage = String.locale;
+		if (supportedLanguage.indexOf(currentLanguage) >= 0) {
+			translatableContent = $(contentElement.querySelectorAll('.screenshot')).querySelectorAll('img');
+			for (i = 0, max = translatableContent.length; i < max; i++) {
+				translatableContent[i].src = translatableContent[i].src.replace('/en/', '/'+currentLanguage+'/');
+			}
+		}
+
+		// Substitute %productName in Online Help and replace special Mac key names
+		if (id === 'online-help') {
+			var productNameContent = contentElement.querySelectorAll('span.productname');
+			for (i = 0, max = productNameContent.length; i < max; i++) {
+				productNameContent[i].innerHTML = productNameContent[i].innerHTML.replace(/%productName/g, productName);
+			}
+			document.getElementById('online-help').innerHTML = L.Util.replaceCtrlAltInMac(document.getElementById('online-help').innerHTML);
+		}
+		if (id === 'keyboard-shortcuts') {
+			document.getElementById('keyboard-shortcuts').innerHTML = L.Util.replaceCtrlAltInMac(document.getElementById('keyboard-shortcuts').innerHTML);
+		}
+	},
+
+	_doOpenHelpFile: function(data, id, map) {
 		var productName;
 		if (window.ThisIsAMobileApp) {
 			productName = window.MobileAppName;
 		} else {
-			productName = (typeof brandProductName !== 'undefined') ? brandProductName : 'Collabora Online Development Edition';
+			productName = (typeof brandProductName !== 'undefined') ? brandProductName : 'Collabora Online Development Edition (unbranded)';
 		}
-		var w;
-		var iw = window.innerWidth;
-		if (iw < 768) {
-			w = iw - 30;
-		}
-		else if (iw > 1920) {
-			w = 960;
-		}
-		else {
-			w = iw / 5 + 590;
-		}
-		vex.open({
-			unsafeContent: data,
-			showCloseButton: true,
-			escapeButtonCloses: true,
-			overlayClosesOnClick: false,
-			closeAllOnPopState: false,
-			contentClassName: 'vex-content vex-selectable',
-			buttons: {},
-			afterOpen: function() {
-				var $vexContent = $(this.contentEl);
-				this.contentEl.style.width = w + 'px';
-				var i;
-				// Display keyboard shortcut or online help
-				if (id === 'keyboard-shortcuts') {
-					document.getElementById('online-help').style.display='none';
-					// Display help according to document opened
-					if (map.getDocType() === 'text') {
-						document.getElementById('text-shortcuts').style.display='block';
-					}
-					else if (map.getDocType() === 'spreadsheet') {
-						document.getElementById('spreadsheet-shortcuts').style.display='block';
-					}
-					else if (map.getDocType() === 'presentation') {
-						document.getElementById('presentation-shortcuts').style.display='block';
-					}
-					else if (map.getDocType() === 'drawing') {
-						document.getElementById('drawing-shortcuts').style.display='block';
-					}
-				} else /* id === 'online-help' */ {
-					document.getElementById('keyboard-shortcuts').style.display='none';
-					if (window.socketProxy) {
-						var helpdiv = document.getElementById('online-help');
-						var imgList = helpdiv.querySelectorAll('img');
-						for (var p = 0; p < imgList.length; p++) {
-							var imgSrc = imgList[p].src;
-							imgSrc = imgSrc.substring(imgSrc.indexOf('/images'));
-							imgList[p].src = window.makeWsUrl('/cool/dist'+ imgSrc);
-						}
-					}
-					// Display help according to document opened
-					if (map.getDocType() === 'text') {
-						var x = document.getElementsByClassName('text');
-						for (i = 0; i < x.length; i++) {
-							x[i].style.display = 'block';
-						}
-					}
-					else if (map.getDocType() === 'spreadsheet') {
-						x = document.getElementsByClassName('spreadsheet');
-						for (i = 0; i < x.length; i++) {
-							x[i].style.display = 'block';
-						}
-					}
-					else if (map.getDocType() === 'presentation' || map.getDocType() === 'drawing') {
-						x = document.getElementsByClassName('presentation');
-						for (i = 0; i < x.length; i++) {
-							x[i].style.display = 'block';
-						}
-					}
-				}
 
-				// Let's translate
-				var max;
-				var translatableContent = $vexContent.find('h1');
-				for (i = 0, max = translatableContent.length; i < max; i++) {
-					translatableContent[i].innerHTML = translatableContent[i].innerHTML.toLocaleString();
-				}
-				translatableContent = $vexContent.find('h2');
-				for (i = 0, max = translatableContent.length; i < max; i++) {
-					translatableContent[i].innerHTML = translatableContent[i].innerHTML.toLocaleString();
-				}
-				translatableContent = $vexContent.find('h3');
-				for (i = 0, max = translatableContent.length; i < max; i++) {
-					translatableContent[i].innerHTML = translatableContent[i].innerHTML.toLocaleString();
-				}
-				translatableContent = $vexContent.find('h4');
-				for (i = 0, max = translatableContent.length; i < max; i++) {
-					translatableContent[i].innerHTML = translatableContent[i].innerHTML.toLocaleString();
-				}
-				translatableContent = $vexContent.find('td');
-				for (i = 0, max = translatableContent.length; i < max; i++) {
-					translatableContent[i].innerHTML = translatableContent[i].innerHTML.toLocaleString();
-				}
-				translatableContent = $vexContent.find('p');
-				for (i = 0, max = translatableContent.length; i < max; i++) {
-					translatableContent[i].innerHTML = translatableContent[i].innerHTML.toLocaleString();
-				}
-				translatableContent = $vexContent.find('button'); // TOC
-				for (i = 0, max = translatableContent.length; i < max; i++) {
-					translatableContent[i].innerHTML = translatableContent[i].innerHTML.toLocaleString();
-				}
+		map.uiManager.showYesNoButton(id + '-box', productName, '', _('OK'), null, null, null, true);
+		var box = document.getElementById(id + '-box');
+		var innerDiv = L.DomUtil.create('div', '', null);
+		box.insertBefore(innerDiv, box.firstChild);
+		innerDiv.innerHTML = data;
 
-				//translatable screenshots
-				var supportedLanguage = ['fr', 'it', 'de', 'es', 'pt-BR'];
-				var currentLanguage = String.locale;
-				if (supportedLanguage.indexOf(currentLanguage) >= 0) {
-					translatableContent = $($vexContent.find('.screenshot')).find('img');
-					for (i = 0, max = translatableContent.length; i < max; i++) {
-						translatableContent[i].src = translatableContent[i].src.replace('/en/', '/'+currentLanguage+'/');
-					}
-				}
-
-				// Substitute %productName in Online Help
-				if (id === 'online-help') {
-					var productNameContent = $vexContent.find('span.productname');
-					for (i = 0, max = productNameContent.length; i < max; i++) {
-						productNameContent[i].innerHTML = productNameContent[i].innerHTML.replace(/%productName/g, productName);
-					}
-				}
-
-				// Special Mac key names
-				if (navigator.appVersion.indexOf('Mac') != -1 || navigator.userAgent.indexOf('Mac') != -1) {
-					var ctrl = /Ctrl/g;
-					var alt = /Alt/g;
-					if (String.locale.startsWith('de') || String.locale.startsWith('dsb') || String.locale.startsWith('hsb')) {
-						ctrl = /Strg/g;
-					}
-					if (String.locale.startsWith('lt')) {
-						ctrl = /Vald/g;
-					}
-					if (String.locale.startsWith('sl')) {
-						ctrl = /Krmilka/gi;
-						alt = /Izmenjalka/gi;
-					}
-					if (id === 'keyboard-shortcuts') {
-						document.getElementById('keyboard-shortcuts').innerHTML = document.getElementById('keyboard-shortcuts').innerHTML.replace(ctrl, '⌘').replace(alt, '⌥');
-					}
-					if (id === 'online-help') {
-						document.getElementById('online-help').innerHTML = document.getElementById('online-help').innerHTML.replace(ctrl, '⌘').replace(alt, '⌥');
-					}
-				}
-
-				$vexContent.attr('tabindex', -1);
-				$vexContent.focus();
-				// workaround for https://github.com/HubSpot/vex/issues/43
-				$('.vex-overlay').css({ 'pointer-events': 'none'});
-			},
-			beforeClose: function () {
-				map.focus();
-			}
-		});
+		this.onHelpOpen(id, map, productName);
 	},
 
 	showHelp: function(id) {
 		var map = this;
 		if (window.ThisIsAMobileApp) {
-			map._doVexOpenHelpFile(window.HelpFile, id, map);
+			map._doOpenHelpFile(window.HelpFile, id, map);
 			return;
 		}
 		var helpLocation = 'cool-help.html';
 		if (window.socketProxy)
-			helpLocation = window.makeWsUrl('/cool/dist/' + helpLocation);
+			helpLocation = window.makeWsUrl('/browser/dist/' + helpLocation);
 		$.get(helpLocation, function(data) {
-			map._doVexOpenHelpFile(data, id, map);
+			map._doOpenHelpFile(data, id, map);
 		});
 	},
 
-	/** Add various content instead of the variables in the Welcome dialog */
-	_replaceVars: function(text) {
-		return text
-			.replace(/%coolVersion/g, app.socket.WSDServer.Version)
-			.replace(/%coolAppsURL/g, 'https://www.collaboraoffice.com/solutions/collabora-office-android-ios/')
-			.replace(/%coolReleaseNotesURL/g, 'https://www.collaboraoffice.com/code-21-11-release-notes/')
-			.replace(/%coolSdkURL/g, 'https://sdk.collaboraonline.com/')
-			.replace(/%coolStepByStepURL/g, 'https://collaboraonline.github.io/post/build-code/')
-			.replace(/%coolTranslationsURL/g, 'https://collaboraonline.github.io/post/translate/')
-			.replace(/%coolBugreportURL/g, 'https://collaboraonline.github.io/post/filebugs/');
+	aboutDialogKeyHandler: function(event) {
+		if (event.key === 'd') {
+			this._docLayer.toggleTileDebugMode();
+		} else if (event.key === 'l') {
+			// L toggges the Online logging level between the default (whatever
+			// is set in coolwsd.xml or on the coolwsd command line) and the
+			// most verbose a client is allowed to set (which also can be set in
+			// coolwsd.xml or on the coolwsd command line).
+			//
+			// In a typical developer "make run" setup, the default is "trace"
+			// so there is nothing more verbose. But presumably it is different
+			// in production setups.
+
+			app.socket.threadLocalLoggingLevelToggle = !app.socket.threadLocalLoggingLevelToggle;
+
+			var newLogLevel = (app.socket.threadLocalLoggingLevelToggle ? 'verbose' : 'default');
+
+			app.socket.sendMessage('loggingleveloverride ' + newLogLevel);
+
+			var logLevelInformation;
+			if (newLogLevel === 'default')
+				logLevelInformation = 'default (from coolwsd.xml)';
+			else if (newLogLevel === 'verbose')
+				logLevelInformation = 'most verbose (from coolwsd.xml)';
+			else if (newLogLevel === 'terse')
+				logLevelInformation = 'least verbose (from coolwsd.xml)';
+			else
+				logLevelInformation = newLogLevel;
+
+			console.debug('Log level: ' + logLevelInformation);
+		}
 	},
 
-	// show the actual welcome dialog with the given data
-	_showWelcomeDialogVex: function(data, calledFromMenu) {
-		var w;
-		var iw = window.innerWidth;
-		var hasDismissBtn = window.enableWelcomeMessageButton;
-		var btnText = _('I understand the risks');
-
-		if (iw < 768) {
-			w = iw - 30;
-		}
-		else if (iw > 1920) {
-			w = 960;
-		}
-		else {
-			w = iw / 5 + 590;
-		}
-
-		if (!hasDismissBtn && window.mode.isMobile()) {
-			var ih = window.innerHeight;
-			var h = ih / 2;
-			if (iw < 768) {
-				h = ih - 170; // Hopefully enough padding to avoid extra scroll-bar on mobile,
-			}
-			var containerDiv = '<div style="max-height:' + h + 'px;overflow-y:auto;">';
-			containerDiv += data;
-			containerDiv += '</div>';
-			data = containerDiv;
-			btnText = _('Dismiss');
-			hasDismissBtn = true;
-		}
-
-		// show the dialog
-		var map = this;
-		vex.dialog.open({
-			unsafeMessage: data,
-			showCloseButton: !hasDismissBtn,
-			escapeButtonCloses: false,
-			overlayClosesOnClick: false,
-			className: !window.mode.isMobile() ? 'vex-theme-plain' : 'vex-theme-plain vex-welcome-mobile',
-			closeAllOnPopState: false,
-			focusFirstInput: false, // Needed to avoid auto-scroll to the bottom
-			buttons: !hasDismissBtn ? {} : [
-				$.extend({}, vex.dialog.buttons.YES, { text: btnText }),
-			],
-			afterOpen: function() {
-				$('#welcome-slide1-heading-1').text(map._replaceVars(_('Explore the new %coolVersion')));
-				$('#welcome-slide1-heading-2').text(_('Collabora Online Development Edition'));
-				$('#welcome-slide1-content').html(map._replaceVars(_('Enjoy the latest developments in online productivity, free for you to use, to explore and to use with others in the browser. <a href="%coolAppsURL" target="_blank">Apps</a> are also available for Android and iOS. %coolVersion introduces important improvements, in the areas of usability, visual presentation and performance.')));
-
-				$('#welcome-slide2-heading-1').text(map._replaceVars(_('Discover all the changes')));
-				$('#welcome-slide2-heading-2').text(_('Collabora Online Development Edition'));
-				$('#welcome-slide2-content').html(map._replaceVars(_('Check the <a href="%coolReleaseNotesURL" target="_blank">release notes</a> and learn all about the latest milestone in performance particularly for larger groups working on documents, new native sidebar, new re-worked avatar list, asynchronous saving, faster spell checking and more.')));
-
-				$('#welcome-slide3-heading-1').text(_('Integrate Collabora Online into your webapp'));
-				$('#welcome-slide3-heading-2').text(_('Or get involved in the development'));
-				$('#welcome-slide3-content').html(map._replaceVars(_('Learn more about integrating into your web application in the <a href="%coolSdkURL" target="_blank">Collabora Online SDK</a>. Or head over to the <a href="%coolStepByStepURL" target="_blank">step-by-step instructions</a> and build CODE from scratch. You can also help out with <a href="%coolTranslationsURL" target="_blank">translations</a> or by <a href="%coolBugreportURL" target="_blank">filing a bug report</a> with all the essential steps on how to reproduce it.')));
-
-				$('#welcome-button-next-1').text(_('Next').replace('~', ''));
-				$('#welcome-button-next-2').text(_('Next').replace('~', ''));
-				$('#welcome-button-close').text(_('Close').replace('~', ''));
-
-				$('#view-supported-versions').text(_('Learn more about the enterprise-ready versions'));
-
-				var $vexContent = $(this.contentEl);
-				this.contentEl.style.width = w + 'px';
-
-				$vexContent.attr('tabindex', -1);
-				// Work-around to avoid the ugly all-bold dialog message on mobile
-				if (window.mode.isMobile()) {
-					var dlgMsg = document.getElementsByClassName('vex-dialog-message')[0];
-					dlgMsg.setAttribute('class', 'vex-content');
-				}
-				$vexContent.focus();
-				// workaround for https://github.com/HubSpot/vex/issues/43
-				$('.vex-overlay').css({ 'pointer-events': 'none'});
-			},
-			beforeClose: function () {
-				if (!calledFromMenu) {
-					localStorage.setItem('WSDWelcomeVersion', app.socket.WSDServer.Version);
-				}
-				map.focus();
-			}
-		});
-	},
-
-	showWelcomeDialog: function(calledFromMenu) {
-		console.log('showWelcomeDialog, calledFromMenu: ' + calledFromMenu);
-		var welcomeLocation = 'welcome/welcome.html';
-		if (window.socketProxy)
-			welcomeLocation = window.makeWsUrl('/cool/dist/' + welcomeLocation);
-
-		var map = this;
-
-		// if the user doesn't accept cookies, or we get several triggers,
-		// ensure we only ever do this once.
-		if (!calledFromMenu && map._alreadyShownWelcomeDialog)
-			return;
-		map._alreadyShownWelcomeDialog = true;
-
-		// try to load the welcome message
-		$.get(welcomeLocation)
-			.done(function(data) {
-				map._showWelcomeDialogVex(data, calledFromMenu);
-			})
-			.fail(function() {
-				var currentDate = new Date();
-				localStorage.setItem('WSDWelcomeDisabled', 'true');
-				localStorage.setItem('WSDWelcomeDisabledDate', currentDate.toDateString());
-
-				if (calledFromMenu)
-					map._showWelcomeDialogVex(_('We are sorry, the information about the latest updates is not available.'));
-			});
-	},
-
-	shouldWelcome: function() {
-		if (!window.isLocalStorageAllowed || !window.enableWelcomeMessage)
-			return false;
-
-		var storedVersion = localStorage.getItem('WSDWelcomeVersion');
-		var currentVersion = app.socket.WSDServer.Version;
-		var welcomeDisabledCookie = localStorage.getItem('WSDWelcomeDisabled');
-		var welcomeDisabledDate = localStorage.getItem('WSDWelcomeDisabledDate');
-		var isWelcomeDisabled = false;
-
-		if (welcomeDisabledCookie && welcomeDisabledDate) {
-			// Check if we are stil in the same day
-			var currentDate = new Date();
-			if (welcomeDisabledDate === currentDate.toDateString())
-				isWelcomeDisabled = true;
-			else {
-				//Values expired. Clear the local values
-				localStorage.removeItem('WSDWelcomeDisabled');
-				localStorage.removeItem('WSDWelcomeDisabledDate');
-			}
-		}
-
-		if ((!storedVersion || storedVersion !== currentVersion) && !isWelcomeDisabled) {
-			return true;
-		}
-
-		return false;
+	aboutDialogClickHandler: function(event) {
+		if (event.detail === 3)
+			this._docLayer.toggleTileDebugMode();
 	},
 
 	showLOAboutDialog: function() {
-
 		// Just as a test to exercise the Async Trace Event functionality, uncomment this
 		// line and the asyncTraceEvent.finish() below.
 		// var asyncTraceEvent = app.socket.createAsyncTraceEvent('cool-showLOAboutDialog');
 
-		// Move the div sitting in 'body' as vex-content and make it visible
-		var content = $('#about-dialog').clone().css({display: 'block'});
+		var aboutDialogId = 'about-dialog';
+		// Move the div sitting in 'body' as content and make it visible
+		var content = document.getElementById(aboutDialogId).cloneNode(true);
+		content.style.display = 'block';
+
 		// fill product-name and product-string
 		var productName;
 		if (window.ThisIsAMobileApp) {
 			productName = window.MobileAppName;
 		} else {
-			productName = (typeof brandProductName !== 'undefined') ? brandProductName : 'Collabora Online Development Edition';
+			productName = (typeof brandProductName !== 'undefined') ? brandProductName : 'Collabora Online Development Edition (unbranded)';
 		}
 		var productURL = (typeof brandProductURL !== 'undefined') ? brandProductURL : 'https://collaboraonline.github.io/';
-		content.find('#product-name').text(productName).addClass('product-' + productName.split(/[ ()]+/).join('-').toLowerCase());
+
+		content.querySelector('#product-name').innerText = productName;
+		content.classList.add('product-' + productName.split(/[ ()]+/).join('-').toLowerCase());
+
 		var productString = _('This version of %productName is powered by');
 		var productNameWithURL;
 		if (!window.ThisIsAMobileApp)
-			productNameWithURL = '<a href="' + sanitizeUrl.sanitizeUrl(productURL) +
+			productNameWithURL = '<a href="' + sanitizeUrl(productURL) +
 								 '" target="_blank">' + productName + '</a>';
 		else
 			productNameWithURL = productName;
-		content.find('#product-string').html(productString.replace('%productName', productNameWithURL));
+
+		if (content.querySelector('#product-string'))
+			content.querySelector('#product-string').innerText = productString.replace('%productName', productNameWithURL);
 
 		if (window.socketProxy)
-			content.find('#slow-proxy').text(_('"Slow Proxy"'));
+			content.querySelector('#slow-proxy').innerText = _('"Slow Proxy"');
 
-		var w;
-		var iw = window.innerWidth;
-		if (iw < 768) {
-			w = iw - 30;
-		}
-		else if (iw > 1920) {
-			w = 960;
-		}
-		else {
-			w = iw / 5 + 590;
-		}
 		var map = this;
-		var handler = function(event) {
-			if (event.key === 'd') {
-				map._docLayer.toggleTileDebugMode();
-			} else if (event.key === 'l') {
-				// L toggges the Online logging level between the default (whatever
-				// is set in coolwsd.xml or on the coolwsd command line) and the
-				// most verbose a client is allowed to set (which also can be set in
-				// coolwsd.xml or on the coolwsd command line).
-				//
-				// In a typical developer "make run" setup, the default is "trace"
-				// so there is nothing more verbose. But presumably it is different
-				// in production setups.
+		if (window.indirectSocket)
+			content.querySelector('#routeToken').innerText = 'RouteToken: ' + window.routeToken;
 
-				app.socket.threadLocalLoggingLevelToggle = !app.socket.threadLocalLoggingLevelToggle;
+		map.uiManager.showYesNoButton(aboutDialogId + '-box', productName, '', _('OK'), null, null, null, true);
+		var box = document.getElementById(aboutDialogId + '-box');
+		var innerDiv = L.DomUtil.create('div', '', null);
+		box.insertBefore(innerDiv, box.firstChild);
+		innerDiv.innerHTML = content.outerHTML;
 
-				var newLogLevel = (app.socket.threadLocalLoggingLevelToggle ? 'verbose' : 'default');
+		var form = document.getElementById('about-dialog-box');
 
-				app.socket.sendMessage('loggingleveloverride ' + newLogLevel);
+		form.addEventListener('click', this.aboutDialogClickHandler.bind(this));
+		form.addEventListener('keyup', this.aboutDialogKeyHandler.bind(this));
+		form.querySelector('#coolwsd-version').querySelector('a').focus();
+		var copyversion = L.DomUtil.create('button', 'ui-pushbutton jsdialog', null);
+		copyversion.setAttribute('id', 'modal-dialog-about-dialog-box-copybutton');
+		copyversion.setAttribute('title', _('Copy all version information in English'));
+		var img = L.DomUtil.create('img', null, null);
+		L.LOUtil.setImage(img, 'lc_copy.svg', this._docLayer._docType);
+		copyversion.innerHTML = '<img src="' + img.src +'" width="18px" height="18px">';
+		copyversion.addEventListener('click', this.copyVersionInfoToClipboard.bind(this));
+		map.uiManager.enableTooltip(copyversion);
+		var aboutok = document.getElementById('modal-dialog-about-dialog-box-yesbutton');
+		if (aboutok) {
+			aboutok.before(copyversion);
+		}
+	},
 
-				var logLevelInformation = newLogLevel;
-				if (newLogLevel === 'default')
-					logLevelInformation = 'default (from coolwsd.xml)';
-				else if (newLogLevel === 'verbose')
-					logLevelInformation = 'most verbose (from coolwsd.xml)';
-				else if (newLogLevel === 'terse')
-					logLevelInformation = 'least verbose (from coolwsd.xml)';
-				else
-					logLevelInformation = newLogLevel;
+	getVersionInfoFromClass: function(className) {
+		var versionElement = document.getElementById(className);
+		var versionInfo = versionElement.innerText;
 
-				$(app.ExpertlyTrickForLOAbout.contentEl).find('#log-level-state').html('Log level: ' + logLevelInformation);
-			} else if (event.key === 't') {
-				// T turns Trace Event recording on in the Kit process
-				// for this document, as long as coolwsd is running with the
-				// trace_event[@enable] config option as true. T again
-				// turns it off.
+		var gitHashIndex = versionInfo.indexOf('git hash');
+		if (gitHashIndex > -1) {
+		  versionInfo = versionInfo.slice(0, gitHashIndex) + '(' + versionInfo.slice(gitHashIndex) + ')';
+		}
 
-				if (app.socket.enableTraceEventLogging) {
-					app.socket.traceEventRecordingToggle = !app.socket.traceEventRecordingToggle;
+		return versionInfo;
+	},
 
-					app.socket.sendMessage('traceeventrecording '
-							       + (app.socket.traceEventRecordingToggle ? 'start' : 'stop'));
+	copyVersionInfoToClipboard: function() {
+		var text = 'COOLWSD version: ' + this.getVersionInfoFromClass('coolwsd-version') + '\n';
+		text += 'LOKit version: ' + this.getVersionInfoFromClass('lokit-version') + '\n';
+		text += 'Served by: ' + document.getElementById('os-info').innerText + '\n';
+		text += 'Server ID: ' + document.getElementById('coolwsd-id').innerText + '\n';
 
-					$(app.ExpertlyTrickForLOAbout.contentEl).find('#trace-event-state').html('Trace Event generation: ' + (app.socket.traceEventRecordingToggle ? 'ON' : 'OFF'));
-					// Just as a test, uncomment this to toggle SAL_WARN and
-					// SAL_INFO selection between two states: 1) the default
-					// as directed by the SAL_LOG environment variable, and
-					// 2) all warnings on plus SAL_INFO for sc.
-					//
-					// (Note that coolwsd sets the SAL_LOG environment variable
-					// to "-WARN-INFO", i.e. the default is that nothing is
-					// logged from core.)
-
-					// app.socket.sendMessage('sallogoverride ' + (app.socket.traceEventRecordingToggle ? '+WARN+INFO.sc' : 'default'));
-				}
+		if (navigator.clipboard && window.isSecureContext) {
+			navigator.clipboard.writeText(text)
+			.then(function() {
+				window.console.log('Text copied to clipboard');
+				this.contentHasBeenCopiedShowSnackbar();
+			}.bind(this))
+			.catch(function(error) {
+				window.console.error('Error copying text to clipboard:', error);
+			});
+		} else {
+			var textArea = document.createElement('textarea');
+			textArea.style.position = 'absolute';
+			textArea.style.opacity = 0;
+			textArea.value = text;
+			document.body.appendChild(textArea);
+			textArea.select();
+			try {
+				document.execCommand('copy');
+				window.console.log('Text copied to clipboard');
+				this.contentHasBeenCopiedShowSnackbar();
+			} catch (error) {
+				window.console.error('Error copying text to clipboard:', error);
+			} finally {
+				document.body.removeChild(textArea);
 			}
-		};
-		vex.open({
-			unsafeContent: content[0].outerHTML,
-			showCloseButton: true,
-			escapeButtonCloses: true,
-			overlayClosesOnClick: true,
-			buttons: {},
-			afterOpen: function() {
+		}
+	},
 
-				var touchGesture = map['touchGesture'];
-				if (touchGesture && touchGesture._hammer) {
-					touchGesture._hammer.off('tripletap', L.bind(touchGesture._onTripleTap, touchGesture));
-				}
-
-				var $vexContent = $(this.contentEl);
-				var hammer = new Hammer.Manager($vexContent.get(0));
-				hammer.add(new Hammer.Tap({ taps: 3 }));
-				hammer.on('tap', function() {
-					map._docLayer.toggleTileDebugMode();
-				});
-
-				this.contentEl.style.width = w + 'px';
-
-				// FIXME: When we remove vex this needs to be cleaned up.
-
-				// It is hard to access the value of "this" in this afterOpen
-				// function in the handler function. Use a global variable until
-				// somebody figures out a better way.
-				app.ExpertlyTrickForLOAbout = this;
-				$(window).bind('keyup.vex', handler);
-				// workaround for https://github.com/HubSpot/vex/issues/43
-				$('.vex-overlay').css({ 'pointer-events': 'none'});
-			},
-			beforeClose: function () {
-				$(window).unbind('keyup.vex', handler);
-				var touchGesture = map['touchGesture'];
-				if (touchGesture && touchGesture._hammer) {
-					touchGesture._hammer.on('tripletap', L.bind(touchGesture._onTripleTap, touchGesture));
-				}
-				map.focus();
-
-				// Unset the global variable, see comment above.
-				app.ExpertlyTrickForLOAbout = undefined;
-				// asyncTraceEvent.finish();
-			}
-		});
+	contentHasBeenCopiedShowSnackbar: function() {
+		var timeout = 1000;
+		this.uiManager.showSnackbar('Version information has been copied', null, null, timeout);
+		var copybutton = document.querySelector('#modal-dialog-about-dialog-box-copybutton > img');
+		L.LOUtil.setImage(copybutton, 'lc_clipboard-check.svg', this._docLayer._docType);
+		setTimeout(function () {
+			L.LOUtil.setImage(copybutton, 'lc_copy.svg', this._docLayer._docType);
+		}.bind(this), timeout);
 	},
 
 	extractContent: function(html) {
@@ -865,13 +744,90 @@ L.Map.include({
 		return str;
 	},
 
-	showHyperlinkDialog: function() {
+	_createAndRunHyperlinkDialog: function(defaultText, defaultLink) {
+		var map = this;
+		var id = 'hyperlink';
+		var title = _('Insert hyperlink');
+
+		var dialogId = 'modal-dialog-' + id;
+		var json = map.uiManager._modalDialogJSON(id, title, true, [
+			{
+				id: 'hyperlink-text-box-label',
+				type: 'fixedtext',
+				text: _('Text'),
+				labelFor: 'hyperlink-text-box'
+			},
+			{
+				id: 'hyperlink-text-box',
+				type: 'multilineedit',
+				text: defaultText,
+				labelledBy: 'hyperlink-text-box-label'
+			},
+			{
+				id: 'hyperlink-link-box-label',
+				type: 'fixedtext',
+				text: _('Link'),
+				labelFor: 'hyperlink-link-box'
+			},
+			{
+				id: 'hyperlink-link-box',
+				type: 'edit',
+				text: defaultLink,
+				labelledBy: 'hyperlink-link-box-label'
+			},
+			{
+				type: 'buttonbox',
+				enabled: true,
+				children: [
+					{
+						id: 'response-cancel',
+						type: 'pushbutton',
+						text: _('Cancel'),
+					},
+					{
+						id: 'response-ok',
+						type: 'pushbutton',
+						text: _('OK'),
+						'has_default': true,
+					}
+				],
+				vertical: false,
+				layoutstyle: 'end'
+			},
+		], 'hyperlink-link-box');
+
+		map.uiManager.showModal(json, [
+			{id: 'response-ok', func: function() {
+				var text = document.getElementById('hyperlink-text-box');
+				var link = document.getElementById('hyperlink-link-box');
+
+				if (link.value != '') {
+					if (!text.value || text.value === '')
+						text.value = link.value;
+
+					var command = {
+						'Hyperlink.Text': {
+							type: 'string',
+							value: text.value
+						},
+						'Hyperlink.URL': {
+							type: 'string',
+							value: map.makeURLFromStr(link.value)
+						}
+					};
+					map.sendUnoCommand('.uno:SetHyperlink', command, true);
+				}
+
+				map.uiManager.closeModal(dialogId);
+			}}
+		]);
+	},
+
+	getTextForLink: function() {
 		var map = this;
 		var text = '';
-		var link = '';
-		if (this.hyperlinkUnderCursor && this.hyperlinkUnderCursor.text && this.hyperlinkUnderCursor.link) {
+		if (this.hyperlinkUnderCursor && this.hyperlinkUnderCursor.text) {
 			text = this.hyperlinkUnderCursor.text;
-			link = this.hyperlinkUnderCursor.link;
 		} else if (this._clip && this._clip._selectionType == 'text') {
 			if (map['stateChangeHandler'].getItemValue('.uno:Copy') === 'enabled') {
 				text = this.extractContent(this._clip._selectionContent);
@@ -879,51 +835,16 @@ L.Map.include({
 		} else if (this._docLayer._selectedTextContent) {
 			text = this.extractContent(this._docLayer._selectedTextContent);
 		}
+		return text;
+	},
 
-		vex.dialog.open({
-			contentClassName: 'hyperlink-dialog',
-			message: _('Insert hyperlink'),
-			overlayClosesOnClick: false,
-			input: [
-				_('Text') + '<textarea name="text" id="hyperlink-text-box" style="resize: none" type="text"></textarea>',
-				_('Link') + '<input name="link" id="hyperlink-link-box" type="text" value="' + link + '"/>'
-			].join(''),
-			buttons: [
-				$.extend({}, vex.dialog.buttons.YES, { text: _('OK') }),
-				$.extend({}, vex.dialog.buttons.NO, { text: _('Cancel') })
-			],
-			callback: function(data) {
-				if (data && data.link != '') {
-					var command = {
-						'Hyperlink.Text': {
-							type: 'string',
-							value: data.text
-						},
-						'Hyperlink.URL': {
-							type: 'string',
-							value: map.makeURLFromStr(data.link)
-						}
-					};
-					map.sendUnoCommand('.uno:SetHyperlink', command);
-					map.focus();
-				}
-				else {
-					map.focus();
-				}
-			},
-			afterOpen: function() {
-				setTimeout(function() {
-					var textBox = document.getElementById('hyperlink-text-box');
-					textBox.textContent = text ? text.trim() : '';
-					if (textBox.textContent.trim() !== '') {
-						document.getElementById('hyperlink-link-box').focus();
-					}
-					else {
-						textBox.focus();
-					}
-				}, 0);
-			}
-		});
+	showHyperlinkDialog: function() {
+		var text = this.getTextForLink();
+		var link = '';
+		if (this.hyperlinkUnderCursor && this.hyperlinkUnderCursor.link)
+			link = this.hyperlinkUnderCursor.link;
+
+		this._createAndRunHyperlinkDialog(text ? text.trim() : '', link);
 	},
 
 	openRevisionHistory: function () {
@@ -937,8 +858,217 @@ L.Map.include({
 		var map = this;
 		map.fire('postMessage', {msgId: 'UI_Share'});
 	},
-	openSaveAs: function () {
+	openSaveAs: function (format) {
 		var map = this;
-		map.fire('postMessage', {msgId: 'UI_SaveAs'});
+		map.fire('postMessage', {msgId: 'UI_SaveAs', args: {format: format}});
+	},
+
+	formulabarBlur: function() {
+		if (!this.uiManager.isAnyDialogOpen())
+			this.focus();
+	},
+
+	formulabarFocus: function() {
+		this.formulabar.focus();
+	},
+
+	formulabarSetDirty: function() {
+		if (this.formulabar)
+			this.formulabar.dirty = true;
+	},
+
+	setAccessibilityState: function(enable) {
+		if (this._accessibilityState === enable)
+			return;
+		this._accessibilityState = enable;
+		app.socket.sendMessage('a11ystate ' + enable);
+
+		this.removeLayer(this._textInput);
+		this._textInput = enable ? L.a11yTextInput() : L.textInput();
+		this.addLayer(this._textInput);
+		if (enable) {
+			this._textInput._requestFocusedParagraph();
+		}
+		this._textInput.showCursor();
+	},
+
+	// map.dispatch() will be used to call some actions so we can share the code
+	dispatch: function(action) {
+		// Don't allow to execute new actions while any dialog is visible.
+		// It prevents launching multiple instances of the same dialog.
+		if (this.dialog.hasOpenedDialog() || (this.jsdialog && this.jsdialog.hasDialogOpened())) {
+			this.dialog.blinkOpenDialog();
+			console.debug('Cannot dispatch: ' + action + ' when dialog is opened.');
+			return;
+		}
+
+		if (action.indexOf('saveas-') === 0) {
+			var format = action.substring('saveas-'.length);
+			this.openSaveAs(format);
+			return;
+		} else if (action.indexOf('downloadas-') === 0) {
+			var format = action.substring('downloadas-'.length);
+			var fileName = this['wopi'].BaseFileName;
+			fileName = fileName.substr(0, fileName.lastIndexOf('.'));
+			fileName = fileName === '' ? 'document' : fileName;
+			this.downloadAs(fileName + '.' + format, format);
+			return;
+		} if (action.indexOf('exportas-') === 0) {
+			var format = action.substring('exportas-'.length);
+			this.openSaveAs(format);
+			return;
+		}
+
+		switch (action) {
+		case 'acceptformula':
+			{
+				if (window.mode.isMobile()) {
+					this.focus();
+					this._docLayer.postKeyboardEvent('input',
+						this.keyboard.keyCodes.enter,
+						this.keyboard._toUNOKeyCode(this.keyboard.keyCodes.enter));
+				} else {
+					this.sendUnoCommand('.uno:AcceptFormula');
+				}
+
+				this.onFormulaBarBlur();
+				this.formulabarBlur();
+				this.formulabarSetDirty();
+			}
+			break;
+		case 'cancelformula':
+			{
+				this.sendUnoCommand('.uno:Cancel');
+				this.onFormulaBarBlur();
+				this.formulabarBlur();
+				this.formulabarSetDirty();
+			}
+			break;
+		case 'startformula':
+			{
+				this.sendUnoCommand('.uno:StartFormula');
+				this.onFormulaBarFocus();
+				this.formulabarFocus();
+				this.formulabarSetDirty();
+			}
+			break;
+		case 'functiondialog':
+			{
+				if (window.mode.isMobile() && this._functionWizardData) {
+					this._docLayer._closeMobileWizard();
+					this._docLayer._openMobileWizard(this._functionWizardData);
+					this.formulabarSetDirty();
+				} else {
+					this.sendUnoCommand('.uno:FunctionDialog');
+				}
+			}
+			break;
+		case 'remotelink':
+			this.fire('postMessage', { msgId: 'UI_PickLink' });
+			break;
+		case 'zoteroaddeditcitation':
+			{
+				this.zotero.handleItemList();
+			}
+			break;
+		case 'zoterosetdocprefs':
+			{
+				this.zotero.handleStyleList();
+			}
+			break;
+		case 'zoteroaddeditbibliography':
+			{
+				this.zotero.insertBibliography();
+			}
+			break;
+		case 'zoteroaddnote':
+			{
+				this.zotero.handleInsertNote();
+			}
+			break;
+		case 'zoterorefresh':
+			{
+				this.zotero.refreshCitationsAndBib();
+			}
+			break;
+		case 'zoterounlink':
+			{
+				this.zotero.unlinkCitations();
+			}
+			break;
+		case 'exportpdf':
+			{
+				this.sendUnoCommand('.uno:ExportToPDF', {
+					'SynchronMode': {
+						'type': 'boolean',
+						'value': false
+					}
+				});
+			}
+			break;
+		case 'exportdirectpdf':
+			{
+				this.sendUnoCommand('.uno:ExportDirectToPDF', {
+					'SynchronMode': {
+						'type': 'boolean',
+						'value': false
+					}
+				});
+			}
+			break;
+		case 'exportepub':
+			{
+				this.sendUnoCommand('.uno:ExportToEPUB', {
+					'SynchronMode': {
+						'type': 'boolean',
+						'value': false
+					}
+				});
+			}
+			break;
+		case 'deletepage':
+			{
+				var map = this;
+				var msg;
+				if (map.getDocType() === 'presentation') {
+					msg = _('Are you sure you want to delete this slide?');
+				}
+				else { /* drawing */
+					msg = _('Are you sure you want to delete this page?');
+				}
+				map.uiManager.showInfoModal('deleteslide-modal', _('Delete'),
+					msg, '', _('OK'), function () { map.deletePage(); }, true, 'deleteslide-modal-response');
+			}
+			break;
+		case 'hyperlinkdialog':
+			this.showHyperlinkDialog();
+			break;
+		case 'rev-history':
+			this.openRevisionHistory();
+			break;
+		case 'shareas':
+			this.openShare();
+			break;
+		case 'presentation':
+			this.fire('fullscreen');
+			break;
+		case 'charmapcontrol':
+			this.sendUnoCommand('.uno:InsertSymbol');
+			break;
+		case 'closetablet':
+			this.uiManager.enterReadonlyOrClose();
+			break;
+		case 'showresolvedannotations':
+			var items = this['stateChangeHandler'];
+			var val = items.getItemValue('.uno:ShowResolvedAnnotations');
+			val = (val === 'true' || val === true);
+			this.showResolvedComments(!val);
+			break;
+		case 'toggledarktheme':
+			this.uiManager.toggleDarkMode();
+			break;
+		default:
+			console.error('unknown dispatch: "' + action + '"');
+		}
 	},
 });

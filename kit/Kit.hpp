@@ -12,6 +12,7 @@
 #include <string>
 
 #include <common/Util.hpp>
+#include <wsd/TileDesc.hpp>
 
 #define LOK_USE_UNSTABLE_API
 #include <LibreOfficeKit/LibreOfficeKit.hxx>
@@ -30,7 +31,6 @@ void lokit_main(
                 const std::string& jailId,
                 const std::string& sysTemplate,
                 const std::string& loTemplate,
-                const std::string& loSubPath,
                 bool noCapabilities,
                 bool noSeccomp,
                 bool queryVersionInfo,
@@ -84,16 +84,19 @@ private:
 struct UserInfo
 {
     UserInfo()
+        : _readOnly(false)
     {
     }
 
     UserInfo(const std::string& userId,
              const std::string& userName,
              const std::string& userExtraInfo,
+             const std::string& userPrivateInfo,
              bool readOnly) :
         _userId(userId),
         _userName(userName),
         _userExtraInfo(userExtraInfo),
+        _userPrivateInfo(userPrivateInfo),
         _readOnly(readOnly)
     {
     }
@@ -113,6 +116,11 @@ struct UserInfo
         return _userExtraInfo;
     }
 
+    const std::string& getUserPrivateInfo() const
+    {
+        return _userPrivateInfo;
+    }
+
     bool isReadOnly() const
     {
         return _readOnly;
@@ -122,15 +130,21 @@ private:
     std::string _userId;
     std::string _userName;
     std::string _userExtraInfo;
+    std::string _userPrivateInfo;
     bool _readOnly;
 };
+
+
+/// We have two types of password protected documents
+/// 1) Documents which require password to view
+/// 2) Document which require password to modify
+enum class DocumentPasswordType { ToView, ToModify };
 
 /// Check the ForkCounter, and if non-zero, fork more of them accordingly.
 /// @param limit If non-zero, set the ForkCounter to this limit.
 void forkLibreOfficeKit(const std::string& childRoot,
                         const std::string& sysTemplate,
                         const std::string& loTemplate,
-                        const std::string& loSubPath,
                         int limit = 0);
 
 /// Anonymize the basename of filenames, preserving the path and extension.
@@ -139,9 +153,17 @@ std::string anonymizeUrl(const std::string& url);
 /// Anonymize usernames.
 std::string anonymizeUsername(const std::string& username);
 
+/// Ensure there is no fatal system setup problem
+void consistencyCheckJail();
+
+/// Fetch the latest montonically incrementing wire-id
+TileWireId getCurrentWireId(bool increment = false);
+
 #ifdef __ANDROID__
 /// For the Android app, for now, we need access to the one and only document open to perform eg. saveAs() for printing.
 std::shared_ptr<lok::Document> getLOKDocumentForAndroidOnly();
 #endif
+
+extern _LibreOfficeKit* loKitPtr;
 
 /* vim:set shiftwidth=4 softtabstop=4 expandtab: */

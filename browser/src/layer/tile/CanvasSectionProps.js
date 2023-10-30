@@ -1,10 +1,11 @@
+/* -*- js-indent-level: 8; fill-column: 100 -*- */
 /*
-* CanvasSectionProps
-*
-* It's really difficult to set drawing and processing orders of sections, since they are mostly defined on different files.
-* So we have this file, to manage their orders easily. Define them here, globally. Then you can use from everywhere.
-* Refer to CanvasSectionContainer.ts for definitions of processingOrder, drawingOrder and zIndex.
-*/
+ * CanvasSectionProps
+ *
+ * It's really difficult to set drawing and processing orders of sections, since they are mostly defined on different files.
+ * So we have this file, to manage their orders easily. Define them here, globally. Then you can use from everywhere.
+ * Refer to CanvasSectionContainer.ts for definitions of processingOrder, drawingOrder and zIndex.
+ */
 /* global L */
 
 L.CSections = {};
@@ -32,6 +33,7 @@ L.CSections.Comment =				{ name: 'comment'			, zIndex: 9	}; // This class is for
 
 L.CSections.AutoFillMarker = 		{ name: 'auto fill marker'	, zIndex: 10};
 
+L.CSections.ContentControl =        { name: 'content control'   , zIndex: 11 };
 /* Processing and drawing orders are meaningful between sections with the same zIndex. */
 /* Processing order	: Important for locations and sizes of sections. */
 /* Drawing order	: Highest with the same zIndex will be drawn on top. */
@@ -56,7 +58,6 @@ L.CSections.Tiles.drawingOrder = 					50; // Writer & Impress & Calc.
 L.CSections.CommentList.drawingOrder =				55; // Writer & Impress.
 L.CSections.Debug.TilePixelGrid.drawingOrder = 		60; // Writer & Impress & Calc.
 L.CSections.Overlays.drawingOrder =					71; // Writer & Impress & Calc.
-L.CSections.CalcGrid.drawingOrderDebug =            80; // Calc debug mode.
 L.CSections.Debug.Splits.drawingOrder = 			90; // Calc.
 L.CSections.RowGroup.drawingOrder =					100; // Calc.
 L.CSections.ColumnGroup.drawingOrder =				110; // Calc.
@@ -82,3 +83,9 @@ L.CSections.Comment.drawingOrder =					1; // Writer & Imnpress & Calc.
 L.CSections.AutoFillMarker.processingOrder =		1; // Calc.
 
 L.CSections.AutoFillMarker.drawingOrder =			1; // Calc.
+
+
+/* zIndex = 11  */
+L.CSections.ContentControl.processingOrder =		1; // Writer.
+
+L.CSections.ContentControl.drawingOrder =			1; // Writer.

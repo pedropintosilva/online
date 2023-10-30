@@ -4,11 +4,12 @@ var helper = require('../../common/helper');
 var mobileHelper = require('../../common/mobile_helper');
 var impressHelper = require('../../common/impress_helper');
 
-describe('Impress focus tests', function() {
-	var testFileName = 'focus.odp';
+describe(['tagmobile', 'tagproxy'], 'Impress focus tests', function() {
+	var origTestFileName = 'focus.odp';
+	var testFileName;
 
 	beforeEach(function() {
-		helper.beforeAll(testFileName, 'impress');
+		testFileName = helper.beforeAll(origTestFileName, 'impress');
 	});
 
 	afterEach(function() {
@@ -22,12 +23,11 @@ describe('Impress focus tests', function() {
 		impressHelper.assertNotInTextEditMode();
 
 		// Body has the focus -> can't type in the document
-		cy.document().its('activeElement.tagName')
-			.should('be.eq', 'BODY');
+		helper.assertFocus('tagName', 'BODY');
 
 		// One tap on a text shape, on the whitespace area,
 		// does not start editing.
-		cy.get('#document-container')
+		cy.cGet('#document-container')
 			.then(function(items) {
 				expect(items).have.length(1);
 
@@ -36,19 +36,16 @@ describe('Impress focus tests', function() {
 				let posY = items[0].getBoundingClientRect().top + items[0].getBoundingClientRect().height / 2;
 				cy.log('Got left-bottom quantile at (' + posX + ', ' + posY + ')');
 
-				cy.get('#document-container')
-					.click(posX, posY);
+				cy.cGet('#document-container').click(posX, posY);
 			});
 
 		// No focus
-		cy.document().its('activeElement.tagName')
-			.should('be.eq', 'BODY');
+		helper.assertFocus('tagName', 'BODY');
 
 		cy.wait(1000);
 
 		// Shape selection.
-		cy.get('.leaflet-pane.leaflet-overlay-pane svg g')
-			.should('exist');
+		cy.cGet('.leaflet-pane.leaflet-overlay-pane svg g').should('exist');
 
 		// But no editing.
 		impressHelper.assertNotInTextEditMode();
@@ -61,8 +58,7 @@ describe('Impress focus tests', function() {
 		impressHelper.assertNotInTextEditMode();
 
 		// Enter edit mode by double-clicking.
-		cy.get('#document-container')
-			.dblclick();
+		cy.cGet('#document-container').dblclick();
 
 		cy.wait(1000);
 
@@ -74,8 +70,7 @@ describe('Impress focus tests', function() {
 		impressHelper.assertNotInTextEditMode();
 
 		// Enter edit mode by double-clicking again.
-		cy.get('#document-container')
-			.dblclick();
+		cy.cGet('#document-container').dblclick();
 
 		// Clear the text.
 		helper.clearAllText();
@@ -89,7 +84,7 @@ describe('Impress focus tests', function() {
 
 		impressHelper.assertNotInTextEditMode();
 
-		cy.get('#document-container')
+		cy.cGet('#document-container')
 			.then(function(items) {
 				expect(items).have.length(1);
 
@@ -99,8 +94,7 @@ describe('Impress focus tests', function() {
 				cy.log('Got center coordinates at (' + posX + ', ' + posY + ')');
 
 				// Start editing; click on the text.
-				cy.get('#document-container')
-					.click(posX, posY);
+				cy.cGet('#document-container').click(posX, posY);
 
 				impressHelper.typeTextAndVerify('Hello Impress');
 
@@ -110,12 +104,11 @@ describe('Impress focus tests', function() {
 				impressHelper.assertNotInTextEditMode();
 
 				// Single-click to re-edit.
-				cy.get('#document-container')
+				cy.cGet('#document-container')
 					.then(function(items) {
 						expect(items).have.length(1);
 
-						cy.get('#document-container')
-							.click(posX, posY);
+						cy.cGet('#document-container').click(posX, posY);
 
 						impressHelper.assertInTextEditMode();
 

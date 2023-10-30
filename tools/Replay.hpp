@@ -10,6 +10,7 @@
 #include <math.h>
 #include <chrono>
 #include <cstring>
+#include <unordered_map>
 
 #include "Socket.hpp"
 #include "WebSocketHandler.hpp"
@@ -80,13 +81,79 @@ struct Histogram {
 struct Stats {
     Stats() :
         _start(std::chrono::steady_clock::now()),
-        _tileCount(0)
+        _bytesSent(0),
+        _bytesRecvd(0),
+        _tileCount(0),
+        _connections(0)
     {
     }
     std::chrono::steady_clock::time_point _start;
+    size_t _bytesSent;
+    size_t _bytesRecvd;
     size_t _tileCount;
+    size_t _connections;
     Histogram _pingLatency;
     Histogram _tileLatency;
+
+    // message size breakdown
+    struct MessageStat {
+        size_t size;
+        size_t count;
+    };
+    std::unordered_map<std::string, MessageStat> _recvd;
+    std::unordered_map<std::string, MessageStat> _sent;
+
+    void accumulate(std::unordered_map<std::string, MessageStat> &map,
+                    const std::string token, size_t size)
+    {
+        auto it = map.find(token);
+        MessageStat st = { 0, 0 };
+        if (it != map.end())
+            st = it->second;
+        st.size += size;
+        st.count++;
+        map[token] = st;
+    }
+
+    void accumulateRecv(const std::string &token, size_t size)
+    {
+        _bytesRecvd += size;
+        accumulate(_recvd, token, size);
+    }
+
+    void accumulateSend(const char* msg, const size_t len, bool /* flush */)
+    {
+        _bytesSent += len;
+        size_t i;
+        for (i = 0; i < len && msg[i] != ' '; ++i);
+        accumulate(_sent, std::string(msg, std::min(i, size_t(len))), len);
+    }
+
+    void addConnection() { _connections++; }
+
+    void dumpMap(std::unordered_map<std::string, MessageStat> &map)
+    {
+        // how much from each command ?
+        std::vector<std::string> sortKeys;
+        size_t total = 0;
+        for(const auto& it : map)
+        {
+            sortKeys.push_back(it.first);
+            total += it.second.size;
+        }
+        std::sort(sortKeys.begin(), sortKeys.end(),
+                  [&](const std::string &a, const std::string &b)
+                      { return map[a].size > map[b].size; } );
+        std::cout << "size\tcount\tcommand\n";
+        for (const auto& it : sortKeys)
+        {
+            std::cout << map[it].size << "\t"
+                      << map[it].count << "\t" << it << "\n";
+            if (map[it].size < (total / 100))
+                break;
+        }
+    }
+
     void dump()
     {
         const auto now = std::chrono::steady_clock::now();
@@ -95,17 +162,31 @@ struct Stats {
         std::cout << "  tiles: " << _tileCount << " => TPS: " << ((_tileCount * 1000.0)/runMs) << "\n";
         _pingLatency.dump("ping latency:");
         _tileLatency.dump("tile latency:");
+        size_t recvKbps = (_bytesRecvd * 1000) / (_connections * runMs * 1024);
+        size_t sentKbps = (_bytesSent * 1000) / (_connections * runMs * 1024);
+        std::cout << "  we sent " << Util::getHumanizedBytes(_bytesSent) <<
+            " (" << sentKbps << " kB/s) " <<
+            " server sent " << Util::getHumanizedBytes(_bytesRecvd) <<
+            " (" << recvKbps << " kB/s) to " << _connections << " connections.\n";
+
+        std::cout << "we sent:\n";
+        dumpMap(_sent);
+
+        std::cout << "server sent us:\n";
+        dumpMap(_recvd);
     }
 };
 
 // Avoid a MessageHandler for now.
 class StressSocketHandler : public WebSocketHandler
 {
+    SocketPoll &_poll;
     TraceFileReader _reader;
     TraceFileRecord _next;
     std::chrono::steady_clock::time_point _start;
     std::chrono::steady_clock::time_point _nextPing;
     bool _connecting;
+    std::string _logPre;
     std::string _uri;
     std::string _trace;
 
@@ -113,28 +194,32 @@ class StressSocketHandler : public WebSocketHandler
     std::chrono::steady_clock::time_point _lastTile;
 
 public:
-
-    StressSocketHandler(const std::shared_ptr<Stats> stats,
-                        const std::string &uri, const std::string &trace) :
+    StressSocketHandler(SocketPoll &poll, /* bad style */
+                        const std::shared_ptr<Stats> stats,
+                        const std::string &uri, const std::string &trace,
+                        const int delayMs = 0) :
         WebSocketHandler(true, true),
+        _poll(poll),
         _reader(trace),
         _connecting(true),
         _uri(uri),
         _trace(trace),
         _stats(stats)
     {
+        assert(_stats && "stats must be provided");
+
+        static std::atomic<int> number;
+        _logPre = "[" + std::to_string(++number) + "] ";
         std::cerr << "Attempt connect to " << uri << " for trace " << _trace << "\n";
         getNextRecord();
-        _start = std::chrono::steady_clock::now();
+        _start = std::chrono::steady_clock::now() + std::chrono::milliseconds(delayMs);
         _nextPing = _start + std::chrono::milliseconds((long)(std::rand() * 1000.0) / RAND_MAX);
         _lastTile = _start;
-        sendMessage("load url=" + uri);
     }
 
     void gotPing(WSOpCode /* code */, int pingTimeUs) override
     {
-        if (_stats)
-            _stats->_pingLatency.addTime(pingTimeUs/1000);
+        _stats->_pingLatency.addTime(pingTimeUs/1000);
     }
 
     int getPollEvents(std::chrono::steady_clock::time_point now,
@@ -142,7 +227,7 @@ public:
     {
         if (_connecting)
         {
-            std::cerr << "Waiting for outbound connection to " << _uri <<
+            std::cerr << _logPre << "Waiting for outbound connection to " << _uri <<
                 " to complete for trace " << _trace << "\n";
             return POLLOUT;
         }
@@ -198,14 +283,15 @@ public:
     void performWrites(std::size_t capacity) override
     {
         if (_connecting)
-            std::cerr << "Outbound websocket - connected\n";
+            std::cerr << _logPre << "Outbound websocket - connected\n";
         _connecting = false;
         return WebSocketHandler::performWrites(capacity);
     }
 
     void onDisconnect() override
     {
-        std::cerr << "Websocket " << _uri << " dis-connected, re-trying in 20 seconds\n";
+        std::cerr << _logPre << "Websocket " << _uri <<
+            " dis-connected, re-trying in 20 seconds\n";
         WebSocketHandler::onDisconnect();
     }
 
@@ -218,13 +304,13 @@ public:
         std::string msg = rewriteMessage(_next.getPayload());
         if (!msg.empty())
         {
-            std::cerr << "Send: '" << msg << "'\n";
+            std::cerr << _logPre << "Send: '" << msg << "'\n";
             sendMessage(msg);
         }
 
         if (!getNextRecord())
         {
-            std::cerr << "Shutdown\n";
+            std::cerr << _logPre << "Shutdown\n";
             shutdown();
         }
     }
@@ -232,7 +318,7 @@ public:
     std::string rewriteMessage(const std::string &msg)
     {
         const std::string firstLine = COOLProtocol::getFirstLine(msg);
-        StringVector tokens = Util::tokenize(firstLine);
+        StringVector tokens = StringVector::tokenize(firstLine);
 
         std::string out = msg;
 
@@ -247,7 +333,7 @@ public:
             out = "load url=" + _uri; // already encoded
             for (size_t i = 2; i < tokens.size(); ++i)
                 out += " " + tokens[i];
-            std::cerr << "msg " << out << "\n";
+            std::cerr << _logPre << "msg " << out << "\n";
         }
 
         // FIXME: translate mouse events relative to view-port etc.
@@ -260,51 +346,82 @@ public:
         const auto now = std::chrono::steady_clock::now();
 
         const std::string firstLine = COOLProtocol::getFirstLine(data.data(), data.size());
-        StringVector tokens = Util::tokenize(firstLine);
-        std::cerr << "Got a message ! " << firstLine << "\n";
+        StringVector tokens = StringVector::tokenize(firstLine);
+        std::cerr << _logPre << "Got msg: " << firstLine << "\n";
+
+        _stats->accumulateRecv(tokens[0], data.size());
 
         if (tokens.equals(0, "tile:")) {
             // accumulate latencies
-            if (_stats) {
-                _stats->_tileLatency.addTime(std::chrono::duration_cast<std::chrono::milliseconds>(now - _lastTile).count());
-                _stats->_tileCount++;
-            }
+            _stats->_tileLatency.addTime(std::chrono::duration_cast<std::chrono::milliseconds>(now - _lastTile).count());
+            _stats->_tileCount++;
             _lastTile = now;
 
             // eg. tileprocessed tile=0:9216:0:3072:3072:0
             TileDesc desc = TileDesc::parse(tokens);
+
             sendMessage("tileprocessed tile=" + desc.generateID());
+            std::cerr << _logPre << "Sent tileprocessed tile= " + desc.generateID() << "\n";
+        } if (tokens.equals(0, "error:")) {
+
+            bool reconnect = false;
+            if (firstLine == "error: cmd=load kind=docunloading")
+            {
+                std::cerr << ": wait and try again later ...!\n";
+                reconnect = true;
+            }
+            else if (firstLine == "error: cmd=storage kind=documentconflict")
+            {
+                std::cerr << "Document conflict - need to resolve it first ...\n";
+                sendMessage("closedocument");
+                reconnect = true;
+            }
+            else
+            {
+                std::cerr << _logPre << "Error while processing " << _uri
+                          << " and trace " << _trace << ":\n"
+                          << "'" << firstLine << "'\n";
+            }
+
+            if (reconnect)
+            {
+                shutdown(true, "bye");
+                auto handler = std::make_shared<StressSocketHandler>(
+                    _poll, _stats, _uri, _trace, 1000 /* delay 1 second */);
+                _poll.insertNewWebSocketSync(Poco::URI(_uri), handler);
+                return;
+            }
+            else
+                Util::forcedExit(EX_SOFTWARE);
         }
 
         // FIXME: implement code to send new view-ports based
         // on cursor position etc.
     }
 
+    /// override ProtocolHandlerInterface piece
+    int sendTextMessage(const char* msg, const size_t len, bool flush = false) const override
+    {
+        _stats->accumulateSend(msg, len, flush);
+        return WebSocketHandler::sendTextMessage(msg, len, flush);
+    }
+
     static void addPollFor(SocketPoll &poll, const std::string &server,
                            const std::string &filePath, const std::string &tracePath,
-                           const std::shared_ptr<Stats> &optStats = nullptr)
+                           const std::shared_ptr<Stats> &optStats)
     {
+        assert(optStats && "optStats must be provided");
+
         std::string file, wrap;
         std::string fileabs = Poco::Path(filePath).makeAbsolute().toString();
         Poco::URI::encode("file://" + fileabs, ":/?", file);
         Poco::URI::encode(file, ":/?", wrap); // double encode.
         std::string uri = server + "/cool/" + wrap + "/ws";
 
-        auto handler = std::make_shared<StressSocketHandler>(optStats, file, tracePath);
+        auto handler = std::make_shared<StressSocketHandler>(poll, optStats, file, tracePath);
         poll.insertNewWebSocketSync(Poco::URI(uri), handler);
-    }
 
-    /// Attach to @server, load @filePath and replace @tracePath
-    static void replaySync(const std::string &server,
-                           const std::string &filePath,
-                           const std::string &tracePath)
-    {
-        TerminatingPoll poll("replay");
-
-        addPollFor(poll, server, filePath, tracePath);
-        do {
-            poll.poll(TerminatingPoll::DefaultPollTimeoutMicroS);
-        } while (poll.continuePolling() && poll.getSocketCount() > 0);
+        optStats->addConnection();
     }
 };
 

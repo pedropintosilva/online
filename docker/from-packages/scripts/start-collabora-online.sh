@@ -3,9 +3,6 @@
 # License, v. 2.0. If a copy of the MPL was not distributed with this
 # file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
-# Fix domain name resolution from jails
-cp /etc/resolv.conf /etc/hosts /opt/cool/systemplate/etc/
-
 if test "${DONT_GEN_SSL_CERT-set}" = set; then
 # Generate new SSL certificate instead of using the default
 mkdir -p /tmp/ssl/
@@ -24,9 +21,9 @@ else
 openssl req -key certs/servers/localhost/privkey.pem -new -sha256 -out certs/tmp/localhost.csr.pem -subj "/C=DE/ST=BW/L=Stuttgart/O=Dummy Authority/CN=${cert_domain}"
 fi
 openssl x509 -req -in certs/tmp/localhost.csr.pem -CA certs/ca/root.crt.pem -CAkey certs/ca/root.key.pem -CAcreateserial -out certs/servers/localhost/cert.pem -days 9131
-mv certs/servers/localhost/privkey.pem /etc/coolwsd/key.pem
-mv certs/servers/localhost/cert.pem /etc/coolwsd/cert.pem
-mv certs/ca/root.crt.pem /etc/coolwsd/ca-chain.cert.pem
+mv -f certs/servers/localhost/privkey.pem /etc/coolwsd/key.pem
+mv -f certs/servers/localhost/cert.pem /etc/coolwsd/cert.pem
+mv -f certs/ca/root.crt.pem /etc/coolwsd/ca-chain.cert.pem
 fi
 
 # Disable warning/info messages of LOKit by default
@@ -35,8 +32,8 @@ SAL_LOG="-INFO-WARN"
 fi
 
 # Replace trusted host and set admin username and password - only if they are set
-if test -n "${domain}"; then
-    perl -pi -e "s/localhost<\/host>/${domain}<\/host>/g" /etc/coolwsd/coolwsd.xml
+if test -n "${aliasgroup1}" -o -n "${domain}" -o -n "${remoteconfigurl}"; then
+    perl -w /start-collabora-online.pl || { exit 1; }
 fi
 if test -n "${username}"; then
     perl -pi -e "s/<username (.*)>.*<\/username>/<username \1>${username}<\/username>/" /etc/coolwsd/coolwsd.xml
@@ -52,14 +49,14 @@ if test -n "${dictionaries}"; then
 fi
 
 # Restart when /etc/coolwsd/coolwsd.xml changes
-[ -x /usr/bin/inotifywait -a /usr/bin/killall ] && (
+[ -x /usr/bin/inotifywait -a -x /usr/bin/killall ] && (
   /usr/bin/inotifywait -e modify /etc/coolwsd/coolwsd.xml
   echo "$(ls -l /etc/coolwsd/coolwsd.xml) modified --> restarting"
   /usr/bin/killall -1 coolwsd
 ) &
 
 # Generate WOPI proof key
-coolwsd-generate-proof-key
+coolconfig generate-proof-key
 
 # Start coolwsd
 exec /usr/bin/coolwsd --version --o:sys_template_path=/opt/cool/systemplate --o:child_root_path=/opt/cool/child-roots --o:file_server_root_path=/usr/share/coolwsd --o:logging.color=false ${extra_params}

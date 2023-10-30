@@ -10,7 +10,7 @@ L.FormFieldButton = L.Layer.extend({
 	},
 
 	initialize: function (data) {
-		console.assert(data.type === 'drop-down');
+		window.app.console.assert(data.type === 'drop-down');
 		this._buttonData = data;
 	},
 
@@ -90,8 +90,7 @@ L.FormFieldButton = L.Layer.extend({
 		button.style.width = container.style.height;
 
 		var image = L.DomUtil.create('img', 'form-field-button-image', button);
-		image.src = L.LOUtil.getImageURL('unfold.svg');
-
+		L.LOUtil.setImage(image, 'unfold.svg', this.map._docLayer._docType);
 		button.addEventListener('click', this._onClickDropDown);
 
 		// Stop propagation to the main document

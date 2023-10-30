@@ -3,7 +3,7 @@
  * Impress tile layer is used to display a presentation document
  */
 
-/* global app $ L isAnyVexDialogActive */
+/* global app $ L Set */
 
 L.ImpressTileLayer = L.CanvasTileLayer.extend({
 
@@ -133,7 +133,7 @@ L.ImpressTileLayer = L.CanvasTileLayer.extend({
 	},
 
 	onUpdateParts: function () {
-		if (isAnyVexDialogActive()) // Need this check else vex loses focus
+		if (this._map.uiManager.isAnyDialogOpen()) // Need this check else dialog loses focus
 			return;
 
 		app.sectionContainer.getSectionWithName(L.CSections.CommentList.name).onPartChange();
@@ -179,6 +179,10 @@ L.ImpressTileLayer = L.CanvasTileLayer.extend({
 			command.height = parseInt(strTwips[3]);
 			command.part = this._selectedPart;
 		}
+
+		if (isNaN(command.mode))
+			command.mode = this._selectedMode;
+
 		var topLeftTwips = new L.Point(command.x, command.y);
 		var offset = new L.Point(command.width, command.height);
 		var bottomRightTwips = topLeftTwips.add(offset);
@@ -193,23 +197,12 @@ L.ImpressTileLayer = L.CanvasTileLayer.extend({
 		for (var key in this._tiles) {
 			var coords = this._tiles[key].coords;
 			var bounds = this._coordsToTileBounds(coords);
-			if (coords.part === command.part && invalidBounds.intersects(bounds)) {
-				if (this._tiles[key]._invalidCount) {
-					this._tiles[key]._invalidCount += 1;
-				}
-				else {
-					this._tiles[key]._invalidCount = 1;
-				}
+			if (coords.part === command.part && coords.mode === command.mode &&
+			    invalidBounds.intersects(bounds)) {
 				if (visibleArea.intersects(bounds)) {
 					needsNewTiles = true;
-					if (this._debug) {
-						this._debugAddInvalidationData(this._tiles[key]);
-					}
 				}
-				else if (!app.file.fileBasedView || !this._tiles[key].current) {
-					// tile outside of the visible area, just remove it
-					this._removeTile(key);
-				}
+				this._invalidateTile(key, command.wireId);
 			}
 		}
 
@@ -218,19 +211,8 @@ L.ImpressTileLayer = L.CanvasTileLayer.extend({
 			this._debugAddInvalidationMessage(textMsg);
 		}
 
-		for (key in this._tileCache) {
-			// compute the rectangle that each tile covers in the document based
-			// on the zoom level
-			coords = this._keyToTileCoords(key);
-			if (coords.part !== command.part) {
-				continue;
-			}
-			bounds = this._coordsToTileBounds(coords);
-			if (invalidBounds.intersects(bounds)) {
-				delete this._tileCache[key];
-			}
-		}
 		if (command.part === this._selectedPart &&
+			command.mode === this._selectedMode &&
 			command.part !== this._lastValidPart) {
 			this._map.fire('updatepart', {part: this._lastValidPart, docType: this._docType});
 			this._lastValidPart = command.part;
@@ -285,13 +267,14 @@ L.ImpressTileLayer = L.CanvasTileLayer.extend({
 			this._documentInfo = textMsg;
 			this._viewId = parseInt(command.viewid);
 			this._selectedPart = command.selectedPart;
+			this._selectedMode = (command.mode !== undefined) ? command.mode : 0;
 			this._selectedParts = command.selectedParts || [command.selectedPart];
-			this._masterPageCount = command.masterPageCount;
 			this._resetPreFetching(true);
 			this._update();
 			var partMatch = textMsg.match(/[^\r\n]+/g);
 			// only get the last matches
 			this._partHashes = partMatch.slice(partMatch.length - this._parts);
+			this._hiddenSlides = new Set(command.hiddenparts);
 			this._map.fire('updateparts', {
 				selectedPart: this._selectedPart,
 				selectedParts: this._selectedParts,
@@ -318,5 +301,17 @@ L.ImpressTileLayer = L.CanvasTileLayer.extend({
 	_removeHighlightSelectedWizardComment: function() {
 		if (this.lastWizardCommentHighlight)
 			this.lastWizardCommentHighlight.removeClass('impress-comment-highlight');
-	}
+	},
+
+	isHiddenSlide: function(slideNum) {
+		if (!this._hiddenSlides)
+			return false;
+		return this._hiddenSlides.has(slideNum);
+	},
+
+	hiddenSlides: function () {
+		if (!this._hiddenSlides)
+			return 0;
+		return this._hiddenSlides.size;
+	},
 });

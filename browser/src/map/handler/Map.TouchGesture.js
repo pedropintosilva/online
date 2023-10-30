@@ -145,7 +145,7 @@ L.Map.TouchGesture = L.Handler.extend({
 		if (this._map.uiManager.isUIBlocked())
 			return;
 
-		this._map.notifyActive();
+		app.idleHandler.notifyActive();
 
 		// Function/Formula Wizard keeps the formula cell active all the time,
 		// so the usual range selection doesn't work here.
@@ -294,7 +294,7 @@ L.Map.TouchGesture = L.Handler.extend({
 			setTimeout(waitForSelectionMsg, 300);
 		}
 
-		this._map.notifyActive();
+		app.idleHandler.notifyActive();
 		e.preventDefault();
 	},
 
@@ -322,18 +322,31 @@ L.Map.TouchGesture = L.Handler.extend({
 		    mousePos = this._map._docLayer._latLngToTwips(latlng);
 
 		// clicked a hyperlink popup - not really designed for this.
-		if (this._map.hyperlinkPopup && e.target &&
-			this._map.hyperlinkPopup._contentNode == e.target.parentNode) {
+		if (this._map.hyperlinkPopup && e.target) {
+			var tapOnHyperlinkPopup = false;
+			this._map.hyperlinkPopup._htmlContent.childNodes.forEach(function(childNode) {
+				if (childNode == e.target.parentNode || childNode == e.target) {
+					tapOnHyperlinkPopup = true;
+					return;
+				}
+			});
 			// not forward mouse events to core if the user tap on a hyperlink popup box
 			// for instance on Writer that causes the text cursor to be moved
-			return;
+			if (tapOnHyperlinkPopup) {
+				return;
+			}
 		}
 
 		this._map.fire('closemobilewizard');
 
-		// The validity dropdown marker icon (exists only in calc) needs to be notified of tap events if it is the target.
-		var dropDownMarkers = document.getElementsByClassName('leaflet-marker-icon spreadsheet-drop-down-marker');
-		if (dropDownMarkers.length == 1 && dropDownMarkers[0] && e.target && e.target == dropDownMarkers[0]) {
+		// The validity and content control dropdown marker icon (exists in calc and writer) needs to be notified of tap events if it is the target.
+		var dropDownMarkers;
+		if (this._map._docLayer.isWriter()) {
+			dropDownMarkers = document.getElementsByClassName('leaflet-marker-icon writer-drop-down-marker');
+		} else if (this._map._docLayer.isCalc()) {
+			dropDownMarkers = document.getElementsByClassName('leaflet-marker-icon spreadsheet-drop-down-marker');
+		}
+		if (dropDownMarkers && dropDownMarkers.length == 1 && dropDownMarkers[0] && e.target && e.target == dropDownMarkers[0]) {
 			this._map.fire('dropdownmarkertapped');
 			// don't send the mouse-event to core
 			return;
@@ -365,7 +378,7 @@ L.Map.TouchGesture = L.Handler.extend({
 				acceptInput = (cellCursor && cellCursor.contains(latlng));
 				if (acceptInput) {
 					// Enter cell-edit mode on second tap of a selected cell.
-					if (this._map.isPermissionEdit()) {
+					if (this._map.isEditMode()) {
 						docLayer.postKeyboardEvent('input', 0, 769); // F2
 						sendMouseEvents = false; // Mouse events will exit editing mode.
 					}
@@ -400,7 +413,7 @@ L.Map.TouchGesture = L.Handler.extend({
 		if (docLayer) {
 			if (docLayer._docType === 'spreadsheet' && !docLayer.hasGraphicSelection()) {
 				// Enter cell-edit mode on double-taping a cell.
-				if (this._map.isPermissionEdit()) {
+				if (this._map.isEditMode()) {
 					docLayer.postKeyboardEvent('input', 0, 769); // F2
 				}
 			} else {
@@ -499,6 +512,10 @@ L.Map.TouchGesture = L.Handler.extend({
 
 		if (window.IgnorePanning)
 			return;
+
+		if (this._inSwipeAction &&  Math.abs(e.velocity) < this._hammer.get('swipe').options.velocity) {
+			this._cancelAutoscrollRAF();
+		}
 
 		var point = e.pointers[0],
 		    containerPoint = this._map.mouseEventToContainerPoint(point),
@@ -650,7 +667,12 @@ L.Map.TouchGesture = L.Handler.extend({
 		if (this._map.uiManager.isUIBlocked())
 			return;
 
-		this._velocity = new L.Point(e.velocityX, e.velocityY);
+		if (this._inSwipeAction) {
+			this._velocity = this._velocity.add(new L.Point(e.velocityX, e.velocityY));
+		}
+		else {
+			this._velocity = new L.Point(e.velocityX, e.velocityY);
+		}
 		this._amplitude = this._velocity.multiplyBy(32);
 		this._newPos = L.DomUtil.getPosition(this._map._mapPane);
 		var evt = this._constructFakeEvent({

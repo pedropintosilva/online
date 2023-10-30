@@ -40,8 +40,7 @@ public:
 
         _ssl = (COOLWSD::isSSLEnabled() || COOLWSD::isSSLTermination());
         _websocket = true;
-        std::string serverName = COOLWSD::ServerName.empty() ? host : COOLWSD::ServerName;
-        _schemeAuthority = serverName;
+        _schemeAuthority = COOLWSD::ServerName.empty() ? host : COOLWSD::ServerName;
 
         // A well formed ProxyPrefix will override it.
         const std::string& url = proxyPrefix;
@@ -75,6 +74,14 @@ public:
     std::string getWebSocketUrl() const
     {
         std::string schemeProtocol = (_websocket ? "ws" : "http");
+        if (_ssl)
+            schemeProtocol += 's';
+        return schemeProtocol + "://" + _schemeAuthority;
+    }
+
+    std::string getWebServerUrl() const
+    {
+        std::string schemeProtocol = "http";
         if (_ssl)
             schemeProtocol += 's';
         return schemeProtocol + "://" + _schemeAuthority;

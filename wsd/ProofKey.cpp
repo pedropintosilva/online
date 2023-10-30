@@ -140,7 +140,7 @@ Proof::Proof()
             std::string msg = e.displayText() +
                 "\nNo proof-key will be present in discovery."
                 "\nIf you need to use WOPI security, generate an RSA key using this command:"
-                "\n    coolwsd-generate-proof-key"
+                "\n    sudo coolconfig generate-proof-key"
                 "\nor if your config dir is not /etc, you can run ssh-keygen manually:"
                 "\n    ssh-keygen -t rsa -N \"\" -m PEM -f \"" + keyPath + "\""
                 "\nNote: the proof_key file must be readable by the coolwsd process.";
@@ -184,7 +184,11 @@ std::vector<unsigned char> Proof::RSA2CapiBlob(const std::vector<unsigned char>&
     if (exponent.size() > 4)
         throw ParseError("Proof key public exponent is longer than 4 bytes.");
     // make sure exponent length is correct; assume we are passed big-endian vectors
-    std::vector<unsigned char> exponent32LE(4);
+    // GCC 12 doesn't like it when the capacity of exponent is > ours.
+    // std::copy gives the following compile-time error:
+    // error: writing 16 bytes into a region of size 4
+    std::vector<unsigned char> exponent32LE(exponent.capacity());
+    exponent32LE.resize(4);
     std::copy(exponent.rbegin(), exponent.rend(), exponent32LE.begin());
 
     std::vector<unsigned char> capiBlob = {

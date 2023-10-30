@@ -4,12 +4,13 @@ var helper = require('../../common/helper');
 var calcHelper = require('../../common/calc_helper');
 var mobileHelper = require('../../common/mobile_helper');
 
-var testFileName = 'overlays.ods';
+var origTestFileName = 'overlays.ods';
+var testFileName;
 
-describe('Overlay bounds.', function () {
+describe(['tagmobile', 'tagnextcloud', 'tagproxy'], 'Overlay bounds.', function () {
 
 	beforeEach(function () {
-		helper.beforeAll(testFileName, 'calc');
+		testFileName = helper.beforeAll(origTestFileName, 'calc');
 
 		mobileHelper.enableEditingMobile();
 	});
@@ -33,7 +34,7 @@ describe('Overlay bounds.', function () {
 
 		helper.typeIntoInputField('input#addressInput', 'B2');
 
-		cy.wrap(null).should(function () {
+		cy.wrap(true).then(function () {
 			cy.log('cellA1Bounds = ' + cellA1Bounds + ', cellC3Bounds = ' + cellC3Bounds);
 
 			// Compute the expected bounds of cell-cursor at B2 from that at A1 and C3.
@@ -63,7 +64,7 @@ describe('Overlay bounds.', function () {
 
 		helper.typeIntoInputField('input#addressInput', 'A1:D4');
 
-		cy.wrap(null).should(function () {
+		cy.wrap(true).then(function () {
 			cy.log('cellA1Bounds = ' + cellA1Bounds + ', cellD4Bounds = ' + cellD4Bounds);
 
 			// Compute the expected bounds of the selection A1:D4 using the bounds of A1 and D4 cell cursors.

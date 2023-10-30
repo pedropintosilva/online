@@ -40,13 +40,29 @@ L.WriterTileLayer = L.CanvasTileLayer.extend({
 				comment.id = comment.id.toString();
 				comment.parent = comment.parent.toString();
 			});
-			app.sectionContainer.getSectionWithName(L.CSections.CommentList.name).clearList();
 			app.sectionContainer.getSectionWithName(L.CSections.CommentList.name).importComments(values.comments);
 		}
 		else if (values.redlines && values.redlines.length > 0) {
 			app.sectionContainer.getSectionWithName(L.CSections.CommentList.name).importChanges(values.redlines);
 		}
-		else {
+		else if (this._map.zotero && values.userDefinedProperties) {
+			this._map.zotero.handleCustomProperty(values.userDefinedProperties);
+		}
+		else if (this._map.zotero && values.fields) {
+			this._map.zotero.onFieldValue(values.fields);
+		} else if (this._map.zotero && values.field) {
+			this._map.zotero.handleFieldUnderCursor(values.field);
+		} else if (this._map.zotero && values.setRefs) {
+			this._map.zotero.onFieldValue(values.setRefs);
+		} else if (this._map.zotero && values.setRef) {
+			this._map.zotero.handleFieldUnderCursor(values.setRef);
+		} else if (this._map.zotero && values.bookmarks) {
+			this._map.zotero.handleBookmark(values.bookmarks);
+		} else if (this._map.zotero && values.bookmark) {
+			this._map.zotero.fetchCustomProperty(values.bookmark.name);
+		} else if (this._map.zotero && values.sections) {
+			this._map.zotero.onFieldValue(values.sections);
+		} else {
 			L.CanvasTileLayer.prototype._onCommandValuesMsg.call(this, textMsg);
 		}
 	},
@@ -61,6 +77,10 @@ L.WriterTileLayer = L.CanvasTileLayer.extend({
 			command.height = parseInt(strTwips[3]);
 			command.part = this._selectedPart;
 		}
+
+		if (isNaN(command.mode))
+			command.mode = this._selectedMode;
+
 		command.part = 0;
 		var topLeftTwips = new L.Point(command.x, command.y);
 		var offset = new L.Point(command.width, command.height);
@@ -76,39 +96,18 @@ L.WriterTileLayer = L.CanvasTileLayer.extend({
 		for (var key in this._tiles) {
 			var coords = this._tiles[key].coords;
 			var bounds = this._coordsToTileBounds(coords);
-			if (coords.part === command.part && invalidBounds.intersects(bounds)) {
-				if (this._tiles[key]._invalidCount) {
-					this._tiles[key]._invalidCount += 1;
-				}
-				else {
-					this._tiles[key]._invalidCount = 1;
-				}
+			if (coords.part === command.part && coords.mode === command.mode &&
+				invalidBounds.intersects(bounds)) {
 				if (visibleArea.intersects(bounds)) {
 					needsNewTiles = true;
-					if (this._debug) {
-						this._debugAddInvalidationData(this._tiles[key]);
-					}
 				}
-				else {
-					// tile outside of the visible area, just remove it
-					this._removeTile(key);
-				}
+				this._invalidateTile(key, command.wireId);
 			}
 		}
 
 		if (needsNewTiles && this._debug)
 		{
 			this._debugAddInvalidationMessage(textMsg);
-		}
-
-		for (key in this._tileCache) {
-			// compute the rectangle that each tile covers in the document based
-			// on the zoom level
-			coords = this._keyToTileCoords(key);
-			bounds = this._coordsToTileBounds(coords);
-			if (invalidBounds.intersects(bounds)) {
-				delete this._tileCache[key];
-			}
 		}
 
 		this._previewInvalidations.push(invalidBounds);
@@ -148,6 +147,7 @@ L.WriterTileLayer = L.CanvasTileLayer.extend({
 
 		this._documentInfo = textMsg;
 		this._selectedPart = 0;
+		this._selectedMode = (command.mode !== undefined) ? command.mode : 0;
 		this._parts = 1;
 		this._currentPage = command.selectedPart;
 		this._pages = command.parts;

@@ -53,7 +53,8 @@ function onClose() {
 	}
 }
 
-function onClick(e, id, item) {
+function getToolbarItemById(id) {
+	var item;
 	if (w2ui['editbar'].get(id) !== null) {
 		var toolbar = w2ui['editbar'];
 		item = toolbar.get(id);
@@ -69,10 +70,12 @@ function onClick(e, id, item) {
 	else {
 		throw new Error('unknown id: ' + id);
 	}
+	return item;
+}
 
-	if (id === 'sidebar' || id === 'modifypage' || id === 'slidechangewindow' || id === 'customanimation' || id === 'masterslidespanel') {
-		window.initSidebarState = true;
-	}
+function onClick(e, id, item) {
+	// dont reassign the item if we already have it
+	item = item || getToolbarItemById(id);
 
 	// In the iOS app we don't want clicking on the toolbar to pop up the keyboard.
 	if (!window.ThisIsTheiOSApp && id !== 'zoomin' && id !== 'zoomout' && id !== 'mobile_wizard' && id !== 'insertion_mobile_wizard') {
@@ -87,6 +90,9 @@ function onClick(e, id, item) {
 		map.fire('postMessage', {msgId: 'Clicked_Button', args: {Id: item.id} });
 	}
 	else if (item.uno) {
+		if (id === 'save') {
+			map.fire('postMessage', {msgId: 'UI_Save', args: { source: 'toolbar' }});
+		}
 		if (item.unosheet && map.getDocType() === 'spreadsheet') {
 			map.toggleCommandState(item.unosheet);
 		}
@@ -99,8 +105,8 @@ function onClick(e, id, item) {
 	}
 	else if (id === 'save') {
 		// Save only when not read-only.
-		if (!map.isPermissionReadOnly()) {
-			map.fire('postMessage', {msgId: 'UI_Save'});
+		if (!map.isReadOnlyMode()) {
+			map.fire('postMessage', {msgId: 'UI_Save', args: { source: 'toolbar' }});
 			if (!map._disableDefaultAction['UI_Save']) {
 				map.save(false /* An explicit save should terminate cell edit */, false /* An explicit save should save it again */);
 			}
@@ -134,13 +140,13 @@ function onClick(e, id, item) {
 		map.fire('mobilewizard', {data: getColorPickerData('Highlight Color')});
 	}
 	else if (id === 'fontcolor' && typeof e.color !== 'undefined') {
-		onColorPick(id, e.color);
+		onColorPick(id, e.color, e.themeData);
 	}
 	else if (id === 'backcolor' && typeof e.color !== 'undefined') {
-		onColorPick(id, e.color);
+		onColorPick(id, e.color, e.themeData);
 	}
 	else if (id === 'backgroundcolor' && typeof e.color !== 'undefined') {
-		onColorPick(id, e.color);
+		onColorPick(id, e.color, e.themeData);
 	}
 	else if (id === 'fold' || id === 'hamburger-tablet') {
 		map.uiManager.toggleMenubar();
@@ -150,9 +156,6 @@ function onClick(e, id, item) {
 	}
 	else if (id === 'link') {
 		map.showHyperlinkDialog();
-	}
-	else if (id === 'languagecode') {
-		map.fire('languagedialog');
 	}
 }
 
@@ -217,7 +220,7 @@ function setBorderStyle(num, color) {
 	case 11: _setBorders(1, 1, 1, 1, 0, 1, color); break;
 	case 12: _setBorders(1, 1, 1, 1, 1, 1, color); break;
 
-	default: console.log('ignored border: ' + num);
+	default: window.app.console.log('ignored border: ' + num);
 	}
 
 	// TODO we may consider keeping it open in the future if we add border color
@@ -253,22 +256,27 @@ function setConditionalFormatIconSet(num) {
 
 global.setConditionalFormatIconSet = setConditionalFormatIconSet;
 
-function getConditionalFormatMenuHtml() {
-	return '<table id="conditionalformatmenu-grid"><tr>' +
+function getConditionalFormatMenuHtml(more) {
+	var table = '<table id="conditionalformatmenu-grid"><tr>' +
 	'<td class="w2ui-tb-image w2ui-icon iconset00" onclick="setConditionalFormatIconSet(0)"/><td class="w2ui-tb-image w2ui-icon iconset01" onclick="setConditionalFormatIconSet(1)"/><td class="w2ui-tb-image w2ui-icon iconset02" onclick="setConditionalFormatIconSet(2)"/></tr><tr>' +
 	'<td class="w2ui-tb-image w2ui-icon iconset03" onclick="setConditionalFormatIconSet(3)"/><td class="w2ui-tb-image w2ui-icon iconset04" onclick="setConditionalFormatIconSet(4)"/><td class="w2ui-tb-image w2ui-icon iconset05" onclick="setConditionalFormatIconSet(5)"/></tr><tr>' +
 	'<td class="w2ui-tb-image w2ui-icon iconset06" onclick="setConditionalFormatIconSet(6)"/><td class="w2ui-tb-image w2ui-icon iconset08" onclick="setConditionalFormatIconSet(8)"/><td class="w2ui-tb-image w2ui-icon iconset09" onclick="setConditionalFormatIconSet(9)"/></tr><tr>' + // iconset07 deliberately left out, see the .css for the reason
 	'<td class="w2ui-tb-image w2ui-icon iconset10" onclick="setConditionalFormatIconSet(10)"/><td class="w2ui-tb-image w2ui-icon iconset11" onclick="setConditionalFormatIconSet(11)"/><td class="w2ui-tb-image w2ui-icon iconset12" onclick="setConditionalFormatIconSet(12)"/></tr><tr>' +
 	'<td class="w2ui-tb-image w2ui-icon iconset13" onclick="setConditionalFormatIconSet(13)"/><td class="w2ui-tb-image w2ui-icon iconset14" onclick="setConditionalFormatIconSet(14)"/><td class="w2ui-tb-image w2ui-icon iconset15" onclick="setConditionalFormatIconSet(15)"/></tr><tr>' +
 	'<td class="w2ui-tb-image w2ui-icon iconset16" onclick="setConditionalFormatIconSet(16)"/><td class="w2ui-tb-image w2ui-icon iconset17" onclick="setConditionalFormatIconSet(17)"/><td class="w2ui-tb-image w2ui-icon iconset18" onclick="setConditionalFormatIconSet(18)"/></tr><tr>' +
-	'<td class="w2ui-tb-image w2ui-icon iconset19" onclick="setConditionalFormatIconSet(19)"/><td class="w2ui-tb-image w2ui-icon iconset20" onclick="setConditionalFormatIconSet(20)"/><td class="w2ui-tb-image w2ui-icon iconset21" onclick="setConditionalFormatIconSet(21)"/></tr></table>';
+	'<td class="w2ui-tb-image w2ui-icon iconset19" onclick="setConditionalFormatIconSet(19)"/><td class="w2ui-tb-image w2ui-icon iconset20" onclick="setConditionalFormatIconSet(20)"/><td class="w2ui-tb-image w2ui-icon iconset21" onclick="setConditionalFormatIconSet(21)"/></tr>';
+	if (more) {
+		table += '<tr><td id="' + more + '">' + _('More...') + '</td></tr>';
+	}
+	table += '</table>';
+	return table;
 }
 
 global.getConditionalFormatMenuHtml = getConditionalFormatMenuHtml;
 
 function getInsertTablePopupHtml() {
 	return '<div id="inserttable-wrapper">\
-					<div id="inserttable-popup" class="inserttable-pop ui-widget ui-corner-all">\
+					<div id="inserttable-popup" class="inserttable-pop ui-widget ui-corner-all" tabIndex=0>\
 						<div class="inserttable-grid"></div>\
 						<div id="inserttable-status" class="cool-font" style="padding: 5px;"><br/></div>\
 					</div>\
@@ -281,6 +289,9 @@ function insertTable() {
 	var $grid = $('.inserttable-grid');
 	var $status = $('#inserttable-status');
 
+	var selectedRow = 1;
+	var selectedColumn = 1;
+
 	// init
 	for (var r = 0; r < rows; r++) {
 		var $row = $('<div/>').addClass('row');
@@ -291,33 +302,87 @@ function insertTable() {
 		}
 	}
 
+	var sendInsertMessageFunction = function(col, row) {
+		$('.col').removeClass('bright');
+		$status.html('<br/>');
+		var msg = 'uno .uno:InsertTable {' +
+			' "Columns": { "type": "long","value": '
+			+ col +
+			' }, "Rows": { "type": "long","value": '
+			+ row + ' }}';
+
+		app.socket.sendMessage(msg);
+		closePopup();
+	};
+
+	var highlightFunction = function(col, row) {
+		$('.col').removeClass('bright');
+		$('.row:nth-child(-n+' + row + ') .col:nth-child(-n+' + col + ')')
+			.addClass('bright');
+		$status.html(col + 'x' + row);
+	};
+
+	if (document.getElementById('inserttable-popup')) {
+		document.getElementById('inserttable-popup').addEventListener('keydown', function(event) {
+			if (event.code === 'ArrowLeft') {
+				if (selectedColumn > 1)
+					selectedColumn--;
+
+				highlightFunction(selectedColumn, selectedRow);
+			}
+			else if (event.code === 'ArrowRight') {
+				if (selectedColumn < 10)
+					selectedColumn++;
+
+				highlightFunction(selectedColumn, selectedRow);
+			}
+			else if (event.code === 'ArrowUp') {
+				if (selectedRow > 1)
+					selectedRow--;
+
+				highlightFunction(selectedColumn, selectedRow);
+			}
+			else if (event.code === 'ArrowDown') {
+				if (selectedRow < 10)
+					selectedRow++;
+
+				highlightFunction(selectedColumn, selectedRow);
+			}
+			else if (event.code === 'Escape' || event.code === 'Tab') {
+				event.preventDefault();
+				event.stopPropagation();
+				var popUp = document.getElementById('w2ui-overlay');
+				popUp.remove();
+				app.map.focus();
+			}
+			else if (event.code === 'Enter') {
+				sendInsertMessageFunction(selectedColumn, selectedRow);
+			}
+			else if (event.code === 'Space') {
+				sendInsertMessageFunction(selectedColumn, selectedRow);
+			}
+		});
+	}
+
 	// events
 	$grid.on({
 		mouseover: function () {
 			var col = $(this).index() + 1;
 			var row = $(this).parent().index() + 1;
-			$('.col').removeClass('bright');
-			$('.row:nth-child(-n+' + row + ') .col:nth-child(-n+' + col + ')')
-				.addClass('bright');
-			$status.html(col + 'x' + row);
-
+			highlightFunction(col, row);
 		},
 		click: function() {
 			var col = $(this).index() + 1;
 			var row = $(this).parent().index() + 1;
-			$('.col').removeClass('bright');
-			$status.html('<br/>');
-			var msg = 'uno .uno:InsertTable {' +
-				' "Columns": { "type": "long","value": '
-				+ col +
-				' }, "Rows": { "type": "long","value": '
-				+ row + ' }}';
-
-			app.socket.sendMessage(msg);
-
-			closePopup();
+			sendInsertMessageFunction(col, row);
 		}
 	}, '.col');
+
+	if (document.getElementById('inserttable-popup')) {
+		setTimeout(function() {
+			document.getElementById('inserttable-popup').focus();
+		}, 100);
+	}
 }
 
 var shapes = {
@@ -514,6 +579,7 @@ function createShapesPanel(shapeType) {
 function insertShapes(shapeType) {
 	var width = 10;
 	var $grid = $('.insertshape-grid');
+	$grid.addClass(shapeType);
 
 	if (window.mode.isDesktop() || window.mode.isTablet())
 		$grid.css('margin-botttom', '0px');
@@ -522,6 +588,45 @@ function insertShapes(shapeType) {
 		return;
 
 	var collection = shapes[shapeType];
+
+	if (app.map && app.map.uiManager && app.map.uiManager.getCurrentMode() === 'notebookbar') {
+		var tabCatherIdList = ['shapes-popup-tab-catcher-start', 'shapes-popup-tab-catcher-end'];
+
+		var focusFirstItemFunction = function() {
+			var container = document.getElementById('insertshape-popup');
+			if (container && container.children[0])
+				container = container.children[0];
+			else
+				return;
+
+			var counter = 0;
+
+			while (counter < container.children.length && (container.children[counter].className.includes('row-header') || tabCatherIdList.includes(container.children[counter].id)))
+				counter++;
+
+			if (counter < container.children.length)
+				container.children[counter].children[0].focus();
+		};
+
+		var focusLastItemFunction = function() {
+			var container = document.getElementById('insertshape-popup').children[0];
+			var counter = container.children.length - 1;
+
+			while (counter > -1 && (container.children[counter].className.includes('row-header') || tabCatherIdList.includes(container.children[counter].id)))
+				counter--;
+
+			if (counter > -1)
+				container.children[counter].children[container.children[counter].children.length - 1].focus();
+		};
+
+		var tabCatcher = document.createElement('div');
+		tabCatcher.id = tabCatherIdList[0];
+		tabCatcher.tabIndex = 0;
+		$grid.append(tabCatcher);
+		tabCatcher.onfocus = function() {
+			focusLastItemFunction();
+		};
+	}
 
 	for (var s in collection) {
 		var $rowHeader = $('<div/>').addClass('row-header cool-font').append(_(s));
@@ -537,9 +642,11 @@ function insertShapes(shapeType) {
 					break;
 				}
 				var shape = collection[s][idx++];
-				var $col = $('<div/>').addClass('col w2ui-icon').addClass(shape.img);
-				$col.data('uno', shape.uno);
-				$row.append($col);
+				var col = document.createElement('div');
+				col.className = 'col w2ui-icon ' + shape.img;
+				col.dataset.uno = shape.uno;
+				col.tabIndex = 0;
+				$row.append(col);
 			}
 
 			if (idx >= collection[s].length)
@@ -547,17 +654,122 @@ function insertShapes(shapeType) {
 		}
 	}
 
+	if (app.map && app.map.uiManager && app.map.uiManager.getCurrentMode() === 'notebookbar') {
+		tabCatcher = document.createElement('div');
+		tabCatcher.id = tabCatherIdList[1];
+		tabCatcher.tabIndex = 0;
+		$grid.append(tabCatcher);
+		tabCatcher.onfocus = function() {
+			focusFirstItemFunction();
+		};
+
+		var findIndexFunction = function(item) {
+			for (var i = 0; i < item.parentNode.children.length; i++) {
+				if (item.parentNode.children[i] == item) {
+					return i;
+				}
+			}
+			return -1;
+		};
+
+		var focusOnIndexFunction = function(row, index) {
+			if (row.children[index])
+				row.children[index].focus();
+			else {
+				while (!row.children[index] && index > -1)
+					index--;
+
+				if (index > -1)
+					row.children[index].focus();
+			}
+		};
+
+		var arrowUpFunction = function(event, index) {
+			if (event.target.parentNode.previousElementSibling.className.includes('row-header')) {
+				if (event.target.parentNode.previousElementSibling.previousElementSibling.children.length > 0) {
+					focusOnIndexFunction(event.target.parentNode.previousElementSibling.previousElementSibling, index);
+				}
+				else {
+					event.target.parentNode.previousElementSibling.previousElementSibling.focus();
+				}
+			}
+			else if (event.target.parentNode.previousElementSibling.children.length > 0) {
+				focusOnIndexFunction(event.target.parentNode.previousElementSibling, index);
+			}
+			else {
+				event.target.parentNode.previousElementSibling.focus(); // Tab cathcer.
+			}
+		};
+
+		var arrowDownFunction = function(event, index) {
+			if (event.target.parentNode.nextElementSibling.className.includes('row-header')) {
+				event.target.parentNode.nextElementSibling.nextElementSibling.children[index].focus(); // Header.
+			}
+			else if (event.target.parentNode.nextElementSibling.children.length > 0) {
+				focusOnIndexFunction(event.target.parentNode.nextElementSibling, index);
+			}
+			else {
+				event.target.parentNode.nextElementSibling.focus(); // Tab cathcer.
+			}
+		};
+
+		focusFirstItemFunction();
+
+		var keyPressInitiatedInsidePopUp = false;
+	}
+
 	$grid.on({
 		click: function(e) {
 			map.sendUnoCommand('.uno:' + $(e.target).data().uno);
 			closePopup();
+		},
+		keyup: function(event) {
+			if (app.map.uiManager.getCurrentMode() === 'notebookbar') {
+				if ((event.code === 'Enter' || event.code === 'Space') && keyPressInitiatedInsidePopUp) {
+					map.sendUnoCommand('.uno:' + event.target.dataset.uno);
+					closePopup();
+				}
+			}
+		},
+		keydown: function(event) {
+			if (app.map.uiManager.getCurrentMode() === 'notebookbar') {
+				var index = findIndexFunction(event.target);
+				if (index === -1)
+					return;
+
+				if (event.code === 'ArrowDown') {
+					arrowDownFunction(event, index);
+				}
+				else if (event.code == 'ArrowUp') {
+					arrowUpFunction(event, index);
+				}
+				else if (event.code === 'ArrowLeft') {
+					if (index === 0)
+						arrowUpFunction(event, 1000);
+					else
+						focusOnIndexFunction(event.target.parentNode, index - 1);
+				}
+				else if (event.code === 'ArrowRight') {
+					if (index === event.target.parentNode.children.length - 1)
+						arrowDownFunction(event, 0);
+					else
+						focusOnIndexFunction(event.target.parentNode, index + 1);
+				}
+				else if (event.code === 'Escape') {
+					document.getElementById('insertshape-wrapper').remove();
+					app.map.focus();
+				}
+				else if (event.code === 'Enter' || event.code === 'Space') {
+					keyPressInitiatedInsidePopUp = true;
+				}
+			}
 		}
 	});
 }
 
 function getShapesPopupHtml() {
 	return '<div id="insertshape-wrapper">\
-				<div id="insertshape-popup" class="insertshape-pop ui-widget ui-corner-all">\
+				<div id="insertshape-popup" tabIndex=0 class="insertshape-pop ui-widget ui-corner-all">\
 					<div class="insertshape-grid"></div>\
 				</div>\
 			</div>';
@@ -568,9 +780,9 @@ function showColorPicker(id) {
 	var obj = w2ui['editbar'];
 	var el = '#tb_editbar_item_' + id;
 	if (it.transparent == null) it.transparent = true;
-	$(el).w2color({ color: it.color, transparent: it.transparent }, function (color) {
+	$(el).w2color({ color: it.color, transparent: it.transparent }, function (color, themeData) {
 		if (color != null) {
-			obj.colorClick({ name: obj.name, item: it, color: color });
+			obj.colorClick({ name: obj.name, item: it, color: color, themeData: themeData });
 		}
 		closePopup();
 	});
@@ -615,8 +827,8 @@ function getColorPickerData(type) {
 	return data;
 }
 
-function onColorPick(id, color) {
-	if (!map.isPermissionEdit()) {
+function onColorPick(id, color, themeData) {
+	if (!map.isEditMode()) {
 		return;
 	}
 	// no fill or automatic color is -1
@@ -628,34 +840,40 @@ function onColorPick(id, color) {
 		color = parseInt(color.replace('#', ''), 16);
 	}
 	var command = {};
-	var fontcolor, backcolor;
+
 	if (id === 'fontcolor') {
-		fontcolor = {'text': 'FontColor',
+		var commandId = {'text': 'FontColor',
 			     'spreadsheet': 'Color',
 			     'presentation': 'Color'}[map.getDocType()];
-		command[fontcolor] = {};
-		command[fontcolor].type = 'long';
-		command[fontcolor].value = color;
-		var uno = '.uno:' + fontcolor;
 	}
 	// "backcolor" can be used in Writer and Impress and translates to "Highlighting" while
 	// "backgroundcolor" can be used in Writer and Calc and translates to "Background color".
 	else if (id === 'backcolor') {
-		backcolor = {'text': 'BackColor',
+		commandId = {'text': 'BackColor',
 			     'presentation': 'CharBackColor'}[map.getDocType()];
-		command[backcolor] = {};
-		command[backcolor].type = 'long';
-		command[backcolor].value = color;
-		uno = '.uno:' + backcolor;
 	}
 	else if (id === 'backgroundcolor') {
-		backcolor = {'text': 'BackgroundColor',
+		commandId = {'text': 'BackgroundColor',
 			     'spreadsheet': 'BackgroundColor'}[map.getDocType()];
-		command[backcolor] = {};
-		command[backcolor].type = 'long';
-		command[backcolor].value = color;
-		uno = '.uno:' + backcolor;
 	}
+
+	var uno = '.uno:' + commandId;
+	var colorParameterID = commandId + '.Color';
+	var themeParameterID = commandId + '.ComplexColorJSON';
+
+	command[colorParameterID] = {
+		type : 'long',
+		value : color
+	};
+
+	if (themeData != null)
+	{
+		command[themeParameterID] = {
+			type : 'string',
+			value : themeData
+		};
+	}
+
 	map.sendUnoCommand(uno, command);
 	map.focus();
 }
@@ -814,9 +1032,6 @@ function onInsertBackground() {
 
 function onWopiProps(e) {
 	if (e.DisableCopy) {
-		$('input#formulaInput').bind('copy', function(evt) {
-			evt.preventDefault();
-		});
 		$('input#addressInput').bind('copy', function(evt) {
 			evt.preventDefault();
 		});
@@ -843,7 +1058,7 @@ function processStateChangedCommand(commandName, state) {
 			color = color.toString(16);
 			color = '#' + Array(7 - color.length).join('0') + color;
 		}
-		$('#tb_editbar_item_fontcolor .w2ui-tb-image').css('box-shadow', 'inset 0 -2px #ffffff, inset 0px -6px ' + color);
+		$('#tb_editbar_item_fontcolor table.w2ui-button .selected-color-classic').css('background-color', color);
 		$('#tb_editbar_item_fontcolor .w2ui-tb-caption').css('display', 'none');
 
 		div = L.DomUtil.get('fontcolorindicator');
@@ -862,24 +1077,17 @@ function processStateChangedCommand(commandName, state) {
 			color = '#' + Array(7 - color.length).join('0') + color;
 		}
 		//writer
-		$('#tb_editbar_item_backcolor .w2ui-tb-image').css('box-shadow', 'inset 0 -2px #ffffff, inset 0px -6px ' + color);
+		$('#tb_editbar_item_backcolor table.w2ui-button .selected-color-classic').css('background-color', color);
 		$('#tb_editbar_item_backcolor .w2ui-tb-caption').css('display', 'none');
+
 		//calc?
-		$('#tb_editbar_item_backgroundcolor .w2ui-tb-image').css('box-shadow', 'inset 0 -2px #ffffff, inset 0px -6px ' + color);
+		$('#tb_editbar_item_backgroundcolor table.w2ui-button .selected-color-classic').css('background-color', color);
 		$('#tb_editbar_item_backgroundcolor .w2ui-tb-caption').css('display', 'none');
 
 		div = L.DomUtil.get('backcolorindicator');
 		if (div) {
 			L.DomUtil.setStyle(div, 'background', color);
 		}
-	}
-	else if (commandName === '.uno:LanguageStatus') {
-		var code = state;
-		var split = code.split(';');
-		if (split.length > 1) {
-			code = split[1];
-		}
-		w2ui['editbar'].set('languagecode', {text: code});
 	}
 	else if (commandName === '.uno:ModifiedStatus') {
 		if (state === 'true') {
@@ -896,12 +1104,7 @@ function processStateChangedCommand(commandName, state) {
 			toolbar.disable('repair');
 		}
 	}
-	else if (commandName === '.uno:FormatPaintbrush') {
-		if (state === 'true')
-			$('.leaflet-pane.leaflet-map-pane').addClass('bucket-cursor');
-		else
-			$('.leaflet-pane.leaflet-map-pane').removeClass('bucket-cursor');
-	}
+
 	if (commandName === '.uno:SpacePara1' || commandName === '.uno:SpacePara15'
 		|| commandName === '.uno:SpacePara2') {
 		toolbar.refresh();
@@ -913,20 +1116,20 @@ function processStateChangedCommand(commandName, state) {
 		return;
 
 	if (state === 'true') {
-		if (map.isPermissionEdit()) {
+		if (map.isEditMode()) {
 			toolbar.enable(id);
 		}
 		toolbar.check(id);
 	}
 	else if (state === 'false') {
-		if (map.isPermissionEdit()) {
+		if (map.isEditMode()) {
 			toolbar.enable(id);
 		}
 		toolbar.uncheck(id);
 	}
 	// Change the toolbar button states if we are in editmode
 	// If in non-edit mode, will be taken care of when permission is changed to 'edit'
-	else if (map.isPermissionEdit() && (state === 'enabled' || state === 'disabled')) {
+	else if (map.isEditMode() && (state === 'enabled' || state === 'disabled')) {
 		var toolbarUp = toolbar;
 		if (state === 'enabled') {
 			toolbarUp.enable(id);
@@ -1022,6 +1225,21 @@ function onCommandResult(e) {
 		e.success === true && e.result.value && !isNaN(e.result.value)) { /*UNDO_CONFLICT*/
 		$('#tb_editbar_item_repair').w2overlay({ html: '<div style="padding: 10px; line-height: 150%">' +
 		_('Conflict Undo/Redo with multiple users. Please use document repair to resolve') + '</div>'});
+	} else if (map.zotero &&
+		((commandName === '.uno:DeleteTextFormField' && e.result.DeleteTextFormField.startsWith('ADDIN ZOTERO_')) ||
+		(commandName === '.uno:DeleteField' && e.result.DeleteField.startsWith('ZOTERO_')) ||
+		(commandName === '.uno:DeleteSection' && e.result.DeleteSection.startsWith('ZOTERO_BIBL')))) {
+		if (commandName === '.uno:DeleteSection')
+			map.zotero.markBibliographyStyleHasBeenSet(true);
+		map.zotero.handleRefreshCitationsAndBib(false);
+	} else if (map.zotero && commandName === '.uno:DeleteBookmark' && e.result.DeleteBookmark.startsWith('ZOTERO_BREF_')) {
+		map.zotero.setCustomProperty(e.result.DeleteBookmark, '');
+		map.zotero.handleRefreshCitationsAndBib(false);
+	} else if (commandName === '.uno:OpenHyperlink') {
+		// allow to process other incoming messages first
+		setTimeout(function () {
+			map._docLayer.scrollToPos(map._docLayer._visibleCursor.getNorthWest());
+		}, 0);
 	}
 }
 
@@ -1052,8 +1270,12 @@ function onUpdatePermission(e) {
 			}
 		}
 		if (e.perm === 'edit') {
+			$('#toolbar-mobile-back').removeClass('editmode-off');
+			$('#toolbar-mobile-back').addClass('editmode-on');
 			toolbar.set('closemobile', {img: 'editmode'});
 		} else {
+			$('#toolbar-mobile-back').removeClass('editmode-on');
+			$('#toolbar-mobile-back').addClass('editmode-off');
 			toolbar.set('closemobile', {img: 'closemobile'});
 		}
 
@@ -1083,6 +1305,7 @@ function editorUpdate(e) { // eslint-disable-line no-unused-vars
 		docLayer._followThis = -1;
 	}
 	$('#tb_actionbar_item_userlist').w2overlay('');
+	$('#userListPopover').hide();
 }
 
 global.editorUpdate = editorUpdate;
@@ -1146,6 +1369,7 @@ function setupToolbar(e) {
 
 	if (map.options.wopi && L.Params.closeButtonEnabled && !window.mode.isMobile()) {
 		$('#closebuttonwrapper').css('display', 'block');
+		$('#closebuttonwrapper').prop('title', _('Close document'));
 	} else if (!L.Params.closeButtonEnabled) {
 		$('#closebuttonwrapper').hide();
 	} else if (L.Params.closeButtonEnabled && !window.mode.isMobile()) {
@@ -1179,12 +1403,15 @@ function updateVisibilityForToolbar(toolbar, context) {
 			else
 				toHide.push(item.id);
 		} else if (!context && item.context) {
-			toHide.push(item.id);
+			if (item.context.indexOf('default') >= 0)
+				toShow.push(item.id);
+			else
+				toHide.push(item.id);
 		}
 	});
 
-	console.log('explicitly hiding: ' + toHide);
-	console.log('explicitly showing: ' + toShow);
+	window.app.console.log('explicitly hiding: ' + toHide);
+	window.app.console.log('explicitly showing: ' + toShow);
 
 	toHide.forEach(function(item) { toolbar.hide(item); });
 	toShow.forEach(function(item) { toolbar.show(item); });

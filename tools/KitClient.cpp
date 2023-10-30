@@ -85,9 +85,9 @@ protected:
             std::string line;
             std::getline(std::cin, line);
 
-            StringVector tokens(Util::tokenize(line, ' '));
+            StringVector tokens(StringVector::tokenize(line, ' '));
 
-            if (tokens.size() == 0)
+            if (tokens.empty())
                 continue;
 
             if (tokens.equals(0, "?") || tokens.equals(0, "help"))
@@ -158,7 +158,7 @@ protected:
         }
 
         // Safest to just bluntly exit
-        std::_Exit(EX_OK);
+        Util::forcedExit(EX_OK);
     }
 };
 

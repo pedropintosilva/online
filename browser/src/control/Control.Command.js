@@ -1,109 +1,108 @@
 /* -*- js-indent-level: 8; fill-column: 100 -*- */
 /*
- * Freemium handler
+ * Feature blocking handler
  */
 
-/* global $ vex _ */
+/* global $ _ */
+
 L.Map.include({
 
-	Freemium: {
-		isFreemiumUser: false,
-		freemiumDenyList: [],
-		freemiumPurchaseTitle: '',
-		freemiumPurchaseLink: '',
-		freemiumPurchaseDescription: '',
+	Locking: {
+		isLockedUser: false,
+		isLockReadOnly: false,
+		lockedCommandList: [],
+		unlockTitle: '',
+		unlockLink: '',
+		unlockDescription: '',
 		writerHighlights: '',
 		calcHighlights: '',
 		impressHighlights: '',
 		drawHighlights: '',
 	},
 
-	_setFreemiumProps: function(freemiumInfo) {
-		this.Freemium.isFreemiumUser = !!freemiumInfo['IsFreemiumUser'];
-		this.Freemium.freemiumDenyList = freemiumInfo['FreemiumDenyList'];
-		this.Freemium.freemiumPurchaseTitle = _(freemiumInfo['FreemiumPurchaseTitle']);
-		this.Freemium.freemiumPurchaseLink = _(freemiumInfo['FreemiumPurchaseLink']);
-		this.Freemium.freemiumPurchaseDescription = _(freemiumInfo['FreemiumPurchaseDescription']);
-		this.Freemium.writerHighlights = _(freemiumInfo['WriterHighlights']);
-		this.Freemium.calcHighlights = _(freemiumInfo['CalcHighlights']);
-		this.Freemium.impressHighlights = _(freemiumInfo['ImpressHighlights']);
-		this.Freemium.drawHighlights = _(freemiumInfo['DrawHighlights']);
-
+	_setLockProps: function(lockInfo) {
+		this.Locking.isLockedUser = !!lockInfo['IsLockedUser'];
+		this.Locking.isLockReadOnly = !!lockInfo['IsLockReadOnly'];
+		this.Locking.lockedCommandList = lockInfo['LockedCommandList'];
+		this.Locking.unlockTitle = _(lockInfo['UnlockTitle']);
+		this.Locking.unlockLink = _(lockInfo['UnlockLink']);
+		this.Locking.unlockDescription = _(lockInfo['UnlockDescription']);
+		this.Locking.writerHighlights = _(lockInfo['WriterHighlights']);
+		this.Locking.calcHighlights = _(lockInfo['CalcHighlights']);
+		this.Locking.impressHighlights = _(lockInfo['ImpressHighlights']);
+		this.Locking.drawHighlights = _(lockInfo['DrawHighlights']);
+		this.Locking.unlockImageUrlPath = lockInfo['UnlockImageUrlPath'];
 	},
 
-	// We mark the element disabled for the freemium
+	// We mark the element disabled for the feature locking
 	// and add overlay on the element
-	disableFreemiumItem: function(item, DOMParentElement, buttonToDisable) {
-		if (this.isFreemiumUser() && this.isFreemiumDeniedItem(item)) {
-			$(DOMParentElement).data('freemiumDenied', true);
-			$(DOMParentElement).addClass('freemium-disabled');
+	disableLockedItem: function(item, DOMParentElement, buttonToDisable) {
+		if (this.isLockedUser() && this.isLockedItem(item)) {
+			$(DOMParentElement).data('locked', true);
+			$(DOMParentElement).addClass('locking-disabled');
 			$(buttonToDisable).off('click');
 
 			var that = this;
 
 			if (window.mode.isMobile()) {
-				var overlay = L.DomUtil.create('div', 'freemium-overlay', DOMParentElement);
-				var lock = L.DomUtil.create('img', 'freemium-overlay-lock', overlay);
-				lock.src = 'images/lc_freeemiumlock.svg';
+				var overlay = L.DomUtil.create('div', 'locking-overlay', DOMParentElement);
+				var lock = L.DomUtil.create('img', 'locking-overlay-lock', overlay);
+				L.LOUtil.setImage(lock, 'lc_lock.svg', this._docLayer._docType);
 			}
 
 			$(DOMParentElement).click(function(event) {
 				event.stopPropagation();
-				that.openSubscriptionPopup('');
+				that.openUnlockPopup('');
 			});
 		}
 	},
 
-	openSubscriptionPopup: function(cmd) {
-		if (this.isRestrictedUser() && this.isRestrictedItem(cmd))
+	openUnlockPopup: function(cmd) {
+		if ((this.isRestrictedUser() && this.isRestrictedItem(cmd)) || this.uiManager.isAnyDialogOpen())
 			return;
-		var freemiumOnMobile = '';
-
-		if (window.mode.isMobile()) {
-			freemiumOnMobile = 'mobile';
-		}
-		var that = this;
-		vex.dialog.confirm({
-			unsafeMessage: [
-				'<div class="container">',
-				'<div class="item illustration"></div>',
-				'<div class="item">',
-				'<h1>' + this.Freemium.freemiumPurchaseTitle + '</h1>',
-				'<p>' + this.Freemium.freemiumPurchaseDescription + '<p>',
-				'<ul>',
-				'<li>' + this.Freemium.writerHighlights + '</li>',
-				'<li>' + this.Freemium.calcHighlights + '</li>',
-				'<li>' + this.Freemium.impressHighlights + '</li>',
-				'<li>' + this.Freemium.drawHighlights + '</li>',
-				'</ul>',
-				'</div>',
-				'<div>'
-			].join(''),
-			showCloseButton: false,
-			contentClassName: 'vex-content vex-freemium ' + freemiumOnMobile,
-			callback: function (value) {
-				if (value)
-					window.open(that.Freemium.freemiumPurchaseLink, '_blank');
-			},
-			buttons: [
-				$.extend({}, vex.dialog.buttons.YES, { text: _('Unlock') }),
-				$.extend({}, vex.dialog.buttons.NO, { text: _('Cancel') })
-			]
+		var message = [
+			'<div class="container">',
+			'<div id="unlock-image" class="item illustration"></div>',
+			'<div class="item">',
+			'<h1>' + this.Locking.unlockTitle + '</h1>',
+			'<p>' + this.Locking.unlockDescription + '<p>',
+			'<ul>',
+		];
+		var highlights = [this.Locking.writerHighlights, this.Locking.calcHighlights, this.Locking.impressHighlights, this.Locking.drawHighlights];
+		highlights.forEach(function(highlight) {
+			if (highlight)
+				message.push('<li>' + highlight + '</li>');
 		});
+		message.push('</ul>', '</div>', '<div>');
+
+		message = message.join();
+
+		this.uiManager.showInfoModal('unlock-features-popup', this.Locking.unlockTitle, ' ', ' ', _('Unlock'), function() {
+			window.open(this.Locking.unlockLink, '_blank');
+			this.uiManager.closeModal(this.uiManager.generateModalId('unlock-features-popup'));
+		}.bind(this), true);
+		document.getElementById('unlock-features-popup').querySelectorAll('p')[0].outerHTML = message;
+
+		var unlockImage = L.DomUtil.get('unlock-image');
+		if (this.Locking.unlockImageUrlPath) {
+			unlockImage.style.backgroundImage = 'url(remote' + this.Locking.unlockImageUrlPath + ')';
+		} else {
+			unlockImage.style.backgroundImage = 'url(images/lock-illustration.svg)';
+		}
 	},
 
-	isFreemiumDeniedItem: function(item) {
+	isLockedItem: function(item) {
 		var commands = this._extractCommand(item);
 
 		for (var i in commands) {
-			if (this.Freemium.freemiumDenyList.indexOf(commands[i]) >= 0)
+			if (this.Locking.lockedCommandList.indexOf(commands[i]) >= 0)
 				return true;
 		}
 		return false;
 	},
 
-	isFreemiumUser: function() {
-		return this.Freemium.isFreemiumUser;
+	isLockedUser: function() {
+		return this.Locking.isLockedUser;
 	},
 
 	Restriction: {
@@ -123,7 +122,7 @@ L.Map.include({
 	hideRestrictedItems: function(item, DOMParentElement, buttonToDisable) {
 		if (this.isRestrictedUser() && this.isRestrictedItem(item)) {
 			$(buttonToDisable).addClass('restricted-item');
-			console.log();
+			window.app.console.log();
 		}
 
 	},
@@ -138,20 +137,41 @@ L.Map.include({
 		return false;
 	},
 
+	isLockReadOnly: function() {
+		return this.Locking.isLockReadOnly;
+	},
+
+	isLockedReadOnlyUser: function() {
+		return this.Locking.isLockedUser && this.Locking.isLockReadOnly;
+	},
+
 	_extractCommand: function(item) {
-		if (item.command) // in notebookbar uno commands are stored as command
-			return [item.command];
-		else if (item.uno) { // in classic mode uno commands are stored as uno in menus
-			if (typeof item.uno === 'string')
-				return [item.uno];
-			return [item.uno.textCommand , item.uno.objectCommand]; // some unos have multiple commands
+		if (!item)
+			return '';
+
+		var commandArray = [];
+		if (item.lockUno || item.uno) { // in classic mode uno commands are stored as uno in menus
+			var uno = item.lockUno ? item.lockUno : item.uno;
+			if (typeof uno === 'string')
+				commandArray.push(uno);
+			else { // some unos have multiple commands
+				commandArray.push(uno.textCommand);
+				commandArray.push(uno.objectCommand);
+				if (item.unosheet)
+					commandArray.push(item.unosheet);
+			}
 		}
+		else if (item.command) // in notebookbar uno commands are stored as command
+			commandArray.push(item.command);
 		else if (item.id)
-			return [item.id];
-		else if (item.unosheet)
-			return [item.unosheet];
+			commandArray.push(item.id);
 		else if (typeof item === 'string')
-			return [item];
-		return '';
+			commandArray.push(item);
+
+		for (var command in commandArray) {
+			if (!commandArray[command].startsWith('.uno:'))
+				commandArray[command] = '.uno:' + commandArray[command];
+		}
+		return commandArray;
 	}
 });

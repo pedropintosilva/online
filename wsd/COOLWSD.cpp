@@ -6,8 +6,12 @@
  */
 
 #include <config.h>
+#include <config_version.h>
+#include <stdexcept>
 #include "COOLWSD.hpp"
 #include "ProofKey.hpp"
+#include "CommandControl.hpp"
+#include "HostUtil.hpp"
 
 /* Default host used in the start test URI */
 #define COOLWSD_TEST_HOST "localhost"
@@ -72,6 +76,10 @@
 #include <Poco/Net/PartHandler.h>
 #include <Poco/Net/SocketAddress.h>
 #include <net/HttpHelper.hpp>
+#include <Poco/Net/AcceptCertificateHandler.h>
+#include <Poco/Net/Context.h>
+#include <Poco/Net/KeyConsoleHandler.h>
+#include <Poco/Net/SSLManager.h>
 
 using Poco::Net::HTMLForm;
 using Poco::Net::PartHandler;
@@ -116,6 +124,8 @@ using Poco::Net::PartHandler;
 #include "DocumentBroker.hpp"
 #include "Exceptions.hpp"
 #include "FileServer.hpp"
+#include "ProxyRequestHandler.hpp"
+#include <common/JsonUtil.hpp>
 #include <common/FileUtil.hpp>
 #include <common/JailUtil.hpp>
 #if defined KIT_IN_PROCESS || MOBILEAPP
@@ -136,10 +146,6 @@ using Poco::Net::PartHandler;
 #include <common/ConfigUtil.hpp>
 #include <common/TraceEvent.hpp>
 
-#ifdef FUZZER
-#  include <tools/Replay.hpp>
-#endif
-
 #include <common/SigUtil.hpp>
 
 #include <ServerSocket.hpp>
@@ -147,10 +153,12 @@ using Poco::Net::PartHandler;
 #if MOBILEAPP
 #ifdef IOS
 #include "ios.h"
-#elif GTKAPP
+#elif defined(GTKAPP)
 #include "gtk.hpp"
 #elif defined(__ANDROID__)
 #include "androidapp.hpp"
+#elif defined(__EMSCRIPTEN__)
+#include "wasmapp.hpp"
 #endif
 #endif
 
@@ -168,6 +176,7 @@ using Poco::StreamCopier;
 using Poco::URI;
 using Poco::Util::Application;
 using Poco::Util::HelpFormatter;
+using Poco::Util::LayeredConfiguration;
 using Poco::Util::MissingOptionException;
 using Poco::Util::Option;
 using Poco::Util::OptionSet;
@@ -181,7 +190,7 @@ using Poco::XML::InputSource;
 using Poco::XML::NodeList;
 
 /// Port for external clients to connect to
-int ClientPortNumber = DEFAULT_CLIENT_PORT_NUMBER;
+int ClientPortNumber = 0;
 /// Protocols to listen on
 Socket::Type ClientPortProto = Socket::Type::All;
 
@@ -191,6 +200,11 @@ ServerSocket::Type ClientListenAddr = ServerSocket::Type::Public;
 #if !MOBILEAPP
 /// UDS address for kits to connect to.
 std::string MasterLocation;
+
+std::string COOLWSD::BuyProductUrl;
+std::string COOLWSD::LatestVersion;
+std::mutex COOLWSD::FetchUpdateMutex;
+std::mutex COOLWSD::RemoteConfigMutex;
 #endif
 
 // Tracks the set of prisoners / children waiting to be used.
@@ -204,9 +218,13 @@ static std::map<std::string, std::shared_ptr<DocumentBroker> > DocBrokers;
 static std::mutex DocBrokersMutex;
 static Poco::AutoPtr<Poco::Util::XMLConfiguration> KitXmlConfig;
 
-extern "C" { void dump_state(void); /* easy for gdb */ }
+extern "C"
+{
+    void dump_state(void); /* easy for gdb */
+    void forwardSigUsr2();
+}
 
-#if ENABLE_DEBUG
+#if ENABLE_DEBUG && !MOBILEAPP
 static std::chrono::milliseconds careerSpanMs(std::chrono::milliseconds::zero());
 #endif
 
@@ -255,10 +273,12 @@ inline void shutdownLimitReached(const std::shared_ptr<ProtocolHandlerInterface>
 }
 #endif
 
+} // end anonymous namespace
+
 #if !MOBILEAPP
 /// Internal implementation to alert all clients
 /// connected to any document.
-void alertAllUsersInternal(const std::string& msg)
+void COOLWSD::alertAllUsersInternal(const std::string& msg)
 {
     std::lock_guard<std::mutex> docBrokersLock(DocBrokersMutex);
 
@@ -273,9 +293,21 @@ void alertAllUsersInternal(const std::string& msg)
         docBroker->addCallback([msg, docBroker](){ docBroker->alertAllUsers(msg); });
     }
 }
-#endif
 
-} // end anonymous namespace
+void COOLWSD::alertUserInternal(const std::string& dockey, const std::string& msg)
+{
+    std::lock_guard<std::mutex> docBrokersLock(DocBrokersMutex);
+
+    LOG_INF("Alerting document users with dockey: [" << dockey << ']' << " msg: [" << msg << ']');
+
+    for (auto& brokerIt : DocBrokers)
+    {
+        std::shared_ptr<DocumentBroker> docBroker = brokerIt.second;
+        if (docBroker->getDocKey() == dockey)
+            docBroker->addCallback([msg, docBroker](){ docBroker->alertAllUsers(msg); });
+    }
+}
+#endif
 
 void COOLWSD::writeTraceEventRecording(const char *data, std::size_t nbytes)
 {
@@ -291,6 +323,7 @@ void COOLWSD::writeTraceEventRecording(const std::string &recording)
     writeTraceEventRecording(recording.data(), recording.length());
 }
 
+#if !LIBFUZZER
 // FIXME: Somewhat idiotically, the parameter to emitOneRecordingIfEnabled() should end with a
 // newline, while the paramter to emitOneRecording() should not.
 
@@ -312,6 +345,8 @@ void TraceEvent::emitOneRecording(const std::string &recording)
 
     COOLWSD::writeTraceEventRecording(recording + "\n");
 }
+
+#endif //!LIBFUZZER
 
 void COOLWSD::checkSessionLimitsAndWarnClients()
 {
@@ -346,19 +381,20 @@ void COOLWSD::checkDiskSpaceAndWarnClients(const bool cacheLastCheck)
         if (!fs.empty())
         {
             LOG_WRN("File system of [" << fs << "] is dangerously low on disk space.");
-            alertAllUsersInternal("error: cmd=internal kind=diskfull");
+            COOLWSD::alertAllUsersInternal("error: cmd=internal kind=diskfull");
         }
     }
     catch (const std::exception& exc)
     {
         LOG_ERR("Exception while checking disk-space and warning clients: " << exc.what());
     }
+#else
+    (void) cacheLastCheck;
 #endif
 }
 
 /// Remove dead and idle DocBrokers.
 /// The client of idle document should've greyed-out long ago.
-/// Returns true if at least one is removed.
 void cleanupDocBrokers()
 {
     Util::assertIsLocked(DocBrokersMutex);
@@ -382,20 +418,18 @@ void cleanupDocBrokers()
 
     if (count != DocBrokers.size())
     {
-        Log::StreamLogger logger = Log::trace();
-        if (logger.enabled())
-        {
-            logger << "Have " << DocBrokers.size() << " DocBrokers after cleanup.\n";
-            for (auto& pair : DocBrokers)
-            {
-                logger << "DocumentBroker [" << pair.first << "].\n";
-            }
-
-            LOG_END(logger, true);
-        }
+        LOG_TRC("Have " << DocBrokers.size() << " DocBrokers after cleanup.\n"
+                        <<
+                [&](auto& log)
+                {
+                    for (auto& pair : DocBrokers)
+                    {
+                        log << "DocumentBroker [" << pair.first << "].\n";
+                    }
+                });
 
 #if !MOBILEAPP && ENABLE_DEBUG
-        if (COOLWSD::SingleKit && DocBrokers.size() == 0)
+        if (COOLWSD::SingleKit && DocBrokers.empty())
         {
             LOG_DBG("Setting ShutdownRequestFlag: No more docs left in single-kit mode.");
             SigUtil::requestShutdown();
@@ -419,8 +453,7 @@ static int forkChildren(const int number)
         COOLWSD::checkDiskSpaceAndWarnClients(false);
 
 #ifdef KIT_IN_PROCESS
-        forkLibreOfficeKit(COOLWSD::ChildRoot, COOLWSD::SysTemplate, COOLWSD::LoTemplate,
-                           LO_JAIL_SUBPATH, number);
+        forkLibreOfficeKit(COOLWSD::ChildRoot, COOLWSD::SysTemplate, COOLWSD::LoTemplate, number);
 #else
         const std::string aMessage = "spawn " + std::to_string(number) + '\n';
         LOG_DBG("MasterToForKit: " << aMessage.substr(0, aMessage.length() - 1));
@@ -460,7 +493,9 @@ static int rebalanceChildren(int balance)
 {
     Util::assertIsLocked(NewChildrenMutex);
 
-    LOG_TRC("rebalance children to " << balance);
+    const size_t available = NewChildren.size();
+    LOG_TRC("Rebalance children to " << balance << ", have " << available << " and "
+                                     << OutstandingForks << " outstanding requests");
 
     // Do the cleanup first.
     const bool rebalance = cleanupChildren();
@@ -476,15 +511,15 @@ static int rebalanceChildren(int balance)
         OutstandingForks = 0;
     }
 
-    const size_t available = NewChildren.size();
     balance -= available;
     balance -= OutstandingForks;
 
     if (balance > 0 && (rebalance || OutstandingForks == 0))
     {
-        LOG_DBG("prespawnChildren: Have " << available << " spare " <<
-                (available == 1 ? "child" : "children") << ", and " <<
-                OutstandingForks << " outstanding, forking " << balance << " more.");
+        LOG_DBG("prespawnChildren: Have " << available << " spare "
+                                          << (available == 1 ? "child" : "children") << ", and "
+                                          << OutstandingForks << " outstanding, forking " << balance
+                                          << " more. Time since last request: " << durationMs);
         return forkChildren(balance);
     }
 
@@ -503,8 +538,11 @@ static bool prespawnChildren()
 
 #endif
 
-static size_t addNewChild(const std::shared_ptr<ChildProcess>& child)
+static size_t addNewChild(std::shared_ptr<ChildProcess> child)
 {
+    assert(child && "Adding null child");
+    const auto pid = child->getPid();
+
     std::unique_lock<std::mutex> lock(NewChildrenMutex);
 
     --OutstandingForks;
@@ -512,14 +550,22 @@ static size_t addNewChild(const std::shared_ptr<ChildProcess>& child)
     if (OutstandingForks < 0)
         ++OutstandingForks;
 
-    LOG_TRC("Adding one child to NewChildren");
-    NewChildren.emplace_back(child);
+    if (COOLWSD::IsBindMountingEnabled)
+    {
+        // Reset the child-spawn timeout to the default, now that we're set.
+        // But only when mounting is enabled. Otherwise, copying is always slow.
+        ChildSpawnTimeoutMs = CHILD_TIMEOUT_MS;
+    }
+
+    LOG_TRC("Adding a new child " << pid << " to NewChildren, have " << OutstandingForks
+                                  << " outstanding requests");
+    NewChildren.emplace_back(std::move(child));
     const size_t count = NewChildren.size();
-    LOG_INF("Have " << count << " spare " <<
-            (count == 1 ? "child" : "children") << " after adding [" << child->getPid() << "].");
     lock.unlock();
 
-    LOG_TRC("Notifying NewChildrenCV");
+    LOG_INF("Have " << count << " spare " << (count == 1 ? "child" : "children")
+                    << " after adding [" << pid << "]. Notifying.");
+
     NewChildrenCV.notify_one();
     return count;
 }
@@ -532,16 +578,17 @@ std::mutex COOLWSD::lokit_main_mutex;
 
 std::shared_ptr<ChildProcess> getNewChild_Blocks(unsigned mobileAppDocId)
 {
-    std::unique_lock<std::mutex> lock(NewChildrenMutex);
-
+    (void)mobileAppDocId;
     const auto startTime = std::chrono::steady_clock::now();
 
-#if !MOBILEAPP
-    (void) mobileAppDocId;
+    std::unique_lock<std::mutex> lock(NewChildrenMutex);
 
-    LOG_DBG("getNewChild: Rebalancing children.");
+#if !MOBILEAPP
+    assert(mobileAppDocId == 0 && "Unexpected to have mobileAppDocId in the non-mobile build");
+
     int numPreSpawn = COOLWSD::NumPreSpawnedChildren;
     ++numPreSpawn; // Replace the one we'll dispatch just now.
+    LOG_DBG("getNewChild: Rebalancing children to " << numPreSpawn);
     if (rebalanceChildren(numPreSpawn) < 0)
     {
         LOG_DBG("getNewChild: rebalancing of children failed. Scheduling housekeeping to recover.");
@@ -552,12 +599,14 @@ std::shared_ptr<ChildProcess> getNewChild_Blocks(unsigned mobileAppDocId)
         return nullptr;
     }
 
-    // With valgrind we need extended time to spawn kits.
-    const auto timeoutMs = std::chrono::milliseconds(ChildSpawnTimeoutMs / 2);
-    LOG_TRC("Waiting for a new child for a max of " << timeoutMs);
-    const auto timeout = std::chrono::milliseconds(timeoutMs);
+    const auto timeout = std::chrono::milliseconds(ChildSpawnTimeoutMs / 2);
+    LOG_TRC("Waiting for a new child for a max of " << timeout);
 #else
     const auto timeout = std::chrono::hours(100);
+
+#ifdef IOS
+    assert(mobileAppDocId > 0 && "Unexpected to have no mobileAppDocId in the iOS build");
+#endif
 
     std::thread([&]
                 {
@@ -653,10 +702,10 @@ public:
         if (!params.has("filename"))
             return;
 
-        // The temporary directory is child-root/<JAIL_TMP_INCOMING_PATH>.
+        // The temporary directory is child-root/<CHILDROOT_TMP_INCOMING_PATH>.
         // Always create a random sub-directory to avoid file-name collision.
         Path tempPath = Path::forDirectory(
-            FileUtil::createRandomTmpDir(COOLWSD::ChildRoot + JailUtil::JAIL_TMP_INCOMING_PATH)
+            FileUtil::createRandomTmpDir(COOLWSD::ChildRoot + JailUtil::CHILDROOT_TMP_INCOMING_PATH)
             + '/');
         LOG_TRC("Created temporary convert-to/insert path: " << tempPath.toString());
 
@@ -725,9 +774,10 @@ public:
 
             // The temporary directory is child-root/<JAIL_TMP_INCOMING_PATH>.
             // Always create a random sub-directory to avoid file-name collision.
-            Path tempPath = Path::forDirectory(
-                FileUtil::createRandomTmpDir(COOLWSD::ChildRoot + JailUtil::JAIL_TMP_INCOMING_PATH)
-                + '/');
+            Path tempPath =
+                Path::forDirectory(FileUtil::createRandomTmpDir(
+                                       COOLWSD::ChildRoot + JailUtil::CHILDROOT_TMP_INCOMING_PATH) +
+                                   '/');
 
             LOG_TRC("Created temporary render-search-result file path: " << tempPath.toString());
 
@@ -843,27 +893,30 @@ std::shared_ptr<ForKitProcess> COOLWSD::ForKitProc;
 bool COOLWSD::NoCapsForKit = false;
 bool COOLWSD::NoSeccomp = false;
 bool COOLWSD::AdminEnabled = true;
+bool COOLWSD::UnattendedRun = false;
+bool COOLWSD::SignalParent = false;
+std::string COOLWSD::RouteToken;
 #if ENABLE_DEBUG
 bool COOLWSD::SingleKit = false;
+bool COOLWSD::ForceCaching = false;
 #endif
-#endif
-#ifdef FUZZER
-bool COOLWSD::DummyLOK = false;
-std::string COOLWSD::FuzzFileName;
 #endif
 std::string COOLWSD::SysTemplate;
 std::string COOLWSD::LoTemplate = LO_PATH;
+std::string COOLWSD::CleanupChildRoot;
 std::string COOLWSD::ChildRoot;
 std::string COOLWSD::ServerName;
 std::string COOLWSD::FileServerRoot;
-std::string COOLWSD::WelcomeFilesRoot;
 std::string COOLWSD::ServiceRoot;
+std::string COOLWSD::TmpFontDir;
 std::string COOLWSD::LOKitVersion;
 std::string COOLWSD::ConfigFile = COOLWSD_CONFIGDIR "/coolwsd.xml";
 std::string COOLWSD::ConfigDir = COOLWSD_CONFIGDIR "/conf.d";
 bool COOLWSD::EnableTraceEventLogging = false;
+bool COOLWSD::EnableAccessibility = false;
 FILE *COOLWSD::TraceEventFile = NULL;
 std::string COOLWSD::LogLevel = "trace";
+std::string COOLWSD::LogLevelStartup = "trace";
 std::string COOLWSD::MostVerboseLogLevelSettableFromClient = "notice";
 std::string COOLWSD::LeastVerboseLogLevelSettableFromClient = "fatal";
 std::string COOLWSD::UserInterface = "default";
@@ -880,6 +933,7 @@ unsigned COOLWSD::MaxDocuments;
 std::string COOLWSD::OverrideWatermark;
 std::set<const Poco::Util::AbstractConfiguration*> COOLWSD::PluginConfigurations;
 std::chrono::steady_clock::time_point COOLWSD::StartTime;
+bool COOLWSD::IsBindMountingEnabled = true;
 
 // If you add global state please update dumpState below too
 
@@ -887,8 +941,6 @@ static std::string UnitTestLibrary;
 
 unsigned int COOLWSD::NumPreSpawnedChildren = 0;
 std::unique_ptr<TraceFileWriter> COOLWSD::TraceDumper;
-std::unordered_map<std::string, std::vector<std::string>> COOLWSD::QuarantineMap;
-std::string COOLWSD::QuarantinePath;
 #if !MOBILEAPP
 std::unique_ptr<ClipboardCache> COOLWSD::SavedClipboards;
 #endif
@@ -896,7 +948,7 @@ std::unique_ptr<ClipboardCache> COOLWSD::SavedClipboards;
 /// This thread polls basic web serving, and handling of
 /// websockets before upgrade: when upgraded they go to the
 /// relevant DocumentBroker poll instead.
-static std::unique_ptr<TerminatingPoll> WebServerPoll;
+static std::shared_ptr<TerminatingPoll> WebServerPoll;
 
 class PrisonPoll : public TerminatingPoll
 {
@@ -910,7 +962,7 @@ public:
     // Resets the forkit process object
     void setForKitProcess(const std::weak_ptr<ForKitProcess>& forKitProc)
     {
-        assertCorrectThread();
+        assertCorrectThread(__FILE__, __LINE__);
         _forKitProc = forKitProc;
     }
 
@@ -950,6 +1002,7 @@ private:
 static std::unique_ptr<PrisonPoll> PrisonerPoll;
 
 /// The Web Server instance with the accept socket poll thread.
+class COOLWSDServer;
 static std::unique_ptr<COOLWSDServer> Server;
 
 /// Helper class to hold default configuration entries.
@@ -963,6 +1016,15 @@ public:
             setRaw(pair.first, pair.second);
         }
     }
+
+    void reset(const std::map<std::string, std::string>& map)
+    {
+        clear();
+        for (const auto& pair : map)
+        {
+            setRaw(pair.first, pair.second);
+        }
+    }
 };
 
 #if !MOBILEAPP
@@ -971,7 +1033,7 @@ void ForKitProcWSHandler::handleMessage(const std::vector<char> &data)
 {
     LOG_TRC("ForKitProcWSHandler: handling incoming [" << COOLProtocol::getAbbreviatedMessage(&data[0], data.size()) << "].");
     const std::string firstLine = COOLProtocol::getFirstLine(&data[0], data.size());
-    const StringVector tokens = Util::tokenize(firstLine.data(), firstLine.size());
+    const StringVector tokens = StringVector::tokenize(firstLine.data(), firstLine.size());
 
     if (tokens.equals(0, "segfaultcount"))
     {
@@ -1002,6 +1064,871 @@ COOLWSD::~COOLWSD()
 {
 }
 
+#if !MOBILEAPP
+
+/**
+  A custom socket poll to fetch remote config every 60 seconds.
+  If config changes it applies the new config using LayeredConfiguration.
+
+  The URI to fetch is read from the configuration too - it is either the
+  remote config itself, or the font configuration.  It si passed via the
+  uriConfigKey param.
+*/
+class RemoteJSONPoll : public SocketPoll
+{
+public:
+    RemoteJSONPoll(LayeredConfiguration& config, const std::string& uriConfigKey, const std::string& name, const std::string& kind)
+        : SocketPoll(name)
+        , _conf(config)
+        , _configKey(uriConfigKey)
+        , _expectedKind(kind)
+    { }
+
+    virtual ~RemoteJSONPoll() { }
+
+    virtual void handleJSON(Poco::JSON::Object::Ptr json) = 0;
+
+    virtual void handleUnchangedJSON()
+    { }
+
+    void start()
+    {
+        Poco::URI remoteServerURI(_conf.getString(_configKey));
+
+        if (_expectedKind == "configuration")
+        {
+            if (remoteServerURI.empty())
+            {
+                LOG_INF("Remote " << _expectedKind << " is not specified in coolwsd.xml");
+                return; // no remote config server setup.
+            }
+#if !ENABLE_DEBUG
+            if (Util::iequal(remoteServerURI.getScheme(), "http"))
+            {
+                LOG_ERR("Remote config url should only use HTTPS protocol: " << remoteServerURI.toString());
+                return;
+            }
+#endif
+        }
+
+        startThread();
+    }
+
+    void pollingThread()
+    {
+        while (!isStop() && !SigUtil::getTerminationFlag() && !SigUtil::getShutdownRequestFlag())
+        {
+            Poco::URI remoteServerURI(_conf.getString(_configKey));
+
+            // don't try to fetch from an empty URI
+            bool valid = !remoteServerURI.empty();
+
+#if !ENABLE_DEBUG
+            if (Util::iequal(remoteServerURI.getScheme(), "http"))
+            {
+                LOG_ERR("Remote config url should only use HTTPS protocol: " << remoteServerURI.toString());
+                valid = false;
+            }
+#endif
+
+            if (valid)
+            {
+                try
+                {
+                    std::shared_ptr<http::Session> httpSession(
+                            StorageBase::getHttpSession(remoteServerURI));
+                    http::Request request(remoteServerURI.getPathAndQuery());
+
+                    //we use ETag header to check whether JSON is modified or not
+                    if (!_eTagValue.empty())
+                    {
+                        request.set("If-None-Match", _eTagValue);
+                    }
+
+                    const std::shared_ptr<const http::Response> httpResponse =
+                        httpSession->syncRequest(request);
+
+                    const http::StatusCode statusCode = httpResponse->statusLine().statusCode();
+
+                    if (statusCode == http::StatusCode::OK)
+                    {
+                        _eTagValue = httpResponse->get("ETag");
+
+                        std::string body = httpResponse->getBody();
+
+                        LOG_DBG("Got " << body.size() << " bytes for " << remoteServerURI.toString());
+
+                        Poco::JSON::Object::Ptr remoteJson;
+                        if (JsonUtil::parseJSON(body, remoteJson))
+                        {
+                            std::string kind;
+                            JsonUtil::findJSONValue(remoteJson, "kind", kind);
+                            if (kind == _expectedKind)
+                            {
+                                handleJSON(remoteJson);
+                            }
+                            else
+                            {
+                                LOG_ERR("Make sure that " << remoteServerURI.toString() << " contains a property 'kind' with "
+                                        "value '" << _expectedKind << "'");
+                            }
+                        }
+                        else
+                        {
+                            LOG_ERR("Could not parse the remote config JSON");
+                        }
+                    }
+                    else if (statusCode == http::StatusCode::NotModified)
+                    {
+                        LOG_DBG("Not modified since last time: " << remoteServerURI.toString());
+                        handleUnchangedJSON();
+                    }
+                    else
+                    {
+                        LOG_ERR("Remote config server has response status code: " << statusCode);
+                    }
+                }
+                catch (...)
+                {
+                    LOG_ERR("Failed to fetch remote config JSON, Please check JSON format");
+                }
+            }
+            poll(std::chrono::seconds(60));
+        }
+    }
+
+protected:
+    LayeredConfiguration& _conf;
+    std::string _eTagValue;
+
+private:
+    std::string _configKey;
+    std::string _expectedKind;
+};
+
+class RemoteConfigPoll : public RemoteJSONPoll
+{
+public:
+    RemoteConfigPoll(LayeredConfiguration& config) :
+        RemoteJSONPoll(config, "remote_config.remote_url", "remoteconfig_poll", "configuration")
+    {
+        constexpr int PRIO_JSON = -200; // highest priority
+        _persistConfig = new AppConfigMap(std::map<std::string, std::string>{});
+        _conf.addWriteable(_persistConfig, PRIO_JSON);
+    }
+
+    virtual ~RemoteConfigPoll() { }
+
+    void handleJSON(Poco::JSON::Object::Ptr remoteJson) override
+    {
+        std::map<std::string, std::string> newAppConfig;
+
+        fetchAliasGroups(newAppConfig, remoteJson);
+
+#if ENABLE_FEATURE_LOCK
+        fetchLockedHostPatterns(newAppConfig, remoteJson);
+        fetchLockedTranslations(newAppConfig, remoteJson);
+        fetchUnlockImageUrl(newAppConfig, remoteJson);
+#endif
+
+        fetchIndirectionEndpoint(newAppConfig, remoteJson);
+
+        fetchMonitors(newAppConfig, remoteJson);
+
+        fetchRemoteFontConfig(newAppConfig, remoteJson);
+
+        // before resetting get monitors list
+        std::vector<std::pair<std::string,int>> oldMonitors = Admin::instance().getMonitorList();
+
+        _persistConfig->reset(newAppConfig);
+
+#if ENABLE_FEATURE_LOCK
+        CommandControl::LockManager::parseLockedHost(_conf);
+#endif
+        Admin::instance().updateMonitors(oldMonitors);
+
+        HostUtil::parseAliases(_conf);
+
+        handleOptions(remoteJson);
+    }
+
+    void fetchLockedHostPatterns(std::map<std::string, std::string>& newAppConfig,
+                                 Poco::JSON::Object::Ptr remoteJson)
+    {
+        try
+        {
+            Poco::JSON::Object::Ptr lockedHost;
+            Poco::JSON::Array::Ptr lockedHostPatterns;
+            try
+            {
+                lockedHost = remoteJson->getObject("feature_locking")->getObject("locked_hosts");
+                lockedHostPatterns = lockedHost->getArray("hosts");
+            }
+            catch (const Poco::NullPointerException&)
+            {
+                LOG_INF("Overriding locked_hosts failed because feature_locking->locked_hosts->hosts array does not exist");
+                return;
+            }
+
+            if (lockedHostPatterns.isNull() || lockedHostPatterns->size() == 0)
+            {
+                LOG_INF(
+                    "Overriding locked_hosts failed because locked_hosts->hosts array is empty or null");
+                return;
+            }
+
+            //use feature_lock.locked_hosts[@allow] entry from coolwsd.xml if feature_lock.locked_hosts.allow key doesnot exist in json
+            Poco::Dynamic::Var allow = false;
+            if (!lockedHost->has("allow"))
+            {
+                allow = _conf.getBool("feature_lock.locked_hosts[@allow]");
+            }
+            else
+            {
+                allow = lockedHost->get("allow");
+            }
+            newAppConfig.insert(std::make_pair("feature_lock.locked_hosts[@allow]", booleanToString(allow)));
+
+            if (booleanToString(allow) == "false")
+            {
+                LOG_INF("locked_hosts feature is disabled, set feature_lock->locked_hosts->allow to true to enable");
+                return;
+            }
+
+            std::size_t i;
+            for (i = 0; i < lockedHostPatterns->size(); i++)
+            {
+                std::string host;
+                Poco::JSON::Object::Ptr subObject = lockedHostPatterns->getObject(i);
+                JsonUtil::findJSONValue(subObject, "host", host);
+                Poco::Dynamic::Var readOnly = subObject->get("read_only");
+                Poco::Dynamic::Var disabledCommands = subObject->get("disabled_commands");
+
+                const std::string path =
+                    "feature_lock.locked_hosts.host[" + std::to_string(i) + "]";
+                newAppConfig.insert(std::make_pair(path, host));
+                newAppConfig.insert(std::make_pair(path + "[@read_only]", booleanToString(readOnly)));
+                newAppConfig.insert(std::make_pair(path + "[@disabled_commands]",
+                                                   booleanToString(disabledCommands)));
+            }
+
+            //if number of locked wopi host patterns defined in coolwsd.xml are greater than number of host
+            //fetched from json, overwrite the remaining host from config file to empty strings and
+            //set read_only and disabled_commands to false
+            for (;; ++i)
+            {
+                const std::string path =
+                    "feature_lock.locked_hosts.host[" + std::to_string(i) + "]";
+                if (!_conf.has(path))
+                {
+                    break;
+                }
+                newAppConfig.insert(std::make_pair(path, ""));
+                newAppConfig.insert(std::make_pair(path + "[@read_only]", "false"));
+                newAppConfig.insert(std::make_pair(path + "[@disabled_commands]", "false"));
+            }
+        }
+        catch (const std::exception& exc)
+        {
+            LOG_ERR("Failed to fetch locked_hosts, please check JSON format: " << exc.what());
+        }
+    }
+
+    void fetchAliasGroups(std::map<std::string, std::string>& newAppConfig,
+                          Poco::JSON::Object::Ptr remoteJson)
+    {
+        try
+        {
+            Poco::JSON::Object::Ptr aliasGroups;
+            Poco::JSON::Array::Ptr groups;
+
+            try
+            {
+                aliasGroups = remoteJson->getObject("storage")->getObject("wopi")->getObject("alias_groups");
+                groups = aliasGroups->getArray("groups");
+            }
+            catch (const Poco::NullPointerException&)
+            {
+                LOG_INF("Overriding alias_groups failed because storage->wopi->alias_groups->groups array does not exist");
+                return;
+            }
+
+            if (groups.isNull() || groups->size() == 0)
+            {
+                LOG_INF("Overriding alias_groups failed because alias_groups->groups array is empty or null");
+                return;
+            }
+
+            std::string mode = "first";
+            JsonUtil::findJSONValue(aliasGroups, "mode", mode);
+            newAppConfig.insert(std::make_pair("storage.wopi.alias_groups[@mode]", mode));
+
+            std::size_t i;
+            for (i = 0; i < groups->size(); i++)
+            {
+                Poco::JSON::Object::Ptr group = groups->getObject(i);
+                std::string host;
+                JsonUtil::findJSONValue(group, "host", host);
+                Poco::Dynamic::Var allow = group->get("allow");
+                const std::string path =
+                    "storage.wopi.alias_groups.group[" + std::to_string(i) + ']';
+
+                newAppConfig.insert(std::make_pair(path + ".host", host));
+                newAppConfig.insert(std::make_pair(path + ".host[@allow]", booleanToString(allow)));
+#if ENABLE_FEATURE_LOCK
+                std::string unlockLink;
+                JsonUtil::findJSONValue(group, "unlock_link", unlockLink);
+                newAppConfig.insert(std::make_pair(path + ".unlock_link", unlockLink));
+#endif
+                Poco::JSON::Array::Ptr aliases = group->getArray("aliases");
+
+                size_t j = 0;
+                if (aliases)
+                {
+                    auto it = aliases->begin();
+                    for (; j < aliases->size(); j++)
+                    {
+                        const std::string aliasPath = path + ".alias[" + std::to_string(j) + ']';
+                        newAppConfig.insert(std::make_pair(aliasPath, it->toString()));
+                        it++;
+                    }
+                }
+                for (;; j++)
+                {
+                    const std::string aliasPath = path + ".alias[" + std::to_string(j) + ']';
+                    if (!_conf.has(aliasPath))
+                    {
+                        break;
+                    }
+                    newAppConfig.insert(std::make_pair(aliasPath, ""));
+                }
+            }
+
+            //if number of alias_groups defined in configuration are greater than number of alias_group
+            //fetched from json, overwrite the remaining alias_groups from config file to empty strings and
+            for (;; i++)
+            {
+                const std::string path =
+                    "storage.wopi.alias_groups.group[" + std::to_string(i) + "].host";
+                if (!_conf.has(path))
+                {
+                    break;
+                }
+                newAppConfig.insert(std::make_pair(path, ""));
+                newAppConfig.insert(std::make_pair(path + "[@allowed]", "false"));
+            }
+        }
+        catch (const std::exception& exc)
+        {
+            LOG_ERR("Fetching of alias groups failed with error: " << exc.what()
+                                                                   << ", please check JSON format");
+        }
+    }
+
+    void fetchRemoteFontConfig(std::map<std::string, std::string>& newAppConfig,
+                               Poco::JSON::Object::Ptr remoteJson)
+    {
+        try
+        {
+            Poco::JSON::Object::Ptr remoteFontConfig = remoteJson->getObject("remote_font_config");
+
+            std::string url;
+            if (JsonUtil::findJSONValue(remoteFontConfig, "url", url))
+                newAppConfig.insert(std::make_pair("remote_font_config.url", url));
+        }
+        catch (const Poco::NullPointerException&)
+        {
+            LOG_INF("Overriding the remote font config URL failed because the remove_font_config entry does not exist");
+        }
+        catch (const std::exception& exc)
+        {
+            LOG_ERR("Failed to fetch remote_font_config, please check JSON format: " << exc.what());
+        }
+    }
+
+    void fetchLockedTranslations(std::map<std::string, std::string>& newAppConfig,
+                                 Poco::JSON::Object::Ptr remoteJson)
+    {
+        try
+        {
+            Poco::JSON::Array::Ptr lockedTranslations;
+            try
+            {
+                lockedTranslations =
+                    remoteJson->getObject("feature_locking")->getArray("translations");
+            }
+            catch (const Poco::NullPointerException&)
+            {
+                LOG_INF(
+                    "Overriding translations failed because feature_locking->translations array "
+                    "does not exist");
+                return;
+            }
+
+            if (lockedTranslations.isNull() || lockedTranslations->size() == 0)
+            {
+                LOG_INF("Overriding feature_locking->translations failed because array is empty or "
+                        "null");
+                return;
+            }
+
+            std::size_t i;
+            for (i = 0; i < lockedTranslations->size(); i++)
+            {
+                Poco::JSON::Object::Ptr translation = lockedTranslations->getObject(i);
+                std::string language;
+                //default values if the one of the entry is missing in json
+                std::string title = _conf.getString("feature_lock.unlock_title", "");
+                std::string description = _conf.getString("feature_lock.unlock_description", "");
+                std::string writerHighlights =
+                    _conf.getString("feature_lock.writer_unlock_highlights", "");
+                std::string impressHighlights =
+                    _conf.getString("feature_lock.impress_unlock_highlights", "");
+                std::string calcHighlights =
+                    _conf.getString("feature_lock.calc_unlock_highlights", "");
+                std::string drawHighlights =
+                    _conf.getString("feature_lock.draw_unlock_highlights", "");
+
+                JsonUtil::findJSONValue(translation, "language", language);
+                JsonUtil::findJSONValue(translation, "unlock_title", title);
+                JsonUtil::findJSONValue(translation, "unlock_description", description);
+                JsonUtil::findJSONValue(translation, "writer_unlock_highlights", writerHighlights);
+                JsonUtil::findJSONValue(translation, "calc_unlock_highlights", calcHighlights);
+                JsonUtil::findJSONValue(translation, "impress_unlock_highlights",
+                                        impressHighlights);
+                JsonUtil::findJSONValue(translation, "draw_unlock_highlights", drawHighlights);
+
+                const std::string path =
+                    "feature_lock.translations.language[" + std::to_string(i) + ']';
+
+                newAppConfig.insert(std::make_pair(path + "[@name]", language));
+                newAppConfig.insert(std::make_pair(path + ".unlock_title", title));
+                newAppConfig.insert(std::make_pair(path + ".unlock_description", description));
+                newAppConfig.insert(
+                    std::make_pair(path + ".writer_unlock_highlights", writerHighlights));
+                newAppConfig.insert(
+                    std::make_pair(path + ".calc_unlock_highlights", calcHighlights));
+                newAppConfig.insert(
+                    std::make_pair(path + ".impress_unlock_highlights", impressHighlights));
+                newAppConfig.insert(
+                    std::make_pair(path + ".draw_unlock_highlights", drawHighlights));
+            }
+
+            //if number of translations defined in configuration are greater than number of translation
+            //fetched from json, overwrite the remaining translations from config file to empty strings
+            for (;; i++)
+            {
+                const std::string path =
+                    "feature_lock.translations.language[" + std::to_string(i) + "][@name]";
+                if (!_conf.has(path))
+                {
+                    break;
+                }
+                newAppConfig.insert(std::make_pair(path, ""));
+            }
+        }
+        catch (const std::exception& exc)
+        {
+            LOG_ERR("Failed to fetch feature_locking->translations, please check JSON format: " << exc.what());
+        }
+    }
+
+    void fetchUnlockImageUrl(std::map<std::string, std::string>& newAppConfig,
+                             Poco::JSON::Object::Ptr remoteJson)
+    {
+        try
+        {
+            Poco::JSON::Object::Ptr featureLocking = remoteJson->getObject("feature_locking");
+
+            std::string unlockImage;
+            if (JsonUtil::findJSONValue(featureLocking, "unlock_image", unlockImage))
+            {
+                newAppConfig.insert(std::make_pair("feature_lock.unlock_image", unlockImage));
+            }
+        }
+        catch (const Poco::NullPointerException&)
+        {
+            LOG_INF("Overriding unlock_image URL failed because the unlock_image entry does not "
+                    "exist");
+        }
+        catch (const std::exception& exc)
+        {
+            LOG_ERR("Failed to fetch unlock_image, please check JSON format: " << exc.what());
+        }
+    }
+
+    void fetchIndirectionEndpoint(std::map<std::string, std::string>& newAppConfig,
+                                  Poco::JSON::Object::Ptr remoteJson)
+    {
+        try
+        {
+            Poco::JSON::Object::Ptr indirectionEndpoint =
+                remoteJson->getObject("indirection_endpoint");
+
+            std::string url;
+            if (JsonUtil::findJSONValue(indirectionEndpoint, "url", url))
+            {
+                newAppConfig.insert(std::make_pair("indirection_endpoint.url", url));
+            }
+        }
+        catch (const Poco::NullPointerException&)
+        {
+            LOG_INF("Overriding indirection_endpoint.url failed because the indirection_endpoint.url "
+                    "entry does not "
+                    "exist");
+        }
+        catch (const std::exception& exc)
+        {
+            LOG_ERR(
+                "Failed to fetch indirection_endpoint, please check JSON format: " << exc.what());
+        }
+    }
+
+    void fetchMonitors(std::map<std::string, std::string>& newAppConfig,
+                       Poco::JSON::Object::Ptr remoteJson)
+    {
+        Poco::JSON::Array::Ptr monitors;
+        try
+        {
+            monitors = remoteJson->getArray("monitors");
+        }
+        catch (const Poco::NullPointerException&)
+        {
+            LOG_INF("Overriding monitor failed because array "
+                    "does not exist");
+            return;
+        }
+
+        if (monitors.isNull() || monitors->size() == 0)
+        {
+            LOG_INF("Overriding monitors failed because array is empty or "
+                    "null");
+            return;
+        }
+        std::size_t i;
+        for (i = 0; i < monitors->size(); i++)
+            newAppConfig.insert(
+                std::make_pair("monitors.monitor[" + std::to_string(i) + ']', monitors->get(i).toString()));
+
+        //if number of monitors defined in configuration are greater than number of monitors
+        //fetched from json or if the number of monitors shrinks with new json,
+        //overwrite the remaining monitors from config file to empty strings
+        for (;; i++)
+        {
+            const std::string path =
+                "monitors.monitor[" + std::to_string(i) + ']';
+            if (!_conf.has(path))
+            {
+                break;
+            }
+            newAppConfig.insert(std::make_pair(path, ""));
+        }
+    }
+
+    void handleOptions(Poco::JSON::Object::Ptr remoteJson)
+    {
+        try
+        {
+            std::string buyProduct;
+            JsonUtil::findJSONValue(remoteJson, "buy_product_url", buyProduct);
+            Poco::URI buyProductUri(buyProduct);
+            {
+                std::lock_guard<std::mutex> lock(COOLWSD::RemoteConfigMutex);
+                COOLWSD::BuyProductUrl = buyProductUri.toString();
+            }
+        }
+        catch(const Poco::Exception& exc)
+        {
+            LOG_ERR("handleOptions: Exception " << exc.what());
+        }
+    }
+
+    //sets property to false if it is missing from JSON
+    //and returns std::string
+    std::string booleanToString(Poco::Dynamic::Var& booleanFlag)
+    {
+        if (booleanFlag.isEmpty())
+        {
+            booleanFlag = "false";
+        }
+        return booleanFlag.toString();
+    }
+
+private:
+    // keeps track of remote config layer
+    Poco::AutoPtr<AppConfigMap> _persistConfig = nullptr;
+};
+
+class RemoteFontConfigPoll : public RemoteJSONPoll
+{
+public:
+    RemoteFontConfigPoll(LayeredConfiguration& config)
+        : RemoteJSONPoll(config, "remote_font_config.url", "remotefontconfig_poll", "fontconfiguration")
+    {
+    }
+
+    virtual ~RemoteFontConfigPoll() { }
+
+    void handleJSON(Poco::JSON::Object::Ptr remoteJson) override
+    {
+        // First mark all fonts we have downloaded previously as "inactive" to be able to check if
+        // some font gets deleted from the list in the JSON file.
+        for (auto& it : fonts)
+            it.second.active = false;
+
+        // Just pick up new fonts.
+        auto fontsPtr = remoteJson->getArray("fonts");
+        if (!fontsPtr)
+        {
+            LOG_WRN("The 'fonts' property does not exist or is not an array");
+            return;
+        }
+
+        for (std::size_t i = 0; i < fontsPtr->size(); i++)
+        {
+            if (!fontsPtr->isObject(i))
+                LOG_WRN("Element " << i << " in fonts array is not an object");
+            else
+            {
+                const auto fontPtr = fontsPtr->getObject(i);
+                const auto uriPtr = fontPtr->get("uri");
+                if (uriPtr.isEmpty() || !uriPtr.isString())
+                    LOG_WRN("Element in fonts array does not have an 'uri' property or it is not a string");
+                else
+                {
+                    const std::string uri = uriPtr.toString();
+                    const auto stampPtr = fontPtr->get("stamp");
+
+                    if (!stampPtr.isEmpty() && !stampPtr.isString())
+                        LOG_WRN("Element in fonts array with uri '" << uri << "' has a stamp property that is not a string, ignored");
+                    else if (fonts.count(uri) == 0)
+                    {
+                        // First case: This font has not been downloaded.
+                        if (!stampPtr.isEmpty())
+                        {
+                            if (downloadPlain(uri))
+                            {
+                                fonts[uri].stamp = stampPtr.toString();
+                                fonts[uri].active = true;
+                            }
+                        }
+                        else
+                        {
+                            if (downloadWithETag(uri, ""))
+                            {
+                                fonts[uri].active = true;
+                            }
+                        }
+                    }
+                    else if (!stampPtr.isEmpty() && stampPtr.toString() != fonts[uri].stamp)
+                    {
+                        // Second case: Font has been downloaded already, has a "stamp" property,
+                        // and that has been changed in the JSON since it was downloaded.
+                        restartForKitAndReDownloadConfigFile();
+                        break;
+                    }
+                    else if (!stampPtr.isEmpty())
+                    {
+                        // Third case: Font has been downloaded already, has a "stamp" property, and
+                        // that has *not* changed in the JSON since it was downloaded.
+                        fonts[uri].active = true;
+                    }
+                    else
+                    {
+                        // Last case: Font has been downloaded but does not have a "stamp" property.
+                        // Use ETag.
+                        if (!eTagUnchanged(uri, fonts[uri].eTag))
+                        {
+                            restartForKitAndReDownloadConfigFile();
+                            break;
+                        }
+                        fonts[uri].active = true;
+                    }
+                }
+            }
+        }
+
+        // Any font that has been deleted from the JSON needs to be removed on this side, too.
+        for (const auto &it : fonts)
+        {
+            if (!it.second.active)
+            {
+                LOG_DBG("Font no longer mentioned in the remote font config: " << it.first);
+                restartForKitAndReDownloadConfigFile();
+                break;
+            }
+        }
+    }
+
+    void handleUnchangedJSON() override
+    {
+        // Iterate over the fonts that were mentioned in the JSON file when it was last downloaded.
+        for (auto& it : fonts)
+        {
+            // If the JSON has a "stamp" for the font, and we have already downloaded it, by
+            // definition we don't need to do anything when the JSON file has not changed.
+            if (it.second.stamp != "" && it.second.pathName != "")
+                continue;
+
+            // If the JSON has a "stamp" it must have been downloaded already. Should we even
+            // assert() that?
+            if (it.second.stamp != "" && it.second.pathName == "")
+            {
+                LOG_WRN("Font at " << it.first << " was not downloaded, should have been");
+                continue;
+            }
+
+            // Otherwise use the ETag to check if the font file needs re-downloading.
+            if (!eTagUnchanged(it.first, it.second.eTag))
+            {
+                restartForKitAndReDownloadConfigFile();
+                break;
+            }
+        }
+    }
+
+private:
+    bool downloadPlain(const std::string& uri)
+    {
+        const Poco::URI fontUri{uri};
+        std::shared_ptr<http::Session> httpSession(StorageBase::getHttpSession(fontUri));
+        http::Request request(fontUri.getPathAndQuery());
+
+        request.set("User-Agent", WOPI_AGENT_STRING);
+
+        const std::shared_ptr<const http::Response> httpResponse
+            = httpSession->syncRequest(request);
+
+        return finishDownload(uri, httpResponse);
+    }
+
+    bool eTagUnchanged(const std::string& uri, const std::string& oldETag)
+    {
+        const Poco::URI fontUri{uri};
+        std::shared_ptr<http::Session> httpSession(StorageBase::getHttpSession(fontUri));
+        http::Request request(fontUri.getPathAndQuery());
+
+        if (!oldETag.empty())
+        {
+            request.set("If-None-Match", oldETag);
+        }
+
+        request.set("User-Agent", WOPI_AGENT_STRING);
+
+        const std::shared_ptr<const http::Response> httpResponse
+            = httpSession->syncRequest(request);
+
+        if (httpResponse->statusLine().statusCode() == http::StatusCode::NotModified)
+        {
+            LOG_DBG("Not modified since last time: " << uri);
+            return true;
+        }
+
+        return false;
+    }
+
+    bool downloadWithETag(const std::string& uri, const std::string& oldETag)
+    {
+        const Poco::URI fontUri{uri};
+        std::shared_ptr<http::Session> httpSession(StorageBase::getHttpSession(fontUri));
+        http::Request request(fontUri.getPathAndQuery());
+
+        if (!oldETag.empty())
+        {
+            request.set("If-None-Match", oldETag);
+        }
+
+        request.set("User-Agent", WOPI_AGENT_STRING);
+
+        const std::shared_ptr<const http::Response> httpResponse
+            = httpSession->syncRequest(request);
+
+        if (httpResponse->statusLine().statusCode() == http::StatusCode::NotModified)
+        {
+            LOG_DBG("Not modified since last time: " << uri);
+            return true;
+        }
+
+        if (!finishDownload(uri, httpResponse))
+            return false;
+
+        fonts[uri].eTag = httpResponse->get("ETag");
+        return true;
+    }
+
+    bool finishDownload(const std::string& uri, const std::shared_ptr<const http::Response> httpResponse)
+    {
+        if (httpResponse->statusLine().statusCode() != http::StatusCode::OK)
+        {
+            LOG_WRN("Could not fetch " << uri);
+            return false;
+        }
+
+        const std::string body = httpResponse->getBody();
+
+        std::string fontFile;
+
+        // We intentionally use a new file name also when an updated version of a font is
+        // downloaded. It causes trouble to rewrite the same file, in case it is in use in some Kit
+        // process at the moment.
+
+        // We don't remove the old file either as that also causes problems.
+
+        // And in reality, it is a bit unclear how likely it even is that fonts downloaded through
+        // this mechanism even will be updated.
+        fontFile = COOLWSD::TmpFontDir + "/" + Util::encodeId(Util::rng::getNext()) + ".ttf";
+
+        std::ofstream fontStream(fontFile);
+        fontStream.write(body.data(), body.size());
+        if (!fontStream.good())
+        {
+                LOG_ERR("Could not write to " << fontFile);
+                return false;
+        }
+
+        LOG_DBG("Got " << body.size() << " bytes for " << uri << " and wrote to " << fontFile);
+        fonts[uri].pathName = fontFile;
+
+        COOLWSD::sendMessageToForKit("addfont " + fontFile);
+
+        return true;
+    }
+
+    void restartForKitAndReDownloadConfigFile()
+    {
+        LOG_DBG("Downloaded font has been updated or a font has been removed. ForKit must be restarted.");
+        fonts.clear();
+        // Clear the saved ETag of the remote font configuration file so that it will be
+        // re-downloaded, and all fonts mentioned in it re-downloaded and fed to ForKit.
+        _eTagValue = "";
+        COOLWSD::sendMessageToForKit("exit");
+    }
+
+    struct FontData
+    {
+        // Each font can have a "stamp" in the JSON that we treat just as a string. In practice it
+        // can be some timestamp, but we don't parse it. If the stamp is changed, we re-download the
+        // font file.
+        std::string stamp;
+
+        // If the font has no "stamp" property, we use the ETag mechanism to see if the font file
+        // needs to be re-downloaded.
+        std::string eTag;
+
+        // Where the font has been stored
+        std::string pathName;
+
+        // Flag that tells whether the font is mentioned in the JSON file that is being handled.
+        // Used only in handleJSON() when the JSON has been (re-)downloaded, not when the JSON was
+        // unchanged in handleUnchangedJSON().
+        bool active;
+    };
+
+    // The key of this map is the download URI of the font.
+    std::map<std::string, FontData> fonts;
+};
+#endif
+
 void COOLWSD::innerInitialize(Application& self)
 {
 #if !MOBILEAPP
@@ -1013,14 +1940,9 @@ void COOLWSD::innerInitialize(Application& self)
 
     Util::setApplicationPath(Poco::Path(Application::instance().commandPath()).parent().toString());
 
-    if (!UnitWSD::init(UnitWSD::UnitType::Wsd, UnitTestLibrary))
-    {
-        throw std::runtime_error("Failed to load wsd unit test library.");
-    }
-
     StartTime = std::chrono::steady_clock::now();
 
-    auto& conf = config();
+    LayeredConfiguration& conf = config();
 
     // Add default values of new entries here, so there is a sensible default in case
     // the setting is missing from the config file. It is possible that users do not
@@ -1030,118 +1952,153 @@ void COOLWSD::innerInitialize(Application& self)
     // 2) in the 'default' attribute in coolwsd.xml, which is for documentation
     // 3) the default parameter of getConfigValue() call. That is used when the
     //    setting is present in coolwsd.xml, but empty (i.e. use the default).
-    static const std::map<std::string, std::string> DefAppConfig
-        = { { "allowed_languages", "de_DE en_GB en_US es_ES fr_FR it nl pt_BR pt_PT ru" },
-            { "admin_console.enable_pam", "false" },
-            { "child_root_path", "jails" },
-            { "file_server_root_path", "browser/.." },
-            { "hexify_embedded_urls", "false" },
-            { "lo_jail_subpath", "lo" },
-            { "logging.protocol", "false" },
-            { "logging.anonymize.filenames", "false" }, // Deprecated.
-            { "logging.anonymize.usernames", "false" }, // Deprecated.
-            // { "logging.anonymize.anonymize_user_data", "false" }, // Do not set to fallback on filename/username.
-            { "logging.color", "true" },
-            { "logging.file.property[0]", "coolwsd.log" },
-            { "logging.file.property[0][@name]", "path" },
-            { "logging.file.property[1]", "never" },
-            { "logging.file.property[1][@name]", "rotation" },
-            { "logging.file.property[2]", "true" },
-            { "logging.file.property[2][@name]", "compress" },
-            { "logging.file.property[3]", "false" },
-            { "logging.file.property[3][@name]", "flush" },
-            { "logging.file.property[4]", "10 days" },
-            { "logging.file.property[4][@name]", "purgeAge" },
-            { "logging.file.property[5]", "10" },
-            { "logging.file.property[5][@name]", "purgeCount" },
-            { "logging.file.property[6]", "true" },
-            { "logging.file.property[6][@name]", "rotationOnOpen" },
-            { "logging.file.property[7]", "false" },
-            { "logging.file.property[7][@name]", "archive" },
-            { "logging.file[@enable]", "false" },
-            { "logging.level", "trace" },
-            { "logging.lokit_sal_log", "-INFO-WARN" },
-            { "browser_logging", "false" },
-            { "mount_jail_tree", "true" },
-            { "net.connection_timeout_secs", "30" },
-            { "net.listen", "any" },
-            { "net.proto", "all" },
-            { "net.service_root", "" },
-            { "net.proxy_prefix", "false" },
-            { "num_prespawn_children", "1" },
-            { "per_document.always_save_on_exit", "false" },
-            { "per_document.autosave_duration_secs", "300" },
-            { "per_document.cleanup.cleanup_interval_ms", "10000" },
-            { "per_document.cleanup.bad_behavior_period_secs", "60" },
-            { "per_document.cleanup.idle_time_secs", "300" },
-            { "per_document.cleanup.limit_dirty_mem_mb", "3072" },
-            { "per_document.cleanup.limit_cpu_per", "85" },
-            { "per_document.cleanup.lost_kit_grace_period_secs", "120"},
-            { "per_document.cleanup[@enable]", "false" },
-            { "per_document.document_signing_url", VEREIGN_URL },
-            { "per_document.idle_timeout_secs", "3600" },
-            { "per_document.idlesave_duration_secs", "30" },
-            { "per_document.limit_file_size_mb", "0" },
-            { "per_document.limit_num_open_files", "0" },
-            { "per_document.limit_load_secs", "100" },
-            { "per_document.limit_convert_secs", "100" },
-            { "per_document.limit_stack_mem_kb", "8000" },
-            { "per_document.limit_virt_mem_mb", "0" },
-            { "per_document.max_concurrency", "4" },
-            { "per_document.batch_priority", "5" },
-            { "per_document.pdf_resolution_dpi", "96"},
-            { "per_document.redlining_as_comments", "false" },
-            { "per_view.idle_timeout_secs", "900" },
-            { "per_view.out_of_focus_timeout_secs", "120" },
-            { "security.capabilities", "true" },
-            { "security.seccomp", "true" },
-            { "security.jwt_expiry_secs", "1800" },
-            { "security.enable_metrics_unauthenticated", "false" },
-            { "server_name", "" },
-            { "ssl.ca_file_path", COOLWSD_CONFIGDIR "/ca-chain.cert.pem" },
-            { "ssl.cert_file_path", COOLWSD_CONFIGDIR "/cert.pem" },
-            { "ssl.enable", "true" },
-            { "ssl.hpkp.max_age[@enable]", "true" },
-            { "ssl.hpkp.report_uri[@enable]", "false" },
-            { "ssl.hpkp[@enable]", "false" },
-            { "ssl.hpkp[@report_only]", "false" },
-            { "ssl.key_file_path", COOLWSD_CONFIGDIR "/key.pem" },
-            { "ssl.termination", "true" },
-            { "storage.filesystem[@allow]", "false" },
-//            "storage.ssl.enable" - deliberately not set; for back-compat
-            { "storage.wopi.host[0]", "localhost" },
-            { "storage.wopi.host[0][@allow]", "true" },
-            { "storage.wopi.max_file_size", "0" },
-            { "storage.wopi[@allow]", "true" },
-            { "storage.wopi.locking.refresh", "900" },
-            { "sys_template_path", "systemplate" },
-            { "trace_event[@enable]", "false" },
-            { "trace.path[@compress]", "true" },
-            { "trace.path[@snapshot]", "false" },
-            { "trace[@enable]", "false" },
-            { "welcome.enable", ENABLE_WELCOME_MESSAGE },
-            { "welcome.enable_button", ENABLE_WELCOME_MESSAGE_BUTTON },
-            { "welcome.path", "browser/welcome" },
-#ifdef ENABLE_FREEMIUM
-            { "freemium.disabled_commands", DISABLED_COMMANDS },
-            { "freemium.purchase_title", PURCHASE_TITLE },
-            { "freemium.purchase_link", PURCHASE_LINK },
-            { "freemium.purchase_description", PURCHASE_DESCRIPTION },
-            { "freemium.writer_subscription_highlights", WRITER_SUBSCRIPTION_HIGHLIGHTS },
-            { "freemium.calc_subscription_highlights", CALC_SUBSCRIPTION_HIGHLIGHTS },
-            { "freemium.impress_subscription_highlights", IMPRESS_SUBSCRIPTION_HIGHLIGHTS },
-            { "freemium.draw_subscription_highlights", DRAW_SUBSCRIPTION_HIGHLIGHTS },
+    static const std::map<std::string, std::string> DefAppConfig = {
+        { "accessibility.enable", "false"},
+        { "allowed_languages", "de_DE en_GB en_US es_ES fr_FR it nl pt_BR pt_PT ru" },
+        { "admin_console.enable_pam", "false" },
+        { "child_root_path", "jails" },
+        { "file_server_root_path", "browser/.." },
+        { "hexify_embedded_urls", "false" },
+        { "experimental_features", "false" },
+        { "logging.protocol", "false" },
+        { "logging.anonymize.filenames", "false" }, // Deprecated.
+        { "logging.anonymize.usernames", "false" }, // Deprecated.
+        // { "logging.anonymize.anonymize_user_data", "false" }, // Do not set to fallback on filename/username.
+        { "logging.color", "true" },
+        { "logging.file.property[0]", "coolwsd.log" },
+        { "logging.file.property[0][@name]", "path" },
+        { "logging.file.property[1]", "never" },
+        { "logging.file.property[1][@name]", "rotation" },
+        { "logging.file.property[2]", "true" },
+        { "logging.file.property[2][@name]", "compress" },
+        { "logging.file.property[3]", "false" },
+        { "logging.file.property[3][@name]", "flush" },
+        { "logging.file.property[4]", "10 days" },
+        { "logging.file.property[4][@name]", "purgeAge" },
+        { "logging.file.property[5]", "10" },
+        { "logging.file.property[5][@name]", "purgeCount" },
+        { "logging.file.property[6]", "true" },
+        { "logging.file.property[6][@name]", "rotateOnOpen" },
+        { "logging.file.property[7]", "false" },
+        { "logging.file.property[7][@name]", "archive" },
+        { "logging.file[@enable]", "false" },
+        { "logging.level", "trace" },
+        { "logging.level_startup", "trace" },
+        { "logging.lokit_sal_log", "-INFO-WARN" },
+        { "logging.docstats", "false" },
+        { "logging.userstats", "false" },
+        { "browser_logging", "false" },
+        { "mount_jail_tree", "true" },
+        { "net.connection_timeout_secs", "30" },
+        { "net.listen", "any" },
+        { "net.proto", "all" },
+        { "net.service_root", "" },
+        { "net.proxy_prefix", "false" },
+        { "net.content_security_policy", "" },
+        { "net.frame_ancestors", "" },
+        { "num_prespawn_children", "1" },
+        { "per_document.always_save_on_exit", "false" },
+        { "per_document.autosave_duration_secs", "300" },
+        { "per_document.cleanup.cleanup_interval_ms", "10000" },
+        { "per_document.cleanup.bad_behavior_period_secs", "60" },
+        { "per_document.cleanup.idle_time_secs", "300" },
+        { "per_document.cleanup.limit_dirty_mem_mb", "3072" },
+        { "per_document.cleanup.limit_cpu_per", "85" },
+        { "per_document.cleanup.lost_kit_grace_period_secs", "120" },
+        { "per_document.cleanup[@enable]", "false" },
+        { "per_document.idle_timeout_secs", "3600" },
+        { "per_document.idlesave_duration_secs", "30" },
+        { "per_document.limit_file_size_mb", "0" },
+        { "per_document.limit_num_open_files", "0" },
+        { "per_document.limit_load_secs", "100" },
+        { "per_document.limit_store_failures", "5" },
+        { "per_document.limit_convert_secs", "100" },
+        { "per_document.limit_stack_mem_kb", "8000" },
+        { "per_document.limit_virt_mem_mb", "0" },
+        { "per_document.max_concurrency", "4" },
+        { "per_document.min_time_between_saves_ms", "500" },
+        { "per_document.min_time_between_uploads_ms", "5000" },
+        { "per_document.batch_priority", "5" },
+        { "per_document.pdf_resolution_dpi", "96" },
+        { "per_document.redlining_as_comments", "false" },
+        { "per_view.group_download_as", "true" },
+        { "per_view.idle_timeout_secs", "900" },
+        { "per_view.out_of_focus_timeout_secs", "120" },
+        { "security.capabilities", "true" },
+        { "security.seccomp", "true" },
+        { "security.jwt_expiry_secs", "1800" },
+        { "security.enable_metrics_unauthenticated", "false" },
+        { "certificates.database_path", "" },
+        { "server_name", "" },
+        { "ssl.ca_file_path", COOLWSD_CONFIGDIR "/ca-chain.cert.pem" },
+        { "ssl.cert_file_path", COOLWSD_CONFIGDIR "/cert.pem" },
+        { "ssl.enable", "true" },
+        { "ssl.hpkp.max_age[@enable]", "true" },
+        { "ssl.hpkp.report_uri[@enable]", "false" },
+        { "ssl.hpkp[@enable]", "false" },
+        { "ssl.hpkp[@report_only]", "false" },
+        { "ssl.sts.enabled", "false" },
+        { "ssl.sts.max_age", "31536000" },
+        { "ssl.key_file_path", COOLWSD_CONFIGDIR "/key.pem" },
+        { "ssl.termination", "true" },
+        { "storage.filesystem[@allow]", "false" },
+        // "storage.ssl.enable" - deliberately not set; for back-compat
+        { "storage.wopi.max_file_size", "0" },
+        { "storage.wopi[@allow]", "true" },
+        { "storage.wopi.locking.refresh", "900" },
+        { "sys_template_path", "systemplate" },
+        { "trace_event[@enable]", "false" },
+        { "trace.path[@compress]", "true" },
+        { "trace.path[@snapshot]", "false" },
+        { "trace[@enable]", "false" },
+        { "welcome.enable", "false" },
+        { "home_mode.enable", "false" },
+        { "feedback.show", "true" },
+#if ENABLE_FEATURE_LOCK
+        { "feature_lock.locked_hosts[@allow]", "false" },
+        { "feature_lock.locked_hosts.fallback[@read_only]", "false" },
+        { "feature_lock.locked_hosts.fallback[@disabled_commands]", "false" },
+        { "feature_lock.locked_hosts.host[0]", "localhost" },
+        { "feature_lock.locked_hosts.host[0][@read_only]", "false" },
+        { "feature_lock.locked_hosts.host[0][@disabled_commands]", "false" },
+        { "feature_lock.is_lock_readonly", "false" },
+        { "feature_lock.locked_commands", LOCKED_COMMANDS },
+        { "feature_lock.unlock_title", UNLOCK_TITLE },
+        { "feature_lock.unlock_link", UNLOCK_LINK },
+        { "feature_lock.unlock_description", UNLOCK_DESCRIPTION },
+        { "feature_lock.writer_unlock_highlights", WRITER_UNLOCK_HIGHLIGHTS },
+        { "feature_lock.calc_unlock_highlights", CALC_UNLOCK_HIGHLIGHTS },
+        { "feature_lock.impress_unlock_highlights", IMPRESS_UNLOCK_HIGHLIGHTS },
+        { "feature_lock.draw_unlock_highlights", DRAW_UNLOCK_HIGHLIGHTS },
 #endif
-#ifdef ENABLE_FEATURE_RESTRICTION
-            { "restricted_commands", "" },
+#if ENABLE_FEATURE_RESTRICTION
+        { "restricted_commands", "" },
 #endif
-            { "user_interface.mode", "default" },
-            { "quarantine_files[@enable]", "false" },
-            { "quarantine_files.limit_dir_size_mb", "250" },
-            { "quarantine_files.max_versions_to_maintain", "2" },
-            { "quarantine_files.path", "quarantine" },
-            { "quarantine_files.expiry_min", "30" }
-          };
+        { "user_interface.mode", "default" },
+        { "user_interface.use_integration_theme", "true" },
+        { "quarantine_files[@enable]", "false" },
+        { "quarantine_files.limit_dir_size_mb", "250" },
+        { "quarantine_files.max_versions_to_maintain", "2" },
+        { "quarantine_files.path", "quarantine" },
+        { "quarantine_files.expiry_min", "30" },
+        { "remote_config.remote_url", "" },
+        { "storage.wopi.alias_groups[@mode]", "first" },
+        { "languagetool.base_url", "" },
+        { "languagetool.api_key", "" },
+        { "languagetool.user_name", "" },
+        { "languagetool.enabled", "false" },
+        { "languagetool.ssl_verification", "true" },
+        { "languagetool.rest_protocol", "" },
+        { "deepl.api_url", "" },
+        { "deepl.auth_key", "" },
+        { "deepl.enabled", "false" },
+        { "zotero.enable", "true" },
+        { "indirection_endpoint.url", "" },
+#if !MOBILEAPP
+        { "help_url", HELP_URL },
+#endif
+        { "product_name", APP_NAME }
+    };
 
     // Set default values, in case they are missing from the config file.
     AutoPtr<AppConfigMap> defConfig(new AppConfigMap(DefAppConfig));
@@ -1176,11 +2133,27 @@ void COOLWSD::innerInitialize(Application& self)
     AutoPtr<AppConfigMap> overrideConfig(new AppConfigMap(_overrideSettings));
     conf.addWriteable(overrideConfig, PRIO_APPLICATION); // Highest priority
 
-    // Allow UT to manipulate before using configuration values.
-    UnitWSD::get().configure(config());
+    if (!UnitTestLibrary.empty())
+    {
+        UnitWSD::defaultConfigure(conf);
+    }
+
+    // Experimental features.
+    EnableExperimental = getConfigValue<bool>(conf, "experimental_features", false);
+
+    EnableAccessibility = getConfigValue<bool>(conf, "accessibility.enable", false);
 
     // Setup user interface mode
     UserInterface = getConfigValue<std::string>(conf, "user_interface.mode", "default");
+
+    if (UserInterface == "compact")
+        UserInterface = "classic";
+
+    if (UserInterface == "tabbed")
+        UserInterface = "notebookbar";
+
+    if (EnableAccessibility)
+        UserInterface = "notebookbar";
 
     // Set the log-level after complete initialization to force maximum details at startup.
     LogLevel = getConfigValue<std::string>(conf, "logging.level", "trace");
@@ -1231,13 +2204,32 @@ void COOLWSD::innerInitialize(Application& self)
     }
 
     // Log at trace level until we complete the initialization.
-    Log::initialize("wsd", "trace", withColor, logToFile, logProperties);
-    if (LogLevel != "trace")
+    LogLevelStartup = getConfigValue<std::string>(conf, "logging.level_startup", "trace");
+    setenv("COOL_LOGLEVEL_STARTUP", LogLevelStartup.c_str(), true);
+
+    Log::initialize("wsd", LogLevelStartup, withColor, logToFile, logProperties);
+    if (LogLevel != LogLevelStartup)
     {
-        LOG_INF("Setting log-level to [trace] and delaying setting to configured ["
+        LOG_INF("Setting log-level to [" << LogLevelStartup << "] and delaying setting to ["
                 << LogLevel << "] until after WSD initialization.");
     }
 
+    // First log entry.
+    ServerName = config().getString("server_name");
+    LOG_INF("Initializing coolwsd server [" << ServerName << "]. Experimental features are "
+                                            << (EnableExperimental ? "enabled." : "disabled."));
+
+
+    // Initialize the UnitTest subsystem.
+    if (!UnitWSD::init(UnitWSD::UnitType::Wsd, UnitTestLibrary))
+    {
+        throw std::runtime_error("Failed to load wsd unit test library.");
+    }
+
+    // Allow UT to manipulate before using configuration values.
+    UnitWSD::get().configure(conf);
+
+    // Trace Event Logging.
     EnableTraceEventLogging = getConfigValue<bool>(conf, "trace_event[@enable]", false);
 
     if (EnableTraceEventLogging)
@@ -1264,8 +2256,10 @@ void COOLWSD::innerInitialize(Application& self)
         }
     }
 
-    ServerName = config().getString("server_name");
-    LOG_INF("Initializing coolwsd server [" << ServerName << "].");
+    // Check deprecated settings.
+    bool reuseCookies = false;
+    if (getSafeConfig(conf, "storage.wopi.reuse_cookies", reuseCookies))
+        LOG_WRN("NOTE: Deprecated config option storage.wopi.reuse_cookies - no longer supported.");
 
     // Get anonymization settings.
 #if COOLWSD_ANONYMIZE_USER_DATA
@@ -1314,8 +2308,7 @@ void COOLWSD::innerInitialize(Application& self)
             std::cerr << "\nIf you have used 'make run', edit coolwsd.xml and make sure you have removed "
                          "'--o:logging.level=trace' from the command line in Makefile.am.\n" << std::endl;
 #endif
-            Log::shutdown();
-            _exit(EX_SOFTWARE);
+            Util::forcedExit(EX_SOFTWARE);
         }
     }
 
@@ -1415,20 +2408,23 @@ void COOLWSD::innerInitialize(Application& self)
         {
             // Cleanup and exit.
             JailUtil::cleanupJails(ChildRoot);
-            std::exit(EX_OK);
+            Util::forcedExit(EX_OK);
         }
 #endif
         if (ChildRoot[ChildRoot.size() - 1] != '/')
             ChildRoot += '/';
 
-        // Create a custom sub-path for parallelized unit tests.
-        if (UnitBase::isUnitTesting())
-        {
-            ChildRoot += Util::rng::getHardRandomHexString(8) + '/';
-            LOG_INF("Creating sub-childroot: " + ChildRoot);
-        }
-        else
-            LOG_INF("Creating childroot: " + ChildRoot);
+#if CODE_COVERAGE
+        ::setenv("BASE_CHILD_ROOT", Poco::Path(ChildRoot).absolute().toString().c_str(), 1);
+#endif
+
+        // We need to cleanup other people's expired jails
+        CleanupChildRoot = ChildRoot;
+
+        // Encode the process id into the path for parallel re-use of jails/
+        ChildRoot += std::to_string(getpid()) + '-' + Util::rng::getHardRandomHexString(8) + '/';
+
+        LOG_INF("Creating childroot: " + ChildRoot);
     }
 
 #if !MOBILEAPP
@@ -1460,31 +2456,63 @@ void COOLWSD::innerInitialize(Application& self)
     // Initialize the config subsystem too.
     config::initialize(&config());
 
+    // For some reason I can't get at this setting in ChildSession::loKitCallback().
+    std::string fontsMissingHandling = config::getString("fonts_missing.handling", "log");
+    setenv("FONTS_MISSING_HANDLING", fontsMissingHandling.c_str(), 1);
+
+    IsBindMountingEnabled = getConfigValue<bool>(conf, "mount_jail_tree", true);
+#if CODE_COVERAGE
+    // Code coverage is not supported with bind-mounting.
+    if (IsBindMountingEnabled)
+    {
+        LOG_WRN("Mounting is not compatible with code-coverage. Disabling.");
+        IsBindMountingEnabled = false;
+    }
+#endif // CODE_COVERAGE
+
     // Setup the jails.
-    JailUtil::setupJails(getConfigValue<bool>(conf, "mount_jail_tree", true), ChildRoot,
-                         SysTemplate);
+    JailUtil::cleanupJails(CleanupChildRoot);
+    JailUtil::setupChildRoot(IsBindMountingEnabled, ChildRoot, SysTemplate);
 
     LOG_DBG("FileServerRoot before config: " << FileServerRoot);
     FileServerRoot = getPathFromConfig("file_server_root_path");
     LOG_DBG("FileServerRoot after config: " << FileServerRoot);
 
     //creating quarantine directory
-    if(getConfigValue<bool>(conf, "quarantine_files[@enable]", false))
+    if (getConfigValue<bool>(conf, "quarantine_files[@enable]", false))
     {
-        QuarantinePath = getPathFromConfig("quarantine_files.path");
-        if (QuarantinePath[QuarantinePath.size() - 1] != '/')
-            QuarantinePath += '/';
+        std::string path = Util::trimmed(getPathFromConfig("quarantine_files.path"));
+        if (path.empty())
+        {
+            LOG_WRN("Quarantining is enabled via quarantine_files config, but no path is set in "
+                    "quarantine_files.path. Disabling quarantine");
+        }
+        else
+        {
+            if (path[path.size() - 1] != '/')
+                path += '/';
 
-        Poco::File p(QuarantinePath);
-        p.createDirectories();
-        LOG_INF("Created quarantine directory " + p.path());
+            Poco::File p(path);
+            try
+            {
+                LOG_TRC("Creating quarantine directory [" + path << ']');
+                p.createDirectories();
 
-        Quarantine::createQuarantineMap();
+                LOG_DBG("Created quarantine directory [" + path << ']');
+            }
+            catch (const std::exception& ex)
+            {
+                LOG_WRN("Failed to create quarantine directory [" << path
+                                                                  << "]. Disabling quaratine");
+            }
+
+            if (FileUtil::Stat(path).exists())
+            {
+                LOG_INF("Initializing quarantine at [" + path << ']');
+                Quarantine::initialize(path);
+            }
+        }
     }
-
-    WelcomeFilesRoot = getPathFromConfig("welcome.path");
-    if (!getConfigValue<bool>(conf, "welcome.enable", true))
-        WelcomeFilesRoot = "";
 
     NumPreSpawnedChildren = getConfigValue<int>(conf, "num_prespawn_children", 1);
     if (NumPreSpawnedChildren < 1)
@@ -1496,7 +2524,22 @@ void COOLWSD::innerInitialize(Application& self)
 
     FileUtil::registerFileSystemForDiskSpaceChecks(ChildRoot);
 
-    const auto maxConcurrency = getConfigValue<int>(conf, "per_document.max_concurrency", 4);
+    int nThreads = std::max<int>(std::thread::hardware_concurrency(), 1);
+    int maxConcurrency = getConfigValue<int>(conf, "per_document.max_concurrency", 4);
+
+    if (maxConcurrency > 16)
+    {
+        LOG_WRN("Using a large number of threads for every document puts pressure on "
+                "the scheduler, and consumes memory, while providing marginal gains "
+                "consider lowering max_concurrency from " << maxConcurrency);
+    }
+    if (maxConcurrency > nThreads)
+    {
+        LOG_ERR("Setting concurrency above the number of physical "
+                "threads yields extra latency and memory usage for no benefit. "
+                "Clamping " << maxConcurrency << " to " << nThreads << " threads.");
+        maxConcurrency = nThreads;
+    }
     if (maxConcurrency > 0)
     {
         setenv("MAX_CONCURRENCY", std::to_string(maxConcurrency).c_str(), 1);
@@ -1515,13 +2558,59 @@ void COOLWSD::innerInitialize(Application& self)
     setenv("SAL_DISABLE_OPENCL", "true", 1);
 
     // Log the connection and document limits.
-    COOLWSD::MaxConnections = MAX_CONNECTIONS;
-    COOLWSD::MaxDocuments = MAX_DOCUMENTS;
+#if ENABLE_WELCOME_MESSAGE
+    if (getConfigValue<bool>(conf, "home_mode.enable", false))
+    {
+        COOLWSD::MaxConnections = 20;
+        COOLWSD::MaxDocuments = 10;
+    }
+    else
+    {
+        conf.setString("feedback.show", "true");
+        conf.setString("welcome.enable", "true");
+        COOLWSD::MaxConnections = MAX_CONNECTIONS;
+        COOLWSD::MaxDocuments = MAX_DOCUMENTS;
+    }
+#else
+    {
+        COOLWSD::MaxConnections = MAX_CONNECTIONS;
+        COOLWSD::MaxDocuments = MAX_DOCUMENTS;
+    }
+#endif
 
 #if !MOBILEAPP
     NoSeccomp = !getConfigValue<bool>(conf, "security.seccomp", true);
     NoCapsForKit = !getConfigValue<bool>(conf, "security.capabilities", true);
     AdminEnabled = getConfigValue<bool>(conf, "admin_console.enable", true);
+#endif
+
+    // LanguageTool configuration
+    bool enableLanguageTool = getConfigValue<bool>(conf, "languagetool.enabled", false);
+    setenv("LANGUAGETOOL_ENABLED", enableLanguageTool ? "true" : "false", 1);
+    const std::string baseAPIUrl = getConfigValue<std::string>(conf, "languagetool.base_url", "");
+    setenv("LANGUAGETOOL_BASEURL", baseAPIUrl.c_str(), 1);
+    const std::string userName = getConfigValue<std::string>(conf, "languagetool.user_name", "");
+    setenv("LANGUAGETOOL_USERNAME", userName.c_str(), 1);
+    const std::string apiKey = getConfigValue<std::string>(conf, "languagetool.api_key", "");
+    setenv("LANGUAGETOOL_APIKEY", apiKey.c_str(), 1);
+    bool sslVerification = getConfigValue<bool>(conf, "languagetool.ssl_verification", true);
+    setenv("LANGUAGETOOL_SSL_VERIFICATION", sslVerification ? "true" : "false", 1);
+    const std::string restProtocol = getConfigValue<std::string>(conf, "languagetool.rest_protocol", "");
+    setenv("LANGUAGETOOL_RESTPROTOCOL", restProtocol.c_str(), 1);
+
+    // DeepL configuration
+    const std::string apiURL = getConfigValue<std::string>(conf, "deepl.api_url", "");
+    const std::string authKey = getConfigValue<std::string>(conf, "deepl.auth_key", "");
+    setenv("DEEPL_API_URL", apiURL.c_str(), 1);
+    setenv("DEEPL_AUTH_KEY", authKey.c_str(), 1);
+
+#if !MOBILEAPP
+    const std::string helpUrl = getConfigValue<std::string>(conf, "help_url", HELP_URL);
+    setenv("LOK_HELP_URL", helpUrl.c_str(), 1);
+#else
+    // On mobile UI there should be no tunnelled dialogs. But if there are some, by mistake,
+    // at least they should not have a non-working Help button.
+    setenv("LOK_HELP_URL", "", 1);
 #endif
 
 #if ENABLE_SUPPORT_KEY
@@ -1575,12 +2664,14 @@ void COOLWSD::innerInitialize(Application& self)
         COOLWSD::MaxDocuments = COOLWSD::MaxConnections;
     }
 
+#if !defined __EMSCRIPTEN__
     struct rlimit rlim;
     ::getrlimit(RLIMIT_NOFILE, &rlim);
     LOG_INF("Maximum file descriptor supported by the system: " << rlim.rlim_cur - 1);
     // 4 fds per document are used for client connection, Kit process communication, and
     // a wakeup pipe with 2 fds. 32 fds (i.e. 8 documents) are reserved.
     LOG_INF("Maximum number of open documents supported by the system: " << rlim.rlim_cur / 4 - 8);
+#endif
 
     LOG_INF("Maximum concurrent open Documents limit: " << COOLWSD::MaxDocuments);
     LOG_INF("Maximum concurrent client Connections limit: " << COOLWSD::MaxConnections);
@@ -1609,21 +2700,22 @@ void COOLWSD::innerInitialize(Application& self)
 
         const auto compress = getConfigValue<bool>(conf, "trace.path[@compress]", false);
         const auto takeSnapshot = getConfigValue<bool>(conf, "trace.path[@snapshot]", false);
-        TraceDumper = Util::make_unique<TraceFileWriter>(path, recordOutgoing, compress, takeSnapshot, filters);
+        TraceDumper = std::make_unique<TraceFileWriter>(path, recordOutgoing, compress,
+                                                        takeSnapshot, filters);
     }
 
 #if !MOBILEAPP
-    SavedClipboards = Util::make_unique<ClipboardCache>();
+    SavedClipboards = std::make_unique<ClipboardCache>();
 
     LOG_TRC("Initialize FileServerRequestHandler");
-    FileServerRequestHandler::initialize();
+    FileServerRequestHandler::initialize(COOLWSD::FileServerRoot);
 #endif
 
-    WebServerPoll = Util::make_unique<TerminatingPoll>("websrv_poll");
+    WebServerPoll = std::make_unique<TerminatingPoll>("websrv_poll");
 
-    PrisonerPoll = Util::make_unique<PrisonPoll>();
+    PrisonerPoll = std::make_unique<PrisonPoll>();
 
-    Server = Util::make_unique<COOLWSDServer>();
+    Server = std::make_unique<COOLWSDServer>();
 
     LOG_TRC("Initialize StorageBase");
     StorageBase::initialize();
@@ -1648,28 +2740,8 @@ void COOLWSD::innerInitialize(Application& self)
 
     Admin::instance().setDefDocProcSettings(docProcSettings, false);
 
-#if ENABLE_DEBUG
-    std::string postMessageURI =
-        getServiceURI("/browser/dist/framed.doc.html?file_path="
-                      DEBUG_ABSSRCDIR "/" COOLWSD_TEST_DOCUMENT_RELATIVE_PATH_CALC);
-    std::cerr << "\nLaunch one of these in your browser:\n\n"
-              << "    Writer:      " << getLaunchURI(COOLWSD_TEST_DOCUMENT_RELATIVE_PATH_WRITER) << '\n'
-              << "    Calc:        " << getLaunchURI(COOLWSD_TEST_DOCUMENT_RELATIVE_PATH_CALC) << '\n'
-              << "    Impress:     " << getLaunchURI(COOLWSD_TEST_DOCUMENT_RELATIVE_PATH_IMPRESS) << '\n'
-              << "    Draw:        " << getLaunchURI(COOLWSD_TEST_DOCUMENT_RELATIVE_PATH_DRAW) << '\n'
-              << "    postMessage: " << postMessageURI << std::endl;
-
-    const std::string adminURI = getServiceURI(COOLWSD_TEST_ADMIN_CONSOLE, true);
-    if (!adminURI.empty())
-        std::cerr << "\nOr for the admin, monitoring, capabilities & discovery:\n\n"
-                  << adminURI << '\n'
-                  << getServiceURI(COOLWSD_TEST_METRICS, true) << '\n'
-                  << getServiceURI("/hosting/capabilities") << '\n'
-                  << getServiceURI("/hosting/discovery") << '\n';
-
-    std::cerr << std::endl;
-#endif
-
+#else
+    (void) self;
 #endif
 }
 
@@ -1815,6 +2887,14 @@ void COOLWSD::defineOptions(OptionSet& optionSet)
                         .repeatable(false)
                         .argument("path"));
 
+    optionSet.addOption(Option("unattended", "", "Unattended run, won't wait for a debugger on faulting.")
+                        .required(false)
+                        .repeatable(false));
+
+    optionSet.addOption(Option("signal", "", "Send signal SIGUSR2 to parent process when server is ready to accept connections")
+                        .required(false)
+                        .repeatable(false));
+
 #if ENABLE_DEBUG
     optionSet.addOption(Option("unitlib", "", "Unit testing library path.")
                         .required(false)
@@ -1829,17 +2909,14 @@ void COOLWSD::defineOptions(OptionSet& optionSet)
     optionSet.addOption(Option("singlekit", "", "Spawn one libreoffice kit.")
                         .required(false)
                         .repeatable(false));
-#endif
 
-#ifdef FUZZER
-    optionSet.addOption(Option("dummy-lok", "", "Use empty (dummy) LibreOfficeKit implementation instead a real LibreOffice.")
+    optionSet.addOption(Option("forcecaching", "", "Force HTML & asset caching even in debug mode: accelerates cypress.")
                         .required(false)
                         .repeatable(false));
-    optionSet.addOption(Option("fuzz", "", "Read input from the specified file for fuzzing.")
-                        .required(false)
-                        .repeatable(false)
-                        .argument("trace_file_name"));
 #endif
+
+#else
+    (void) optionSet;
 #endif
 }
 
@@ -1852,14 +2929,14 @@ void COOLWSD::handleOption(const std::string& optionName,
     if (optionName == "help")
     {
         displayHelp();
-        std::exit(EX_OK);
+        Util::forcedExit(EX_OK);
     }
     else if (optionName == "version-hash")
     {
         std::string version, hash;
         Util::getVersionInfo(version, hash);
         std::cout << hash << std::endl;
-        std::exit(EX_OK);
+        Util::forcedExit(EX_OK);
     }
     else if (optionName == "version")
         ; // ignore for compatibility
@@ -1884,9 +2961,17 @@ void COOLWSD::handleOption(const std::string& optionName,
         ConfigDir = value;
     else if (optionName == "lo-template-path")
         LoTemplate = value;
+    else if (optionName == "signal")
+        SignalParent = true;
+
 #if ENABLE_DEBUG
     else if (optionName == "unitlib")
         UnitTestLibrary = value;
+    else if (optionName == "unattended")
+    {
+        UnattendedRun = true;
+        SigUtil::setUnattended();
+    }
     else if (optionName == "careerspan")
         careerSpanMs = std::chrono::seconds(std::stoi(value)); // Convert second to ms
     else if (optionName == "singlekit")
@@ -1894,18 +2979,17 @@ void COOLWSD::handleOption(const std::string& optionName,
         SingleKit = true;
         NumPreSpawnedChildren = 1;
     }
+    else if (optionName == "forcecaching")
+        ForceCaching = true;
 
     static const char* latencyMs = std::getenv("COOL_DELAY_SOCKET_MS");
     if (latencyMs)
         SimulatedLatencyMs = std::stoi(latencyMs);
 #endif
 
-#ifdef FUZZER
-    if (optionName == "dummy-lok")
-        DummyLOK = true;
-    else if (optionName == "fuzz")
-        FuzzFileName = value;
-#endif
+#else
+    (void) optionName;
+    (void) value;
 #endif
 }
 
@@ -1984,7 +3068,7 @@ bool COOLWSD::checkAndRestoreForKit()
             }
             else
             {
-                LOG_WRN("Unknown status returned by waitpid: " << std::hex << status << '.');
+                LOG_WRN("Unknown status returned by waitpid: " << std::hex << status << std::dec);
             }
 
             return true;
@@ -2050,9 +3134,8 @@ void COOLWSD::autoSave(const std::string& docKey)
     if (docBrokerIt != DocBrokers.end())
     {
         std::shared_ptr<DocumentBroker> docBroker = docBrokerIt->second;
-        docBroker->addCallback([docBroker]() {
-                docBroker->autoSave(true);
-            });
+        docBroker->addCallback(
+            [docBroker]() { docBroker->autoSave(/*force=*/true, /*dontSaveIfUnmodified=*/true); });
     }
 }
 
@@ -2083,31 +3166,15 @@ void PrisonPoll::wakeupHook()
     {
         // No children have died.
         // Make sure we have sufficient reserves.
-        if (prespawnChildren())
-        {
-            // Nothing more to do this round, unless we are fuzzing
-#if FUZZER
-            if (!COOLWSD::FuzzFileName.empty())
-            {
-                StressSocketHandler::replaySync(
-#if ENABLE_SSL
-                        "wss://127.0.0.1:" + std::to_string(ClientPortNumber),
-#else
-                        "ws://127.0.0.1:" + std::to_string(ClientPortNumber),
-#endif
-                        "" /* FIXME: what local path are these traces replayed into ? */,
-                        COOLWSD::FuzzFileName);
-
-                LOG_INF("Setting TerminationFlag");
-                SigUtil::setTerminationFlag();
-            }
-#endif
-        }
+        prespawnChildren();
     }
 #endif
     std::unique_lock<std::mutex> docBrokersLock(DocBrokersMutex, std::defer_lock);
     if (docBrokersLock.try_lock())
+    {
         cleanupDocBrokers();
+        SigUtil::checkForwardSigUsr2(forwardSigUsr2);
+    }
 }
 
 #if !MOBILEAPP
@@ -2118,6 +3185,9 @@ bool COOLWSD::createForKit()
     return true;
 #else
     LOG_INF("Creating new forkit process.");
+
+    // Creating a new forkit is always a slow process.
+    ChildSpawnTimeoutMs = CHILD_TIMEOUT_MS * 4;
 
     std::unique_lock<std::mutex> newChildrenLock(NewChildrenMutex);
 
@@ -2138,6 +3208,13 @@ bool COOLWSD::createForKit()
     NoSeccomp = true;
 //    args.push_back("--log-file=valgrind.log");
 //    args.push_back("--track-fds=all");
+
+//  for massif: can connect with (gdb) target remote | vgdb
+//  and then monitor snapshot <filename> before kit exit
+//    args.push_back("--tool=massif");
+//    args.push_back("--vgdb=yes");
+//    args.push_back("--vgdb-error=0");
+
     args.push_back("--trace-children=yes");
     args.push_back("--error-limit=no");
     args.push_back("--num-callers=128");
@@ -2145,7 +3222,6 @@ bool COOLWSD::createForKit()
     FileUtil::copy(parentPath + "coolforkit", nocapsCopy, true, true);
     args.push_back(nocapsCopy);
 #endif
-    args.push_back("--losubpath=" + std::string(LO_JAIL_SUBPATH));
     args.push_back("--systemplate=" + SysTemplate);
     args.push_back("--lotemplate=" + LoTemplate);
     args.push_back("--childroot=" + ChildRoot);
@@ -2175,6 +3251,9 @@ bool COOLWSD::createForKit()
 
     if (!CheckCoolUser)
         args.push_back("--disable-cool-user-checking");
+
+    if (UnattendedRun)
+        args.push_back("--unattended");
 
 #if ENABLE_DEBUG
     if (SingleKit)
@@ -2247,16 +3326,26 @@ static std::shared_ptr<DocumentBroker>
                           const Poco::URI& uriPublic,
                           unsigned mobileAppDocId = 0)
 {
-    LOG_INF("Find or create DocBroker for docKey [" << docKey <<
-            "] for session [" << id << "] on url [" << COOLWSD::anonymizeUrl(uriPublic.toString()) << "].");
+    LOG_INF("Find or create DocBroker for docKey ["
+            << docKey << "] for session [" << id << "] on url ["
+            << COOLWSD::anonymizeUrl(uriPublic.toString()) << ']');
 
     std::unique_lock<std::mutex> docBrokersLock(DocBrokersMutex);
 
     cleanupDocBrokers();
 
-    if (SigUtil::getTerminationFlag())
+    if (SigUtil::getShutdownRequestFlag())
     {
-        LOG_ERR("TerminationFlag set. Not loading new session [" << id << ']');
+        // TerminationFlag implies ShutdownRequested.
+        LOG_WRN((SigUtil::getTerminationFlag() ? "TerminationFlag" : "ShudownRequestedFlag")
+                << " set. Not loading new session [" << id << "] for docKey [" << docKey << ']');
+        if (proto)
+        {
+            const std::string msg("error: cmd=load kind=recycling");
+            proto->sendTextMessage(msg.data(), msg.size());
+            proto->shutdown(true, msg);
+        }
+
         return nullptr;
     }
 
@@ -2267,30 +3356,43 @@ static std::shared_ptr<DocumentBroker>
     if (it != DocBrokers.end() && it->second)
     {
         // Get the DocumentBroker from the Cache.
-        LOG_DBG("Found DocumentBroker with docKey [" << docKey << "].");
+        LOG_DBG("Found DocumentBroker with docKey [" << docKey << ']');
         docBroker = it->second;
 
         // Destroying the document? Let the client reconnect.
-        if (docBroker->isMarkedToDestroy())
+        if (docBroker->isUnloading())
         {
-            LOG_WRN("DocBroker with docKey [" << docKey << "] that is marked to be destroyed. Rejecting client request.");
+            LOG_WRN("DocBroker [" << docKey
+                                  << "] is unloading. Rejecting client request to load session ["
+                                  << id << ']');
             if (proto)
             {
-                std::string msg("error: cmd=load kind=docunloading");
+                const std::string msg("error: cmd=load kind=docunloading");
                 proto->sendTextMessage(msg.data(), msg.size());
-                proto->shutdown(true, "error: cmd=load kind=docunloading");
+                proto->shutdown(true, msg);
             }
+
             return nullptr;
         }
     }
     else
     {
-        LOG_DBG("No DocumentBroker with docKey [" << docKey << "] found. New Child and Document.");
+        LOG_DBG("No DocumentBroker with docKey [" << docKey
+                                                  << "] found. Creating new Child and Document");
     }
 
-    if (SigUtil::getTerminationFlag())
+    if (SigUtil::getShutdownRequestFlag())
     {
-        LOG_ERR("TerminationFlag is set. Not loading new session [" << id << ']');
+        // TerminationFlag implies ShutdownRequested.
+        LOG_ERR((SigUtil::getTerminationFlag() ? "TerminationFlag" : "ShudownRequestedFlag")
+                << " set. Not loading new session [" << id << "] for docKey [" << docKey << ']');
+        if (proto)
+        {
+            const std::string msg("error: cmd=load kind=recycling");
+            proto->sendTextMessage(msg.data(), msg.size());
+            proto->shutdown(true, msg);
+        }
+
         return nullptr;
     }
 
@@ -2298,17 +3400,18 @@ static std::shared_ptr<DocumentBroker>
     if (proto)
     {
         const std::string statusConnect = "statusindicator: connect";
-        LOG_TRC("Sending to Client [" << statusConnect << "].");
+        LOG_TRC("Sending to Client [" << statusConnect << ']');
         proto->sendTextMessage(statusConnect.data(), statusConnect.size());
     }
 
     if (!docBroker)
     {
         Util::assertIsLocked(DocBrokersMutex);
-
         if (DocBrokers.size() + 1 > COOLWSD::MaxDocuments)
         {
-            LOG_INF("Maximum number of open documents of " << COOLWSD::MaxDocuments << " reached.");
+            LOG_WRN("Maximum number of open documents of "
+                    << COOLWSD::MaxDocuments << " reached while loading new session [" << id
+                    << "] for docKey [" << docKey << ']');
 #if ENABLE_SUPPORT_KEY
             shutdownLimitReached(proto);
             return nullptr;
@@ -2316,63 +3419,83 @@ static std::shared_ptr<DocumentBroker>
         }
 
         // Set the one we just created.
-        LOG_DBG("New DocumentBroker for docKey [" << docKey << "].");
+        LOG_DBG("New DocumentBroker for docKey [" << docKey << ']');
         docBroker = std::make_shared<DocumentBroker>(type, uri, uriPublic, docKey, mobileAppDocId);
         DocBrokers.emplace(docKey, docBroker);
-        LOG_TRC("Have " << DocBrokers.size() << " DocBrokers after inserting [" << docKey << "].");
+        LOG_TRC("Have " << DocBrokers.size() << " DocBrokers after inserting [" << docKey << ']');
     }
 
     return docBroker;
 }
 
 /// Handles the socket that the prisoner kit connected to WSD on.
-class PrisonerRequestDispatcher : public WebSocketHandler
+class PrisonerRequestDispatcher final : public WebSocketHandler
 {
     std::weak_ptr<ChildProcess> _childProcess;
+    int _pid; //< The Kit's PID (for logging).
+    int _socketFD; //< The socket FD to the Kit (for logging).
+    bool _associatedWithDoc; //< True when/if we get a DocBroker.
+
 public:
     PrisonerRequestDispatcher()
         : WebSocketHandler(/* isClient = */ false, /* isMasking = */ true)
+        , _pid(0)
+        , _socketFD(0)
+        , _associatedWithDoc(false)
     {
+        LOG_TRC_S("PrisonerRequestDispatcher");
     }
     ~PrisonerRequestDispatcher()
     {
+        LOG_TRC("~PrisonerRequestDispatcher");
+
         // Notify the broker that we're done.
+        // Note: since this class is the default WebScoketHandler
+        // for all incoming connections, for ForKit we have to
+        // replace it (once we receive 'GET /coolws/forkit') with
+        // ForKitProcWSHandler (see ForKitProcess) and nothing to disconnect.
         std::shared_ptr<ChildProcess> child = _childProcess.lock();
-        std::shared_ptr<DocumentBroker> docBroker = child ? child->getDocumentBroker() : nullptr;
-        if (docBroker)
-        {
-            // FIXME: No need to notify if asked to stop.
-            docBroker->stop("Request dispatcher destroyed.");
-        }
+        if (child && child->getPid() > 0)
+            onDisconnect();
     }
 
 private:
     /// Keep our socket around ...
     void onConnect(const std::shared_ptr<StreamSocket>& socket) override
     {
-        setSocket(socket);
-        LOG_TRC('#' << socket->getFD() << " Prisoner connected.");
+        WebSocketHandler::onConnect(socket);
+        LOG_TRC("Prisoner connected");
     }
 
     void onDisconnect() override
     {
-        std::shared_ptr<StreamSocket> socket = getSocket().lock();
-        if (socket)
-            LOG_TRC('#' << socket->getFD() << " Prisoner connection disconnected.");
-        else
-            LOG_WRN("Prisoner connection disconnected but without valid socket.");
+        LOG_DBG("Prisoner connection disconnected");
 
         // Notify the broker that we're done.
         std::shared_ptr<ChildProcess> child = _childProcess.lock();
-        std::shared_ptr<DocumentBroker> docBroker = child ? child->getDocumentBroker() : nullptr;
+        std::shared_ptr<DocumentBroker> docBroker =
+            child && child->getPid() > 0 ? child->getDocumentBroker() : nullptr;
         if (docBroker)
         {
-            std::unique_lock<std::mutex> lock = docBroker->getLock();
-            docBroker->assertCorrectThread();
-            if (docBroker->isAsyncSaveInProgress())
-                LOG_DBG("Don't stop DocumentBroker on disconnect: async saving in progress.");
+            assert(child->getPid() == _pid && "Child PID changed unexpectedly");
+            if (!docBroker->isUnloading() && !SigUtil::getShutdownRequestFlag())
+            {
+                LOG_WRN("DocBroker [" << docBroker->getDocKey()
+                                      << "] got disconnected from its Kit (" << child->getPid()
+                                      << ") unexpectedly. Closing");
+            }
             else
-                docBroker->stop("docdisconnected");
+            {
+                LOG_DBG("DocBroker [" << docBroker->getDocKey() << "] disconnected from its Kit ("
+                                      << child->getPid() << ") as expected");
+            }
+
+            std::unique_lock<std::mutex> lock = docBroker->getLock();
+            docBroker->disconnectedFromKit();
+        }
+        else if (!_associatedWithDoc && !SigUtil::getShutdownRequestFlag())
+        {
+            LOG_WRN("Unassociated Kit (" << _pid << ") disconnected unexpectedly");
         }
     }
 
@@ -2389,31 +3512,61 @@ private:
         std::shared_ptr<StreamSocket> socket = getSocket().lock();
         if (!socket)
         {
-            LOG_ERR("Invalid socket while reading incoming message.");
+            LOG_ERR("Invalid socket while reading incoming message");
             return;
         }
 
-        Poco::MemoryInputStream message(&socket->getInBuffer()[0],
-                                        socket->getInBuffer().size());
-        Poco::Net::HTTPRequest request;
+        Buffer& data = socket->getInBuffer();
+        if (data.empty())
+        {
+            LOG_DBG("No data to process from the socket");
+            return;
+        }
+
+#ifdef LOG_SOCKET_DATA
+        LOG_TRC("HandleIncomingMessage: buffer has:\n"
+                << Util::dumpHex(std::string(data.data(), std::min(data.size(), 256UL))));
+#endif
+
+        // Consume the incoming data by parsing and processing the body.
+        http::Request request;
+#if !MOBILEAPP
+        const int64_t read = request.readData(data.data(), data.size());
+        if (read < 0)
+        {
+            LOG_ERR("Error parsing prisoner socket data");
+            return;
+        }
+
+        if (read == 0)
+        {
+            // Not enough data.
+            return;
+        }
+
+        assert(read > 0 && "Must have read some data!");
+
+        // Remove consumed data.
+        data.eraseFirst(read);
+#endif
 
         try
         {
 #if !MOBILEAPP
-            if (!socket->parseHeader("Prisoner", message, request))
-                return;
-
-            LOG_TRC("Child connection with URI [" << COOLWSD::anonymizeUrl(request.getURI()) << "].");
-            Poco::URI requestURI(request.getURI());
+            LOG_TRC("Child connection with URI [" << COOLWSD::anonymizeUrl(request.getUrl())
+                                                  << ']');
+            Poco::URI requestURI(request.getUrl());
 #ifndef KIT_IN_PROCESS
             if (requestURI.getPath() == FORKIT_URI)
             {
                 if (socket->getPid() != COOLWSD::ForKitProcId)
                 {
-                    LOG_WRN("Connection request received on " << FORKIT_URI << " endpoint from unexpected ForKit process. Skipped.");
+                    LOG_WRN("Connection request received on "
+                            << FORKIT_URI << " endpoint from unexpected ForKit process. Skipped");
                     return;
                 }
                 COOLWSD::ForKitProc = std::make_shared<ForKitProcess>(COOLWSD::ForKitProcId, socket, request);
+                LOG_ASSERT_MSG(socket->getInBuffer().empty(), "Unexpected data in prisoner socket");
                 socket->getInBuffer().clear();
                 PrisonerPoll->setForKitProcess(COOLWSD::ForKitProc);
                 return;
@@ -2421,13 +3574,17 @@ private:
 #endif
             if (requestURI.getPath() != NEW_CHILD_URI)
             {
-                LOG_ERR("Invalid incoming URI.");
+                LOG_ERR("Invalid incoming child URI [" << requestURI.getPath() << ']');
                 return;
             }
 
+            const auto duration = (std::chrono::steady_clock::now() - LastForkRequestTime);
+            const auto durationMs = std::chrono::duration_cast<std::chrono::milliseconds>(duration);
+            LOG_TRC("New child spawned after " << durationMs << " of requesting");
+
             // New Child is spawned.
             const Poco::URI::QueryParameters params = requestURI.getQueryParameters();
-            int pid = socket->getPid();
+            const int pid = socket->getPid();
             std::string jailId;
             for (const auto& param : params)
             {
@@ -2440,21 +3597,22 @@ private:
 
             if (pid <= 0)
             {
-                LOG_ERR("Invalid PID in child URI [" << COOLWSD::anonymizeUrl(request.getURI()) << "].");
+                LOG_ERR("Invalid PID in child URI [" << COOLWSD::anonymizeUrl(request.getUrl())
+                                                     << ']');
                 return;
             }
 
             if (jailId.empty())
             {
-                LOG_ERR("Invalid JailId in child URI [" << COOLWSD::anonymizeUrl(request.getURI()) << "].");
+                LOG_ERR("Invalid JailId in child URI [" << COOLWSD::anonymizeUrl(request.getUrl())
+                                                        << ']');
                 return;
             }
 
+            LOG_ASSERT_MSG(socket->getInBuffer().empty(), "Unexpected data in prisoner socket");
             socket->getInBuffer().clear();
 
-            LOG_INF("New child [" << pid << "], jailId: " << jailId << '.');
-
-            UnitWSD::get().newChild(*this);
+            LOG_INF("New child [" << pid << "], jailId: " << jailId);
 #else
             pid_t pid = 100;
             std::string jailId = "jail";
@@ -2464,13 +3622,21 @@ private:
 
             auto child = std::make_shared<ChildProcess>(pid, jailId, socket, request);
 
+#if !MOBILEAPP
+            UnitWSD::get().newChild(child);
+#endif
+
+            _pid = pid;
+            _socketFD = socket->getFD();
             child->setSMapsFD(socket->getIncomingFD());
             _childProcess = child; // weak
 
             // Remove from prisoner poll since there is no activity
             // until we attach the childProcess (with this socket)
             // to a docBroker, which will do the polling.
-            disposition.setMove([child](const std::shared_ptr<Socket> &){
+            disposition.setMove(
+                [this, child](const std::shared_ptr<Socket>&)
+                {
                     LOG_TRC("Calling addNewChild in disposition's move thing to add to NewChildren");
                     addNewChild(child);
                 });
@@ -2478,7 +3644,7 @@ private:
         catch (const std::bad_weak_ptr&)
         {
             // Using shared_from_this() from a constructor is not good.
-            assert(false);
+            assert(!"Got std::bad_weak_ptr. Are we using shared_from_this() from a constructor?");
         }
         catch (const std::exception& exc)
         {
@@ -2490,23 +3656,38 @@ private:
     /// Prisoner websocket fun ... (for now)
     virtual void handleMessage(const std::vector<char> &data) override
     {
-        if (UnitWSD::get().filterChildMessage(data))
+        if (UnitWSD::isUnitTesting() && UnitWSD::get().filterChildMessage(data))
             return;
 
-        const std::string abbr = getAbbreviatedMessage(data);
+        auto message = std::make_shared<Message>(data.data(), data.size(), Message::Dir::Out);
         std::shared_ptr<StreamSocket> socket = getSocket().lock();
         if (socket)
-            LOG_TRC('#' << socket->getFD() << " Prisoner message [" << abbr << "].");
+        {
+            assert(socket->getFD() == _socketFD && "Socket FD changed unexpectedly");
+            LOG_TRC("Prisoner message [" << message->abbr() << ']');
+        }
         else
-            LOG_WRN("Message handler called but without valid socket.");
+            LOG_WRN("Message handler called but without valid socket. Expected #" << _socketFD);
 
         std::shared_ptr<ChildProcess> child = _childProcess.lock();
-        std::shared_ptr<DocumentBroker> docBroker = child ? child->getDocumentBroker() : nullptr;
+        std::shared_ptr<DocumentBroker> docBroker =
+            child && child->getPid() > 0 ? child->getDocumentBroker() : nullptr;
         if (docBroker)
-            docBroker->handleInput(data);
+        {
+            assert(child->getPid() == _pid && "Child PID changed unexpectedly");
+            _associatedWithDoc = true;
+            docBroker->handleInput(message);
+        }
+        else if (child && child->getPid() > 0)
+        {
+            LOG_WRN("Child " << child->getPid() << " has no DocBroker to handle message: ["
+                             << message->abbr() << ']');
+        }
         else
-            LOG_WRN("Child " << child->getPid() <<
-                    " has no DocumentBroker to handle message: [" << abbr << "].");
+        {
+            LOG_ERR("Cannot handle message with unassociated Kit (PID " << _pid << "): ["
+                                                                        << message->abbr());
+        }
     }
 
     int getPollEvents(std::chrono::steady_clock::time_point /* now */,
@@ -2538,6 +3719,26 @@ public:
     }
 };
 
+/// Constructs ConvertToBroker implamentation based on request type
+static std::shared_ptr<ConvertToBroker> getConvertToBrokerImplementation(const std::string& requestType,
+                                                                         const std::string& fromPath,
+                                                                         const Poco::URI& uriPublic,
+                                                                         const std::string& docKey,
+                                                                         const std::string& format,
+                                                                         const std::string& options,
+                                                                         const std::string& lang,
+                                                                         const std::string& target)
+{
+    if (requestType == "convert-to")
+        return std::make_shared<ConvertToBroker>(fromPath, uriPublic, docKey, format, options, lang);
+    else if (requestType == "extract-link-targets")
+        return std::make_shared<ExtractLinkTargetsBroker>(fromPath, uriPublic, docKey, lang);
+    else if (requestType == "get-thumbnail")
+        return std::make_shared<GetThumbnailBroker>(fromPath, uriPublic, docKey, lang, target);
+
+    return nullptr;
+}
+
 #endif
 
 /// Handles incoming connections and dispatches to the appropriate handler.
@@ -2568,7 +3769,7 @@ public:
                 const auto host = app.config().getString(path, "");
                 if (!host.empty())
                 {
-                    LOG_INF("Adding trusted POST_ALLOW host: [" << host << "].");
+                    LOG_INF_S("Adding trusted POST_ALLOW host: [" << host << ']');
                     hosts.allow(host);
                 }
                 else if (!app.config().has(path))
@@ -2586,23 +3787,23 @@ public:
     {
         std::string addressToCheck = address;
         std::string hostToCheck = request.getHost();
-        bool allow = allowPostFrom(addressToCheck) || StorageBase::allowedWopiHost(hostToCheck);
+        bool allow = allowPostFrom(addressToCheck) || HostUtil::allowedWopiHost(hostToCheck);
 
-        if(!allow)
+        if (!allow)
         {
-            LOG_WRN("convert-to: Requesting address is denied: " << addressToCheck);
+            LOG_WRN_S("convert-to: Requesting address is denied: " << addressToCheck);
             return false;
         }
         else
         {
-            LOG_INF("convert-to: Requesting address is allowed: " << addressToCheck);
+            LOG_TRC_S("convert-to: Requesting address is allowed: " << addressToCheck);
         }
 
         // Handle forwarded header and make sure all participating IPs are allowed
-        if(request.has("X-Forwarded-For"))
+        if (request.has("X-Forwarded-For"))
         {
             const std::string fowardedData = request.get("X-Forwarded-For");
-            StringVector tokens = Util::tokenize(fowardedData, ',');
+            StringVector tokens = StringVector::tokenize(fowardedData, ',');
             for (const auto& token : tokens)
             {
                 std::string param = tokens.getParam(token);
@@ -2612,23 +3813,24 @@ public:
                     if (!allowPostFrom(addressToCheck))
                     {
                         hostToCheck = Poco::Net::DNS::resolve(addressToCheck).name();
-                        allow &= StorageBase::allowedWopiHost(hostToCheck);
+                        allow &= HostUtil::allowedWopiHost(hostToCheck);
                     }
                 }
                 catch (const Poco::Exception& exc)
                 {
-                    LOG_ERR("Poco::Net::DNS::resolve(\"" << addressToCheck << "\") failed: " << exc.displayText());
+                    LOG_ERR_S("Poco::Net::DNS::resolve(\"" << addressToCheck
+                                                           << "\") failed: " << exc.displayText());
                     // We can't find out the hostname, and it already failed the IP check
                     allow = false;
                 }
-                if(!allow)
+                if (!allow)
                 {
-                    LOG_WRN("convert-to: Requesting address is denied: " << addressToCheck);
+                    LOG_WRN_S("convert-to: Requesting address is denied: " << addressToCheck);
                     return false;
                 }
                 else
                 {
-                    LOG_INF("convert-to: Requesting address is allowed: " << addressToCheck);
+                    LOG_INF_S("convert-to: Requesting address is allowed: " << addressToCheck);
                 }
             }
         }
@@ -2642,7 +3844,8 @@ private:
     {
         _id = COOLWSD::GetConnectionId();
         _socket = socket;
-        LOG_TRC('#' << socket->getFD() << " Connected to ClientRequestDispatcher.");
+        setLogContext(socket->getFD());
+        LOG_TRC("Connected to ClientRequestDispatcher");
     }
 
     /// Called after successful socket reads.
@@ -2679,14 +3882,14 @@ private:
         Poco::Net::HTTPRequest request;
 
         StreamSocket::MessageMap map;
-        if (!socket->parseHeader("Client", startmessage, request, &map))
+        if (!socket->parseHeader("Client", startmessage, request, map))
             return;
 
-        LOG_INF("Handling request: " << request.getURI());
+        LOG_DBG("Handling request: " << request.getURI());
         try
         {
             // We may need to re-write the chunks moving the inBuffer.
-            socket->compactChunks(&map);
+            socket->compactChunks(map);
             Poco::MemoryInputStream message(&socket->getInBuffer()[0],
                                             socket->getInBuffer().size());
             // update the read cursor - headers are not altered by chunks.
@@ -2706,7 +3909,7 @@ private:
             }
 
             // Routing
-            if (UnitWSD::get().handleHttpRequest(request, message, socket))
+            if (UnitWSD::isUnitTesting() && UnitWSD::get().handleHttpRequest(request, message, socket))
             {
                 // Unit testing, nothing to do here
             }
@@ -2714,8 +3917,39 @@ private:
             {
                 // File server
                 assert(socket && "Must have a valid socket");
-                FileServerRequestHandler::handleRequest(request, requestDetails, message, socket);
-                socket->shutdown();
+                constexpr auto ProxyRemote = "/remote/";
+                constexpr auto ProxyRemoteLen = sizeof(ProxyRemote) - 1;
+                constexpr auto ProxyRemoteStatic = "/remote/static/";
+                const auto uri = requestDetails.getURI();
+                const auto pos = uri.find(ProxyRemoteStatic);
+                if (pos != std::string::npos)
+                {
+                    if (Util::endsWith(uri, "lokit-extra-img.svg"))
+                    {
+                        ProxyRequestHandler::handleRequest(
+                            uri.substr(pos + ProxyRemoteLen), socket,
+                            ProxyRequestHandler::getProxyRatingServer());
+                    }
+#if ENABLE_FEATURE_LOCK
+                    else
+                    {
+                        const Poco::URI unlockImageUri =
+                            CommandControl::LockManager::getUnlockImageUri();
+                        if (!unlockImageUri.empty())
+                        {
+                            const std::string& serverUri =
+                                unlockImageUri.getScheme() + "://" + unlockImageUri.getAuthority();
+                            ProxyRequestHandler::handleRequest(uri.substr(pos + ProxyRemoteLen),
+                                                               socket, serverUri);
+                        }
+                    }
+#endif
+                }
+                else
+                {
+                    FileServerRequestHandler::handleRequest(request, requestDetails, message, socket);
+                    socket->shutdown();
+                }
             }
             else if (requestDetails.equals(RequestDetails::Field::Type, "cool") &&
                      requestDetails.equals(1, "adminws"))
@@ -2734,7 +3968,8 @@ private:
                      requestDetails.equals(1, "getMetrics"))
             {
                 // See metrics.txt
-                std::shared_ptr<Poco::Net::HTTPResponse> response(new Poco::Net::HTTPResponse());
+                std::shared_ptr<Poco::Net::HTTPResponse> response =
+                    std::make_shared<Poco::Net::HTTPResponse>();
 
                 if (!COOLWSD::AdminEnabled)
                     throw Poco::FileAccessDeniedException("Admin console disabled");
@@ -2750,7 +3985,7 @@ private:
                 catch (const Poco::Net::NotAuthenticatedException& exc)
                 {
                     //LOG_ERR("FileServerRequestHandler::NotAuthenticated: " << exc.displayText());
-                    http::Response httpResponse(http::StatusLine(401));
+                    http::Response httpResponse(http::StatusCode::Unauthorized);
                     httpResponse.set("Content-Type", "text/html charset=UTF-8");
                     httpResponse.set("WWW-authenticate", "Basic realm=\"online\"");
                     socket->sendAndShutdown(httpResponse);
@@ -2780,16 +4015,21 @@ private:
             else if (requestDetails.isGet("/favicon.ico"))
                 handleFaviconRequest(requestDetails, socket);
 
-            else if (requestDetails.isGet("/hosting/discovery") ||
-                     requestDetails.isGet("/hosting/discovery/"))
-                handleWopiDiscoveryRequest(requestDetails, socket);
-
-            else if (requestDetails.isGet(CAPABILITIES_END_POINT))
-                handleCapabilitiesRequest(request, socket);
-
+            else if (requestDetails.equals(0, "hosting"))
+            {
+                if (requestDetails.equals(1, "discovery"))
+                    handleWopiDiscoveryRequest(requestDetails, socket);
+                else if (requestDetails.equals(1, "capabilities"))
+                    handleCapabilitiesRequest(request, socket);
+            }
             else if (requestDetails.isGet("/robots.txt"))
                 handleRobotsTxtRequest(request, socket);
 
+            else if (requestDetails.equals(RequestDetails::Field::Type, "cool") &&
+                     requestDetails.equals(1, "media"))
+            {
+                handleMediaRequest(request, disposition, socket);
+            }
             else if (requestDetails.equals(RequestDetails::Field::Type, "cool") &&
                      requestDetails.equals(1, "clipboard"))
             {
@@ -2821,6 +4061,16 @@ private:
                 return;
             }
         }
+        catch (const BadRequestException& ex)
+        {
+            LOG_ERR('#' << socket->getFD() << " bad request: ["
+                        << COOLProtocol::getAbbreviatedMessage(socket->getInBuffer())
+                        << "]: " << ex.what());
+
+            // Bad request.
+            HttpHelper::sendErrorAndShutdown(400, socket);
+            return;
+        }
         catch (const std::exception& exc)
         {
             LOG_ERR('#' << socket->getFD() << " Exception while processing incoming request: [" <<
@@ -2828,7 +4078,7 @@ private:
 
             // Bad request.
             // NOTE: Check _wsState to choose between HTTP response or WebSocket (app-level) error.
-            http::Response httpResponse(http::StatusLine(400));
+            http::Response httpResponse(http::StatusCode::BadRequest);
             httpResponse.set("Content-Length", "0");
             socket->sendAndShutdown(httpResponse);
             socket->ignoreInput();
@@ -2892,9 +4142,9 @@ private:
         const std::string mimeType = "text/plain";
         const std::string responseString = "OK";
 
-        http::Response httpResponse(http::StatusLine(200));
+        http::Response httpResponse(http::StatusCode::OK);
         httpResponse.set("Content-Length", std::to_string(responseString.size()));
-        httpResponse.set("Content-Type", std::to_string(mimeType.size()));
+        httpResponse.set("Content-Type", mimeType);
         httpResponse.set("Last-Modified", Util::getHttpTimeNow());
         httpResponse.set("Connection", "close");
         httpResponse.writeData(socket->getOutBuffer());
@@ -2910,8 +4160,8 @@ private:
     {
         assert(socket && "Must have a valid socket");
 
-        LOG_DBG("Favicon request: " << requestDetails.getURI());
-        std::string mimeType = "image/vnd.microsoft.icon";
+        LOG_TRC_S("Favicon request: " << requestDetails.getURI());
+        const std::string mimeType = "image/vnd.microsoft.icon";
         std::string faviconPath = Path(Application::instance().commandPath()).parent().toString() + "favicon.ico";
         if (!File(faviconPath).exists())
             faviconPath = COOLWSD::FileServerRoot + "/favicon.ico";
@@ -2939,7 +4189,7 @@ private:
             srvUrl = requestDetails.getProxyPrefix();
         Poco::replaceInPlace(xml, std::string("%SRV_URI%"), srvUrl);
 
-        http::Response httpResponse(http::StatusLine(200));
+        http::Response httpResponse(http::StatusCode::OK);
         httpResponse.setBody(xml, "text/xml");
         httpResponse.set("Last-Modified", Util::getHttpTimeNow());
         httpResponse.set("X-Content-Type-Options", "nosniff");
@@ -2957,7 +4207,7 @@ private:
 
         const std::string capabilities = getCapabilitiesJson(request, socket);
 
-        http::Response httpResponse(http::StatusLine(200));
+        http::Response httpResponse(http::StatusCode::OK);
         httpResponse.set("Last-Modified", Util::getHttpTimeNow());
         httpResponse.setBody(capabilities, "application/json");
         httpResponse.set("X-Content-Type-Options", "nosniff");
@@ -2972,8 +4222,8 @@ private:
     {
         assert(socket && "Must have a valid socket");
 
-        LOG_DBG("Clipboard " << ((request.getMethod() == HTTPRequest::HTTP_GET) ? "GET" : "POST") <<
-                " request: " << request.getURI());
+        LOG_DBG_S("Clipboard " << ((request.getMethod() == HTTPRequest::HTTP_GET) ? "GET" : "POST")
+                               << " request: " << request.getURI());
 
         Poco::URI requestUri(request.getURI());
         Poco::URI::QueryParameters params = requestUri.getQueryParameters();
@@ -2991,18 +4241,15 @@ private:
             else if (it.first == "MimeType")
                 mime = it.second;
         }
-        LOG_TRC("Clipboard request for us: " << serverId << " with tag " << tag);
 
         if (serverId != Util::getProcessIdentifier())
         {
-            const std::string errMsg = "Cluster configuration error: mis-matching "
-                                       "serverid "
-                                       + serverId + " vs. " + Util::getProcessIdentifier()
-                                       + "on request to URL: " + request.getURI();
-            LOG_ERR(errMsg);
+            LOG_ERR_S("Cluster configuration error: mis-matching serverid ["
+                      << serverId << "] vs. [" << Util::getProcessIdentifier() << "] with tag ["
+                      << tag << "] on request to URL: " << request.getURI());
 
             // we got the wrong request.
-            http::Response httpResponse(http::StatusLine(400));
+            http::Response httpResponse(http::StatusCode::BadRequest);
             httpResponse.set("Content-Length", "0");
             socket->sendAndShutdown(httpResponse);
             socket->ignoreInput();
@@ -3010,6 +4257,8 @@ private:
         }
 
         const auto docKey = RequestDetails::getDocKey(WOPISrc);
+        LOG_TRC_S("Clipboard request for us: [" << serverId << "] with tag [" << tag
+                                                << "] on docKey [" << docKey << ']');
 
         std::shared_ptr<DocumentBroker> docBroker;
         {
@@ -3043,23 +4292,29 @@ private:
                 HTMLForm form(request, message, handler);
                 data = handler.getData();
                 if (!data || data->length() == 0)
-                    LOG_ERR("Invalid zero size set clipboard content");
+                    LOG_ERR_S("Invalid zero size set clipboard content with tag ["
+                              << tag << "] on docKey [" << docKey << ']');
             }
+
             // Do things in the right thread.
-            LOG_TRC("Move clipboard request " << tag << " to docbroker thread with data: " <<
-                    (data ? data->length() : 0) << " bytes");
-            docBroker->setupTransfer(disposition, [=] (const std::shared_ptr<Socket> &moveSocket)
+            LOG_TRC_S("Move clipboard request tag [" << tag << "] to docbroker thread with "
+                                                     << (data ? data->length() : 0)
+                                                     << " bytes of data");
+            docBroker->setupTransfer(
+                disposition,
+                [docBroker, type, viewId, tag, data](const std::shared_ptr<Socket>& moveSocket)
                 {
                     auto streamSocket = std::static_pointer_cast<StreamSocket>(moveSocket);
                     docBroker->handleClipboardRequest(type, streamSocket, viewId, tag, data);
                 });
-            LOG_TRC("queued clipboard command " << type << " on docBroker fetch");
+            LOG_TRC_S("queued clipboard command " << type << " on docBroker fetch");
         }
         // fallback to persistent clipboards if we can
         else if (!DocumentBroker::lookupSendClipboardTag(socket, tag, false))
         {
-            LOG_ERR("Invalid clipboard request: " << serverId << " with tag " << tag <<
-                    " and broker: " << (docBroker ? "" : "not ") << "found");
+            LOG_ERR_S("Invalid clipboard request to server ["
+                      << serverId << "] with tag [" << tag << "] and broker [" << docKey
+                      << "]: " << (docBroker ? "" : "not ") << "found");
 
             std::string errMsg = "Empty clipboard item / session tag " + tag;
 
@@ -3073,10 +4328,10 @@ private:
     {
         assert(socket && "Must have a valid socket");
 
-        LOG_DBG("HTTP request: " << request.getURI());
+        LOG_DBG_S("HTTP request: " << request.getURI());
         const std::string responseString = "User-agent: *\nDisallow: /\n";
 
-        http::Response httpResponse(http::StatusLine(200));
+        http::Response httpResponse(http::StatusCode::OK);
         httpResponse.set("Last-Modified", Util::getHttpTimeNow());
         httpResponse.set("Content-Length", std::to_string(responseString.size()));
         httpResponse.set("Content-Type", "text/plain");
@@ -3089,7 +4344,90 @@ private:
         }
 
         socket->shutdown();
-        LOG_INF("Sent robots.txt response successfully.");
+        LOG_INF_S("Sent robots.txt response successfully");
+    }
+
+    static void handleMediaRequest(const Poco::Net::HTTPRequest& request,
+                                   SocketDisposition& /*disposition*/,
+                                   const std::shared_ptr<StreamSocket>& socket)
+    {
+        assert(socket && "Must have a valid socket");
+
+        LOG_DBG_S("Media request: " << request.getURI());
+
+        std::string decoded;
+        Poco::URI::decode(request.getURI(), decoded);
+        Poco::URI requestUri(decoded);
+        Poco::URI::QueryParameters params = requestUri.getQueryParameters();
+        std::string WOPISrc, serverId, viewId, tag, mime;
+        for (const auto& it : params)
+        {
+            if (it.first == "WOPISrc")
+                WOPISrc = it.second;
+            else if (it.first == "ServerId")
+                serverId = it.second;
+            else if (it.first == "ViewId")
+                viewId = it.second;
+            else if (it.first == "Tag")
+                tag = it.second;
+            else if (it.first == "MimeType")
+                mime = it.second;
+        }
+
+        LOG_TRC_S("Media request for us: [" << serverId << "] with tag [" << tag << "] and viewId ["
+                                            << viewId << ']');
+
+        if (serverId != Util::getProcessIdentifier())
+        {
+            LOG_ERR_S("Cluster configuration error: mis-matching serverid ["
+                      << serverId << "] vs. [" << Util::getProcessIdentifier()
+                      << "] on request to URL: " << request.getURI());
+
+            // we got the wrong request.
+            http::Response httpResponse(http::StatusCode::BadRequest);
+            httpResponse.set("Content-Length", "0");
+            socket->sendAndShutdown(httpResponse);
+            socket->ignoreInput();
+            return;
+        }
+
+        const auto docKey = RequestDetails::getDocKey(WOPISrc);
+        LOG_TRC_S("Looking up DocBroker with docKey [" << docKey << "] referenced in WOPISrc ["
+                                                       << WOPISrc
+                                                       << "] in media URL: " + request.getURI());
+
+        std::shared_ptr<DocumentBroker> docBroker;
+        {
+            std::unique_lock<std::mutex> docBrokersLock(DocBrokersMutex);
+            auto it = DocBrokers.find(docKey);
+            if (it == DocBrokers.end())
+            {
+                LOG_ERR_S("Unknown DocBroker with docKey ["
+                          << docKey << "] referenced in WOPISrc [" << WOPISrc
+                          << "] in media URL: " + request.getURI());
+
+                http::Response httpResponse(http::StatusCode::BadRequest);
+                httpResponse.set("Content-Length", "0");
+                socket->sendAndShutdown(httpResponse);
+                socket->ignoreInput();
+                return;
+            }
+
+            docBroker = it->second;
+        }
+
+        // If we have a valid docBroker, use it.
+        // Note: there is a race here as DocBroker may
+        // have already exited its SocketPoll, but we
+        // haven't cleaned up the DocBrokers container.
+        // Since we don't care about creating a new one,
+        // we simply go to the fallback below.
+        if (docBroker && docBroker->isAlive())
+        {
+            // Do things in the right thread.
+            LOG_TRC_S("Move media request " << tag << " to docbroker thread");
+            docBroker->handleMediaRequest(socket, tag);
+        }
     }
 
     static std::string getContentType(const std::string& fileName)
@@ -3255,13 +4593,15 @@ private:
 
         LOG_INF("Post request: [" << COOLWSD::anonymizeUrl(requestDetails.getURI()) << ']');
 
-        if (requestDetails.equals(1, "convert-to"))
+        if (requestDetails.equals(1, "convert-to") ||
+            requestDetails.equals(1, "extract-link-targets") ||
+            requestDetails.equals(1, "get-thumbnail"))
         {
             // Validate sender - FIXME: should do this even earlier.
             if (!allowConvertTo(socket->clientAddress(), request))
             {
                 LOG_WRN("Conversion requests not allowed from this address: " << socket->clientAddress());
-                http::Response httpResponse(http::StatusLine(403));
+                http::Response httpResponse(http::StatusCode::Forbidden);
                 httpResponse.set("Content-Length", "0");
                 socket->sendAndShutdown(httpResponse);
                 socket->ignoreInput();
@@ -3276,14 +4616,24 @@ private:
             if (requestDetails.size() > 2)
                 format = requestDetails[2];
 
+            bool hasRequiredParameters = true;
+            if (requestDetails.equals(1, "convert-to") && format.empty())
+                hasRequiredParameters = false;
+
             const std::string fromPath = handler.getFilename();
             LOG_INF("Conversion request for URI [" << fromPath << "] format [" << format << "].");
-            if (!fromPath.empty() && !format.empty())
+            if (!fromPath.empty() && hasRequiredParameters)
             {
                 Poco::URI uriPublic = RequestDetails::sanitizeURI(fromPath);
                 const std::string docKey = RequestDetails::getDocKey(uriPublic);
 
                 std::string options;
+                if (form.has("options"))
+                {
+                    // Allow specifying options as-is, in case only data + format are used.
+                    options = form.get("options");
+                }
+
                 const bool fullSheetPreview
                     = (form.has("FullSheetPreview") && form.get("FullSheetPreview") == "true");
                 if (fullSheetPreview && format == "pdf" && isSpreadsheet(fromPath))
@@ -3292,13 +4642,31 @@ private:
                     // we want it enabled (i.e. we shouldn't set the option if we don't want it).
                     options = ",FullSheetPreview=trueFULLSHEETPREVEND";
                 }
+                const std::string pdfVer = (form.has("PDFVer") ? form.get("PDFVer") : "");
+                if (!pdfVer.empty())
+                {
+                    if (strcasecmp(pdfVer.c_str(), "PDF/A-1b") && strcasecmp(pdfVer.c_str(), "PDF/A-2b") && strcasecmp(pdfVer.c_str(), "PDF/A-3b")
+                        && strcasecmp(pdfVer.c_str(), "PDF-1.5") && strcasecmp(pdfVer.c_str(), "PDF-1.6"))
+                    {
+                        LOG_ERR("Wrong PDF type: " << pdfVer << ". Conversion aborted.");
+                        http::Response httpResponse(http::StatusCode::BadRequest);
+                        httpResponse.set("Content-Length", "0");
+                        socket->sendAndShutdown(httpResponse);
+                        socket->ignoreInput();
+                        return;
+                    }
+                   options += ",PDFVer=" + pdfVer + "PDFVEREND";
+                }
+
+                std::string lang = (form.has("lang") ? form.get("lang") : std::string());
+                std::string target = (form.has("target") ? form.get("target") : std::string());
 
                 // This lock could become a bottleneck.
                 // In that case, we can use a pool and index by publicPath.
                 std::unique_lock<std::mutex> docBrokersLock(DocBrokersMutex);
 
                 LOG_DBG("New DocumentBroker for docKey [" << docKey << "].");
-                auto docBroker = std::make_shared<ConvertToBroker>(fromPath, uriPublic, docKey, format, options);
+                auto docBroker = getConvertToBrokerImplementation(requestDetails[1], fromPath, uriPublic, docKey, format, options, lang, target);
                 handler.takeFile();
 
                 cleanupDocBrokers();
@@ -3311,6 +4679,14 @@ private:
                     LOG_WRN("Failed to create Client Session with id [" << _id << "] on docKey [" << docKey << "].");
                     cleanupDocBrokers();
                 }
+            }
+            else
+            {
+                LOG_INF("Missing parameters for conversion request.");
+                http::Response httpResponse(http::StatusCode::BadRequest);
+                httpResponse.set("Content-Length", "0");
+                socket->sendAndShutdown(httpResponse);
+                socket->ignoreInput();
             }
             return;
         }
@@ -3357,7 +4733,7 @@ private:
 
                     handler.takeFile();
 
-                    http::Response httpResponse(http::StatusLine(200));
+                    http::Response httpResponse(http::StatusCode::OK);
                     httpResponse.set("Content-Length", "0");
                     socket->sendAndShutdown(httpResponse);
                     socket->ignoreInput();
@@ -3432,7 +4808,7 @@ private:
                             (exc.nested() ? " (" + exc.nested()->displayText() + ")" : ""));
                 }
 
-                FileUtil::removeFile(File(filePath.parent()).path(), true);
+                FileUtil::removeFile(filePath.toString());
             }
             else
             {
@@ -3441,7 +4817,7 @@ private:
                 else
                     LOG_ERR("Download with id [" << downloadId << "] not found.");
 
-                http::Response httpResponse(http::StatusLine(404));
+                http::Response httpResponse(http::StatusCode::NotFound);
                 httpResponse.set("Content-Length", "0");
                 socket->sendAndShutdown(httpResponse);
             }
@@ -3530,8 +4906,9 @@ private:
                                     (const std::shared_ptr<Socket> &moveSocket)
                 {
                     // Now inside the document broker thread ...
-                    LOG_TRC("In the docbroker thread for " << docBroker->getDocKey());
+                    LOG_TRC_S("In the docbroker thread for " << docBroker->getDocKey());
 
+                    const int fd = moveSocket->getFD();
                     auto streamSocket = std::static_pointer_cast<StreamSocket>(moveSocket);
                     try
                     {
@@ -3542,15 +4919,21 @@ private:
                     }
                     catch (const UnauthorizedRequestException& exc)
                     {
-                        LOG_ERR("Unauthorized Request while loading session for " << docBroker->getDocKey() << ": " << exc.what());
+                        LOG_ERR_S("Unauthorized Request while starting session on "
+                                  << docBroker->getDocKey() << " for socket #" << fd
+                                  << ". Terminating connection. Error: " << exc.what());
                     }
                     catch (const StorageConnectionException& exc)
                     {
-                        LOG_ERR("Error while loading : " << exc.what());
+                        LOG_ERR_S("Storage error while starting session on "
+                                  << docBroker->getDocKey() << " for socket #" << fd
+                                  << ". Terminating connection. Error: " << exc.what());
                     }
                     catch (const std::exception& exc)
                     {
-                        LOG_ERR("Error while loading : " << exc.what());
+                        LOG_ERR_S("Error while starting session on "
+                                  << docBroker->getDocKey() << " for socket #" << fd
+                                  << ". Terminating connection. Error: " << exc.what());
                     }
                     // badness occurred:
                     HttpHelper::sendErrorAndShutdown(400, streamSocket);
@@ -3614,14 +4997,15 @@ private:
             bool isReadOnly = false;
             for (const auto& param : uriPublic.getQueryParameters())
             {
-                LOG_DBG("Query param: " << param.first << ", value: " << param.second);
+                LOG_TRC("Query param: " << param.first << ", value: " << param.second);
                 if (param.first == "permission" && param.second == "readonly")
                 {
                     isReadOnly = true;
                 }
             }
 
-            LOG_INF("URL [" << COOLWSD::anonymizeUrl(url) << "] is " << (isReadOnly ? "readonly" : "writable") << '.');
+            LOG_INF("URL [" << COOLWSD::anonymizeUrl(url) << "] is "
+                            << (isReadOnly ? "readonly" : "writable"));
 
             // Request a kit process for this doc.
             std::shared_ptr<DocumentBroker> docBroker = findOrCreateDocBroker(
@@ -3644,7 +5028,8 @@ private:
                             // Set WebSocketHandler's socket after its construction for shared_ptr goodness.
                             streamSocket->setHandler(ws);
 
-                            LOG_DBG("Socket #" << moveSocket->getFD() << " handler is " << clientSession->getName());
+                            LOG_DBG_S('#' << moveSocket->getFD() << " handler is "
+                                          << clientSession->getName());
 
                             // Add and load the session.
                             docBroker->addSession(clientSession);
@@ -3658,30 +5043,30 @@ private:
                         }
                         catch (const UnauthorizedRequestException& exc)
                         {
-                            LOG_ERR("Unauthorized Request while starting session on "
-                                    << docBroker->getDocKey() << " for socket #"
-                                    << moveSocket->getFD()
-                                    << ". Terminating connection. Error: " << exc.what());
+                            LOG_ERR_S("Unauthorized Request while starting session on "
+                                      << docBroker->getDocKey() << " for socket #"
+                                      << moveSocket->getFD()
+                                      << ". Terminating connection. Error: " << exc.what());
                             const std::string msg = "error: cmd=internal kind=unauthorized";
                             ws->shutdown(WebSocketHandler::StatusCodes::POLICY_VIOLATION, msg);
                             moveSocket->ignoreInput();
                         }
                         catch (const StorageConnectionException& exc)
                         {
-                            LOG_ERR("Storage error while starting session on "
-                                    << docBroker->getDocKey() << " for socket #"
-                                    << moveSocket->getFD()
-                                    << ". Terminating connection. Error: " << exc.what());
+                            LOG_ERR_S("Storage error while starting session on "
+                                      << docBroker->getDocKey() << " for socket #"
+                                      << moveSocket->getFD()
+                                      << ". Terminating connection. Error: " << exc.what());
                             const std::string msg = "error: cmd=storage kind=loadfailed";
                             ws->shutdown(WebSocketHandler::StatusCodes::POLICY_VIOLATION, msg);
                             moveSocket->ignoreInput();
                         }
                         catch (const std::exception& exc)
                         {
-                            LOG_ERR("Error while starting session on "
-                                    << docBroker->getDocKey() << " for socket #"
-                                    << moveSocket->getFD()
-                                    << ". Terminating connection. Error: " << exc.what());
+                            LOG_ERR_S("Error while starting session on "
+                                      << docBroker->getDocKey() << " for socket #"
+                                      << moveSocket->getFD()
+                                      << ". Terminating connection. Error: " << exc.what());
                             const std::string msg = "error: cmd=storage kind=loadfailed";
                             ws->shutdown(WebSocketHandler::StatusCodes::POLICY_VIOLATION, msg);
                             moveSocket->ignoreInput();
@@ -3691,6 +5076,7 @@ private:
                 else
                 {
                     LOG_WRN("Failed to create Client Session with id [" << _id << "] on docKey [" << docKey << "].");
+                    throw std::runtime_error("Cannot create client session for doc " + docKey);
                 }
             }
             else
@@ -3742,6 +5128,7 @@ private:
         const std::string uriBaseValue = rootUriValue + "/browser/" COOLWSD_VERSION_HASH "/";
         const std::string uriValue = uriBaseValue + "cool.html?";
 
+        LOG_DBG_S("Processing discovery.xml from " << discoveryPath);
         InputSource inputSrc(discoveryPath);
         DOMParser parser;
         AutoPtr<Poco::XML::Document> docXML = parser.parse(&inputSrc);
@@ -3762,10 +5149,16 @@ private:
 
             // Set the View extensions cache as well.
             if (elem->getAttribute("name") == "edit")
-                COOLWSD::EditFileExtensions.insert(elem->getAttribute("ext"));
+            {
+                const std::string ext = elem->getAttribute("ext");
+                if (COOLWSD::EditFileExtensions.insert(ext).second) // Skip duplicates.
+                    LOG_DBG_S("Enabling editing of [" << ext << "] extension files");
+            }
             else if (elem->getAttribute("name") == "view_comment")
             {
-                COOLWSD::ViewWithCommentsFileExtensions.insert(elem->getAttribute("ext"));
+                const std::string ext = elem->getAttribute("ext");
+                if (COOLWSD::ViewWithCommentsFileExtensions.insert(ext).second) // Skip duplicates.
+                    LOG_DBG_S("Enabling commenting on [" << ext << "] extension files");
             }
         }
 
@@ -3826,7 +5219,10 @@ private:
         capabilities->set("hasMobileSupport", true);
 
         // Set the product name
-        capabilities->set("productName", APP_NAME);
+        capabilities->set("productName", config::getString("product_name", APP_NAME));
+
+        // Set the Server ID
+        capabilities->set("serverId", Util::getProcessIdentifier());
 
         std::string version, hash;
         Util::getVersionInfo(version, hash);
@@ -3839,6 +5235,9 @@ private:
 
         // Set that this is a proxy.php-enabled instance
         capabilities->set("hasProxyPrefix", COOLWSD::IsProxyPrefixEnabled);
+
+        // Set if this instance supports Zotero
+        capabilities->set("hasZoteroSupport", config::getBool("zotero.enable", true));
 
         std::ostringstream ostrJSON;
         capabilities->stringify(ostrJSON);
@@ -3922,7 +5321,7 @@ public:
 
     void findClientPort()
     {
-        _serverSocket = findServerPort(ClientPortNumber);
+        _serverSocket = findServerPort();
     }
 
     void startPrisoners()
@@ -3958,9 +5357,12 @@ public:
         _acceptPoll.joinThread();
         if (WebServerPoll)
             WebServerPoll->joinThread();
+#if !MOBILEAPP
+        Admin::instance().stop();
+#endif
     }
 
-    void dumpState(std::ostream& os)
+    void dumpState(std::ostream& os) const
     {
         // FIXME: add some stop-world magic before doing the dump(?)
         Socket::InhibitThreadChecks = true;
@@ -3978,6 +5380,7 @@ public:
            << "\n  Security " << (COOLWSD::NoCapsForKit ? "no" : "") << " chroot, "
            << (COOLWSD::NoSeccomp ? "no" : "") << " api lockdown"
            << "\n  Admin: " << (COOLWSD::AdminEnabled ? "enabled" : "disabled")
+           << "\n  RouteToken: " << COOLWSD::RouteToken
 #endif
            << "\n  TerminationFlag: " << SigUtil::getTerminationFlag()
            << "\n  isShuttingDown: " << SigUtil::getShutdownRequestFlag()
@@ -3996,7 +5399,6 @@ public:
            << "\n  LoTemplate: " << COOLWSD::LoTemplate
            << "\n  ChildRoot: " << COOLWSD::ChildRoot
            << "\n  FileServerRoot: " << COOLWSD::FileServerRoot
-           << "\n  WelcomeFilesRoot: " << COOLWSD::WelcomeFilesRoot
            << "\n  ServiceRoot: " << COOLWSD::ServiceRoot
            << "\n  LOKitVersion: " << COOLWSD::LOKitVersion
            << "\n  HostIdentifier: " << Util::getProcessIdentifier()
@@ -4065,20 +5467,25 @@ private:
         if (!location.length())
         {
             LOG_FTL("Failed to create local unix domain socket. Exiting.");
-            Log::shutdown();
-            _exit(EX_SOFTWARE);
+            Util::forcedExit(EX_SOFTWARE);
             return nullptr;
         }
 
         if (!socket->listen())
         {
             LOG_FTL("Failed to listen on local unix domain socket at " << location << ". Exiting.");
-            Log::shutdown();
-            _exit(EX_SOFTWARE);
+            Util::forcedExit(EX_SOFTWARE);
         }
 
         LOG_INF("Listening to prisoner connections on " << location);
         MasterLocation = location;
+#ifndef HAVE_ABSTRACT_UNIX_SOCKETS
+        if(!socket->link(COOLWSD::SysTemplate + "/0" + MasterLocation))
+        {
+            LOG_FTL("Failed to hardlink local unix domain socket into a jail. Exiting.");
+            Util::forcedExit(EX_SOFTWARE);
+        }
+#endif
 #else
         constexpr int DEFAULT_MASTER_PORT_NUMBER = 9981;
         std::shared_ptr<ServerSocket> socket
@@ -4092,9 +5499,16 @@ private:
     }
 
     /// Create the externally listening public socket
-    std::shared_ptr<ServerSocket> findServerPort(int port)
+    std::shared_ptr<ServerSocket> findServerPort()
     {
         std::shared_ptr<SocketFactory> factory;
+
+        if (ClientPortNumber <= 0)
+        {
+            // Avoid using the default port for unit-tests altogether.
+            // This avoids interfering with a running test instance.
+            ClientPortNumber = DEFAULT_CLIENT_PORT_NUMBER + (UnitWSD::isUnitTesting() ? 1 : 0);
+        }
 
 #if ENABLE_SSL
         if (COOLWSD::isSSLEnabled())
@@ -4104,8 +5518,9 @@ private:
             factory = std::make_shared<PlainSocketFactory>();
 
         std::shared_ptr<ServerSocket> socket = ServerSocket::create(
-            ClientListenAddr, port, ClientPortProto, *WebServerPoll, factory);
+            ClientListenAddr, ClientPortNumber, ClientPortProto, *WebServerPoll, factory);
 
+        const int firstPortNumber = ClientPortNumber;
         while (!socket &&
 #ifdef BUILDING_TESTS
                true
@@ -4114,23 +5529,23 @@ private:
 #endif
             )
         {
-            ++port;
-            LOG_INF("Client port " << (port - 1) << " is busy, trying " << port << '.');
-            socket = ServerSocket::create(ClientListenAddr, port, ClientPortProto,
+            ++ClientPortNumber;
+            LOG_INF("Client port " << (ClientPortNumber - 1) << " is busy, trying "
+                                   << ClientPortNumber);
+            socket = ServerSocket::create(ClientListenAddr, ClientPortNumber, ClientPortProto,
                                           *WebServerPoll, factory);
         }
 
         if (!socket)
         {
-            LOG_FTL("Failed to listen on Server port(s) (" <<
-                    ClientPortNumber << '-' << port << "). Exiting.");
-            _exit(EX_SOFTWARE);
+            LOG_FTL("Failed to listen on Server port(s) (" << firstPortNumber << '-'
+                                                           << ClientPortNumber << "). Exiting");
+            Util::forcedExit(EX_SOFTWARE);
         }
 
-        ClientPortNumber = port;
-
 #if !MOBILEAPP
-        LOG_INF("Listening to client connections on port " << port);
+        LOG_INF('#' << socket->getFD() << " Listening to client connections on port "
+                    << ClientPortNumber);
 #else
         LOG_INF("Listening to client connections on #" << socket->getFD());
 #endif
@@ -4139,6 +5554,53 @@ private:
 };
 
 #if !MOBILEAPP
+void COOLWSD::processFetchUpdate()
+{
+    try
+    {
+        const std::string url(INFOBAR_URL);
+        if (url.empty())
+            return; // No url, nothing to do.
+
+        Poco::URI uriFetch(url);
+        uriFetch.addQueryParameter("product", config::getString("product_name", APP_NAME));
+        uriFetch.addQueryParameter("version", COOLWSD_VERSION);
+        LOG_TRC("Infobar update request from " << uriFetch.toString());
+        std::shared_ptr<http::Session> sessionFetch = StorageBase::getHttpSession(uriFetch);
+        if (!sessionFetch)
+            return;
+
+        http::Request request(uriFetch.getPathAndQuery());
+        request.add("Accept", "application/json");
+
+        const std::shared_ptr<const http::Response> httpResponse =
+            sessionFetch->syncRequest(request);
+        if (httpResponse->statusLine().statusCode() == http::StatusCode::OK)
+        {
+            LOG_DBG("Infobar update returned: " << httpResponse->getBody());
+
+            std::lock_guard<std::mutex> lock(COOLWSD::FetchUpdateMutex);
+            COOLWSD::LatestVersion = httpResponse->getBody();
+        }
+        else
+            LOG_WRN("Failed to update the infobar. Got: "
+                    << httpResponse->statusLine().statusCode() << ' '
+                    << httpResponse->statusLine().reasonPhrase());
+    }
+    catch(const Poco::Exception& exc)
+    {
+        LOG_DBG("FetchUpdate: " << exc.displayText());
+    }
+    catch(std::exception& exc)
+    {
+        LOG_DBG("FetchUpdate: " << exc.what());
+    }
+    catch(...)
+    {
+        LOG_DBG("FetchUpdate: Unknown exception");
+    }
+}
+
 #if ENABLE_DEBUG
 std::string COOLWSD::getServerURL()
 {
@@ -4149,10 +5611,9 @@ std::string COOLWSD::getServerURL()
 
 int COOLWSD::innerMain()
 {
-#if !defined FUZZER && !MOBILEAPP
+#if !MOBILEAPP
     SigUtil::setUserSignals();
     SigUtil::setFatalSignals("wsd " COOLWSD_VERSION " " COOLWSD_VERSION_HASH);
-    SigUtil::setTerminationSignals();
 #endif
 
 #if !MOBILEAPP
@@ -4167,6 +5628,12 @@ int COOLWSD::innerMain()
 #endif
 
     initializeSSL();
+
+#if !MOBILEAPP
+    // Fetch remote settings from server if configured
+    RemoteConfigPoll remoteConfigThread(config());
+    remoteConfigThread.start();
+#endif
 
 #ifndef IOS
     // We can open files with non-ASCII names just fine on iOS without this, and this code is
@@ -4207,13 +5674,18 @@ int COOLWSD::innerMain()
 
     LOG_DBG("Initializing DelaySocket with " << SimulatedLatencyMs << "ms.");
     Delay delay(SimulatedLatencyMs);
+
+    const auto fetchUpdateCheck = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::hours(std::max(getConfigValue<int>("fetch_update_check", 10), 0)));
 #endif
 
     ClientRequestDispatcher::InitStaticFileContentCache();
 
     // Allocate our port - passed to prisoners.
-    assert(Server && "No COOLWSD::Server instance exists.");
+    assert(Server && "The COOLWSDServer instance does not exist.");
     Server->findClientPort();
+
+    TmpFontDir = ChildRoot + JailUtil::CHILDROOT_TMP_INCOMING_PATH;
 
     // Start the internal prisoner server and spawn forkit,
     // which in turn forks first child.
@@ -4272,6 +5744,19 @@ int COOLWSD::innerMain()
     if (Log::logger().getLevel() >= Poco::Message::Priority::PRIO_INFORMATION)
         LOG_ERR("Log level is set very high to '" << LogLevel << "' this will have a "
                 "significant performance impact. Do not use this in production.");
+
+    // Start the remote font downloading polling thread.
+    std::unique_ptr<RemoteFontConfigPoll> remoteFontConfigThread;
+    try
+    {
+        // Fetch font settings from server if configured
+        remoteFontConfigThread = std::make_unique<RemoteFontConfigPoll>(config());
+        remoteFontConfigThread->start();
+    }
+    catch (const Poco::Exception&)
+    {
+        LOG_DBG("No remote_font_config");
+    }
 #endif
 
     // URI with /contents are public and we don't need to anonymize them.
@@ -4280,44 +5765,91 @@ int COOLWSD::innerMain()
     // Start the server.
     Server->start();
 
+#if defined(__EMSCRIPTEN__)
+    // It is not at all obvious that this is the ideal place to do the HULLO thing and call onopen
+    // on TheFakeWebSocket. But it seems to work.
+    handle_cool_message("HULLO");
+    MAIN_THREAD_EM_ASM(window.TheFakeWebSocket.onopen(););
+#endif
+
     /// The main-poll does next to nothing:
     SocketPoll mainWait("main");
 
 #if !MOBILEAPP
     std::cerr << "Ready to accept connections on port " << ClientPortNumber <<  ".\n" << std::endl;
+    if (SignalParent)
+    {
+        kill(getppid(), SIGUSR2);
+    }
 #endif
 
-    // Reset the child-spawn timeout to the default, now that we're set.
-    ChildSpawnTimeoutMs = CHILD_TIMEOUT_MS;
+#if !MOBILEAPP && ENABLE_DEBUG
+    const std::string postMessageURI =
+        getServiceURI("/browser/dist/framed.doc.html?file_path=" DEBUG_ABSSRCDIR
+                      "/" COOLWSD_TEST_DOCUMENT_RELATIVE_PATH_WRITER);
+    std::ostringstream oss;
+    oss << "\nLaunch one of these in your browser:\n\n"
+        << "    Writer:      " << getLaunchURI(COOLWSD_TEST_DOCUMENT_RELATIVE_PATH_WRITER) << '\n'
+        << "    Calc:        " << getLaunchURI(COOLWSD_TEST_DOCUMENT_RELATIVE_PATH_CALC) << '\n'
+        << "    Impress:     " << getLaunchURI(COOLWSD_TEST_DOCUMENT_RELATIVE_PATH_IMPRESS) << '\n'
+        << "    Draw:        " << getLaunchURI(COOLWSD_TEST_DOCUMENT_RELATIVE_PATH_DRAW) << '\n'
+        << "    postMessage: " << postMessageURI << std::endl;
+
+    const std::string adminURI = getServiceURI(COOLWSD_TEST_ADMIN_CONSOLE, true);
+    if (!adminURI.empty())
+        oss << "\nOr for the admin, monitoring, capabilities & discovery:\n\n"
+            << adminURI << '\n'
+            << getServiceURI(COOLWSD_TEST_METRICS, true) << '\n'
+            << getServiceURI("/hosting/capabilities") << '\n'
+            << getServiceURI("/hosting/discovery") << '\n';
+
+    oss << std::endl;
+    std::cerr << oss.str();
+#endif
 
     const auto startStamp = std::chrono::steady_clock::now();
+#if !MOBILEAPP
+    auto stampFetch = startStamp - (fetchUpdateCheck - std::chrono::milliseconds(60000));
+#endif
 
     while (!SigUtil::getTerminationFlag() && !SigUtil::getShutdownRequestFlag())
     {
-        UnitWSD::get().invokeTest();
-
         // This timeout affects the recovery time of prespawned children.
-        const std::chrono::microseconds waitMicroS
-            = UnitWSD::isUnitTesting()
-                  ? std::min(UnitWSD::get().getTimeoutMilliSeconds(), std::chrono::milliseconds(1000)) / 4
-                  : SocketPoll::DefaultPollTimeoutMicroS * 4;
+        std::chrono::microseconds waitMicroS = SocketPoll::DefaultPollTimeoutMicroS * 4;
+
+        if (UnitWSD::isUnitTesting() && !SigUtil::getShutdownRequestFlag())
+        {
+            UnitWSD::get().invokeTest();
+
+            // More frequent polling while testing, to reduce total test time.
+            waitMicroS =
+                std::min(UnitWSD::get().getTimeoutMilliSeconds(), std::chrono::milliseconds(1000));
+            waitMicroS /= 4;
+        }
+
         mainWait.poll(waitMicroS);
 
         // Wake the prisoner poll to spawn some children, if necessary.
         PrisonerPoll->wakeup();
 
+        const auto timeNow = std::chrono::steady_clock::now();
         const std::chrono::milliseconds timeSinceStartMs
-            = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now()
-                                                                    - startStamp);
-
+            = std::chrono::duration_cast<std::chrono::milliseconds>(timeNow - startStamp);
         // Unit test timeout
-        if (UnitWSD::isUnitTesting() && timeSinceStartMs > UnitWSD::get().getTimeoutMilliSeconds())
+        if (UnitWSD::isUnitTesting() && !SigUtil::getShutdownRequestFlag())
         {
-            LOG_ERR("Test exceeded its time limit of " << UnitWSD::get().getTimeoutMilliSeconds()
-                                                       << ". It's been running for "
-                                                       << timeSinceStartMs);
-            UnitWSD::get().timeout();
+            UnitWSD::get().checkTimeout(timeSinceStartMs);
         }
+
+#if !MOBILEAPP
+        const std::chrono::milliseconds durationFetch
+            = std::chrono::duration_cast<std::chrono::milliseconds>(timeNow - stampFetch);
+        if (fetchUpdateCheck > std::chrono::milliseconds::zero() && durationFetch > fetchUpdateCheck)
+        {
+            processFetchUpdate();
+            stampFetch = timeNow;
+        }
+#endif
 
 #if ENABLE_DEBUG && !MOBILEAPP
         if (careerSpanMs > std::chrono::milliseconds::zero() && timeSinceStartMs > careerSpanMs)
@@ -4363,7 +5895,7 @@ int COOLWSD::innerMain()
 
     // Wait until documents are saved and sessions closed.
     // Don't stop the DocBroker, they will exit.
-    constexpr size_t sleepMs = 500;
+    constexpr size_t sleepMs = 200;
     constexpr size_t count = (COMMAND_TIMEOUT_MS * 6) / sleepMs;
     for (size_t i = 0; i < count; ++i)
     {
@@ -4423,7 +5955,12 @@ int COOLWSD::innerMain()
 #if !defined(KIT_IN_PROCESS) && !MOBILEAPP
     // Terminate child processes
     LOG_INF("Requesting forkit process " << ForKitProcId << " to terminate.");
-    SigUtil::killChild(ForKitProcId);
+#if CODE_COVERAGE || VALGRIND_COOLFORKIT
+    constexpr auto signal = SIGTERM;
+#else
+    constexpr auto signal = SIGKILL;
+#endif
+    SigUtil::killChild(ForKitProcId, signal);
 #endif
 
     Server->stopPrisoners();
@@ -4457,14 +5994,24 @@ int COOLWSD::innerMain()
     ForKitProc.reset();
 #endif
 
-    JailUtil::cleanupJails(ChildRoot);
+    JailUtil::cleanupJails(CleanupChildRoot);
 #endif // !MOBILEAPP
+
+    const int returnValue = UnitBase::uninit();
+
+    UnitBase::uninit();
+    LOG_INF("Process [coolwsd] finished with exit status: " << returnValue);
 
     // At least on centos7, Poco deadlocks while
     // cleaning up its SSL context singleton.
-    Util::forcedExit(EX_OK);
+    Util::forcedExit(returnValue);
 
-    return EX_OK;
+    return returnValue;
+}
+
+std::shared_ptr<TerminatingPoll> COOLWSD:: getWebServerPoll ()
+{
+    return WebServerPoll;
 }
 
 void COOLWSD::cleanup()
@@ -4533,10 +6080,20 @@ int COOLWSD::main(const std::vector<std::string>& /*args*/)
 
     cleanup();
 
-    UnitWSD::get().returnValue(returnValue);
+    returnValue = UnitBase::uninit();
 
     LOG_INF("Process [coolwsd] finished with exit status: " << returnValue);
+
+#if CODE_COVERAGE
+    __gcov_dump();
+#endif
+
     return returnValue;
+}
+
+int COOLWSD::getClientPortNumber()
+{
+    return ClientPortNumber;
 }
 
 #if !MOBILEAPP
@@ -4552,11 +6109,6 @@ std::vector<std::shared_ptr<DocumentBroker>> COOLWSD::getBrokersTestOnly()
     return result;
 }
 
-int COOLWSD::getClientPortNumber()
-{
-    return ClientPortNumber;
-}
-
 std::set<pid_t> COOLWSD::getKitPids()
 {
     std::set<pid_t> pids;
@@ -4566,7 +6118,8 @@ std::set<pid_t> COOLWSD::getKitPids()
         for (const auto &child : NewChildren)
         {
             pid = child->getPid();
-            pids.emplace(pid);
+            if (pid > 0)
+                pids.emplace(pid);
         }
     }
     {
@@ -4592,7 +6145,7 @@ void alertAllUsers(const std::string& cmd, const std::string& kind)
 
 void alertAllUsers(const std::string& msg)
 {
-    alertAllUsersInternal(msg);
+    COOLWSD::alertAllUsersInternal(msg);
 }
 
 }
@@ -4610,6 +6163,43 @@ void dump_state()
     const std::string msg = oss.str();
     fprintf(stderr, "%s\n", msg.c_str());
     LOG_TRC(msg);
+}
+
+void forwardSigUsr2()
+{
+    LOG_TRC("forwardSigUsr2");
+
+    Util::assertIsLocked(DocBrokersMutex);
+    std::lock_guard<std::mutex> newChildLock(NewChildrenMutex);
+
+#if !MOBILEAPP
+#ifndef KIT_IN_PROCESS
+    if (COOLWSD::ForKitProcId > 0)
+    {
+        LOG_INF("Sending SIGUSR2 to forkit " << COOLWSD::ForKitProcId);
+        ::kill(COOLWSD::ForKitProcId, SIGUSR2);
+    }
+#endif
+#endif
+
+    for (const auto& child : NewChildren)
+    {
+        if (child && child->getPid() > 0)
+        {
+            LOG_INF("Sending SIGUSR2 to child " << child->getPid());
+            ::kill(child->getPid(), SIGUSR2);
+        }
+    }
+
+    for (const auto& pair : DocBrokers)
+    {
+        std::shared_ptr<DocumentBroker> docBroker = pair.second;
+        if (docBroker)
+        {
+            LOG_INF("Sending SIGUSR2 to docBroker " << docBroker->getPid());
+            ::kill(docBroker->getPid(), SIGUSR2);
+        }
+    }
 }
 
 // Avoid this in the Util::isFuzzing() case because libfuzzer defines its own main().

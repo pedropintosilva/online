@@ -2,12 +2,15 @@
 
 var helper = require('../../common/helper');
 var calcHelper = require('../../common/calc_helper');
+var repairHelper = require('../../common/repair_document_helper');
+const desktopHelper = require('../../common/desktop_helper');
 
-describe('Editing Operations', function() {
+describe(['tagdesktop', 'tagnextcloud', 'tagproxy'], 'Editing Operations', function() {
 	var testFileName = 'undo_redo.ods';
 
 	beforeEach(function() {
 		helper.beforeAll(testFileName, 'calc');
+		desktopHelper.switchUIToCompact();
 	});
 
 	afterEach(function() {
@@ -15,56 +18,33 @@ describe('Editing Operations', function() {
 	});
 
 	function undo() {
-		helper.typeText('textarea.clipboard', 'Hello World');
-
+		helper.typeIntoDocument('Hello World');
 		helper.typeIntoDocument('{ctrl}z');
-
 		helper.selectAllText();
-
-		helper.expectTextForClipboard('Hello Worl');
+		cy.cGet('#copy-paste-container pre').should('not.have.text', 'Hello World');
 	}
 
 	it('Undo', function() {
 		undo();
 	});
 
-
 	it('Redo', function() {
 		undo();
 		helper.typeIntoDocument('{ctrl}y');
-
 		helper.selectAllText();
-
 		helper.expectTextForClipboard('Hello World');
 	});
 
 	it('Repair Document', function() {
 		helper.typeIntoDocument('Hello World');
-
 		helper.typeIntoDocument('{enter}');
-
 		calcHelper.dblClickOnFirstCell();
-
 		helper.clearAllText();
-
 		helper.typeIntoDocument('Hello');
-
 		helper.typeIntoDocument('{enter}');
-
-		cy.get('#menu-editmenu').click()
-			.get('#menu-repair').click();
-
-		cy.get('.leaflet-popup-content table').should('exist');
-
-		cy.contains('.leaflet-popup-content table tbody tr','Undo').eq(0)
-			.click();
-
-		cy.get('.leaflet-popup-content > input').click();
-
+		repairHelper.rollbackPastChange('Undo');
 		calcHelper.dblClickOnFirstCell();
-
 		helper.selectAllText();
-
 		helper.expectTextForClipboard('Hello World');
 	});
 });

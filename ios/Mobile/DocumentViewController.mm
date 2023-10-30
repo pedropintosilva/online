@@ -80,7 +80,7 @@ static IMP standardImpOfInputAccessoryView = nil;
     WKUserContentController *userContentController = [[WKUserContentController alloc] init];
 
     [userContentController addScriptMessageHandler:self name:@"debug"];
-    [userContentController addScriptMessageHandler:self name:@"cool"];
+    [userContentController addScriptMessageHandler:self name:@"lok"];
     [userContentController addScriptMessageHandler:self name:@"error"];
 
     configuration.userContentController = userContentController;
@@ -196,9 +196,10 @@ static IMP standardImpOfInputAccessoryView = nil;
             [self.document closeWithCompletionHandler:^(BOOL success){
                     LOG_TRC("close completion handler gets " << (success?"YES":"NO"));
                     [self.webView.configuration.userContentController removeScriptMessageHandlerForName:@"debug"];
-                    [self.webView.configuration.userContentController removeScriptMessageHandlerForName:@"cool"];
+                    [self.webView.configuration.userContentController removeScriptMessageHandlerForName:@"lok"];
                     [self.webView.configuration.userContentController removeScriptMessageHandlerForName:@"error"];
-                    self.webView.configuration.userContentController = nil;
+                    // Don't set webView.configuration.userContentController to
+                    // nil as it generates a "nil not allowed" compiler warning
                     [self.webView removeFromSuperview];
                     self.webView = nil;
                     }];
@@ -266,7 +267,9 @@ static IMP standardImpOfInputAccessoryView = nil;
 }
 
 - (void)webViewWebContentProcessDidTerminate:(WKWebView *)webView {
-    LOG_ERR("WebContent process terminated! What should we do?");
+    // Fix issue #5876 by closing the document if the content process dies
+    [self bye];
+    LOG_ERR("WebContent process terminated! Is closing the document enough?");
 }
 
 - (void)userContentController:(WKUserContentController *)userContentController didReceiveScriptMessage:(WKScriptMessage *)message {
@@ -277,7 +280,7 @@ static IMP standardImpOfInputAccessoryView = nil;
         LOG_ERR("Error from WebView: " << [message.body UTF8String]);
     } else if ([message.name isEqualToString:@"debug"]) {
         std::cerr << "==> " << [message.body UTF8String] << std::endl;
-    } else if ([message.name isEqualToString:@"cool"]) {
+    } else if ([message.name isEqualToString:@"lok"]) {
         NSString *subBody = [message.body substringToIndex:std::min(100ul, ((NSString*)message.body).length)];
         if (subBody.length < ((NSString*)message.body).length)
             subBody = [subBody stringByAppendingString:@"..."];
@@ -364,6 +367,8 @@ static IMP standardImpOfInputAccessoryView = nil;
             p.fd = self.document->fakeClientFd;
             p.events = POLLOUT;
             fakeSocketPoll(&p, 1, -1);
+
+            // This is read in the iOS-specific code in ClientRequestDispatcher::handleIncomingMessage() in COOLWSD.cpp
             std::string message(url + " " + std::to_string(self.document->appDocId));
             fakeSocketWrite(self.document->fakeClientFd, message.c_str(), message.size());
 
@@ -387,7 +392,7 @@ static IMP standardImpOfInputAccessoryView = nil;
             WKWebViewConfiguration *configuration = [[WKWebViewConfiguration alloc] init];
             WKUserContentController *userContentController = [[WKUserContentController alloc] init];
 
-            [userContentController addScriptMessageHandler:self name:@"cool"];
+            [userContentController addScriptMessageHandler:self name:@"lok"];
 
             configuration.userContentController = userContentController;
 
@@ -529,8 +534,7 @@ static IMP standardImpOfInputAccessoryView = nil;
                     return;
                 }
                 UIDocumentPickerViewController *picker =
-                    [[UIDocumentPickerViewController alloc] initWithURL:downloadAsTmpURL
-                                                                 inMode:UIDocumentPickerModeExportToService];
+                    [[UIDocumentPickerViewController alloc] initForExportingURLs:[NSArray arrayWithObject:downloadAsTmpURL] asCopy:YES];
                 picker.delegate = self;
                 [self presentViewController:picker
                                    animated:YES
@@ -564,7 +568,11 @@ static IMP standardImpOfInputAccessoryView = nil;
 }
 
 - (void)fontPickerViewControllerDidPickFont:(UIFontPickerViewController *)viewController {
-    NSLog(@"Picked font: %@", [viewController selectedFontDescriptor]);
+    // Partial fix #5885 Close the font picker when a font is tapped
+    // This matches the behavior of Apple apps such as Pages and Mail.
+    [viewController dismissViewControllerAnimated:YES completion:nil];
+
+    // NSLog(@"Picked font: %@", [viewController selectedFontDescriptor]);
     NSDictionary<UIFontDescriptorAttributeName, id> *attribs = [[viewController selectedFontDescriptor] fontAttributes];
     NSString *family = attribs[UIFontDescriptorFamilyAttribute];
     if (family && [family length] > 0) {

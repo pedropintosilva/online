@@ -3,11 +3,15 @@
  * Document parts switching and selecting handler
  */
 
-/* global app vex $ _ */
+/* global app _ */
 
 L.Map.include({
 	setPart: function (part, external, calledFromSetPartHandler) {
 		var docLayer = this._docLayer;
+
+		if (docLayer.isCalc())
+			docLayer._sheetSwitch.save(part /* toPart */);
+
 		docLayer._prevSelectedPart = docLayer._selectedPart;
 		docLayer._selectedParts = [];
 		if (part === 'prev') {
@@ -31,6 +35,13 @@ L.Map.include({
 			return;
 		}
 
+		var notifyServer = function (part) {
+			// If this wasn't triggered from the server,
+			// then notify the server of the change.
+			if (!external)
+				app.socket.sendMessage('setclientpart part=' + part);
+		};
+
 		if (app.file.fileBasedView)
 		{
 			docLayer._selectedPart = docLayer._prevSelectedPart;
@@ -41,6 +52,7 @@ L.Map.include({
 			}
 			docLayer._preview._scrollViewToPartPosition(docLayer._selectedPart);
 			this._docLayer._checkSelectedPart();
+			notifyServer(part);
 			return;
 		}
 
@@ -52,11 +64,7 @@ L.Map.include({
 			app.socket.sendMessage('resetselection');
 		}
 
-		// If this wasn't triggered from the server,
-		// then notify the server of the change.
-		if (!external) {
-			app.socket.sendMessage('setclientpart part=' + docLayer._selectedPart);
-		}
+		notifyServer(docLayer._selectedPart);
 
 		this.fire('updateparts', {
 			selectedPart: docLayer._selectedPart,
@@ -73,8 +81,8 @@ L.Map.include({
 		docLayer._updateOnChangePart();
 		docLayer._pruneTiles();
 		docLayer._prevSelectedPartNeedsUpdate = true;
-		if (docLayer._invalidatePreview) {
-			docLayer._invalidatePreview();
+		if (docLayer._invalidatePreviews) {
+			docLayer._invalidatePreviews();
 		}
 		docLayer._drawSearchResults();
 		if (!this._searchRequested) {
@@ -162,9 +170,14 @@ L.Map.include({
 		if (!this._docPreviews) {
 			this._docPreviews = {};
 		}
+
 		var autoUpdate = options ? !!options.autoUpdate : false;
 		var fetchThumbnail = options && options.fetchThumbnail ? options.fetchThumbnail : true;
 		this._docPreviews[id] = {id: id, index: index, maxWidth: maxWidth, maxHeight: maxHeight, autoUpdate: autoUpdate, invalid: false};
+
+		if (this._docLayer._canonicalViewId == -1) {
+			return;
+		}
 
 		var docLayer = this._docLayer;
 		if (docLayer._docType === 'text') {
@@ -188,9 +201,11 @@ L.Map.include({
 		}
 
 		if (fetchThumbnail) {
+			var mode = docLayer._selectedMode;
 			this._addPreviewToQueue(part, 'tile ' +
-							'nviewid=0' + ' ' +
+							'nviewid=' + this._docLayer._canonicalViewId + ' ' +
 							'part=' + part + ' ' +
+							((mode !== 0) ? ('mode=' + mode + ' ') : '') +
 							'width=' + maxWidth * app.roundedDpiScale + ' ' +
 							'height=' + maxHeight * app.roundedDpiScale + ' ' +
 							'tileposx=' + tilePosX + ' ' +
@@ -205,17 +220,27 @@ L.Map.include({
 		return {width: maxWidth, height: maxHeight};
 	},
 
+	// getCustomPreview
+	// Triggers the creation of a preview with the given id, of width X height size, of the [(tilePosX,tilePosY),
+	// (tilePosX + tileWidth, tilePosY + tileHeight)] section of the document.
 	getCustomPreview: function (id, part, width, height, tilePosX, tilePosY, tileWidth, tileHeight, options) {
 		if (!this._docPreviews) {
 			this._docPreviews = {};
 		}
+
 		var autoUpdate = options ? options.autoUpdate : false;
 		this._docPreviews[id] = {id: id, part: part, width: width, height: height, tilePosX: tilePosX,
 			tilePosY: tilePosY, tileWidth: tileWidth, tileHeight: tileHeight, autoUpdate: autoUpdate, invalid: false};
 
+		if (this._docLayer._canonicalViewId == -1) {
+			return;
+		}
+
+		var mode = this._docLayer._selectedMode;
 		this._addPreviewToQueue(part, 'tile ' +
-							'nviewid=0' + ' ' +
+							'nviewid=' + this._docLayer._canonicalViewId + ' ' +
 							'part=' + part + ' ' +
+							((mode !== 0) ? ('mode=' + mode + ' ') : '') +
 							'width=' + width * app.roundedDpiScale + ' ' +
 							'height=' + height * app.roundedDpiScale + ' ' +
 							'tileposx=' + tilePosX + ' ' +
@@ -242,15 +267,14 @@ L.Map.include({
 		else if (typeof (page) === 'number' && page >= 0 && page < docLayer._pages) {
 			docLayer._currentPage = page;
 		}
-		if (!this.isPermissionEdit() && docLayer._partPageRectanglesPixels.length > docLayer._currentPage) {
-			// we can scroll to the desired page without having a LOK instance
-			var pageBounds = docLayer._partPageRectanglesPixels[docLayer._currentPage];
-			var pos = new L.Point(
-				pageBounds.min.x + (pageBounds.max.x - pageBounds.min.x) / 2,
-				pageBounds.min.y);
-			pos.y -= this.getSize().y / 4; // offset by a quater of the viewing area so that the previous page is visible
-			this.scrollTop(pos.y, {update: true});
-			this.scrollLeft(pos.x, {update: true});
+		if (!this.isEditMode() && app.file.writer.pageRectangleList.length > docLayer._currentPage) {
+			var pos = new L.Point(app.file.writer.pageRectangleList[docLayer._currentPage][0], app.file.writer.pageRectangleList[docLayer._currentPage][1]);
+			pos = docLayer._twipsToCorePixels(pos);
+			this.scrollTop(pos.y);
+			var state = 'Page ' + (docLayer._currentPage + 1) + ' of ' + app.file.writer.pageRectangleList.length;
+			this.fire('updatestatepagenumber',{
+				state: state
+			});
 		}
 		else {
 			app.socket.sendMessage('setpage page=' + docLayer._currentPage);
@@ -305,20 +329,18 @@ L.Map.include({
 		}
 	},
 
-	duplicatePage: function() {
+	duplicatePage: function(pos) {
 		if (!this.isPresentationOrDrawing()) {
 			return;
 		}
-		app.socket.sendMessage('uno .uno:DuplicatePage');
-		var docLayer = this._docLayer;
 
-		// At least for Impress, we should not fire this. It causes a circular reference.
-		if (!this.isPresentationOrDrawing()) {
-			this.fire('insertpage', {
-				selectedPart: docLayer._selectedPart,
-				parts:        docLayer._parts
-			});
+		if (pos === undefined) {
+			app.socket.sendMessage('uno .uno:DuplicatePage');
+		} else {
+			var argument = {InsertPos: {type: 'int16', value: pos}};
+			app.socket.sendMessage('uno .uno:DuplicatePage ' + JSON.stringify(argument));
 		}
+		var docLayer = this._docLayer;
 
 		docLayer._parts++;
 		this.setPart('next');
@@ -414,26 +436,19 @@ L.Map.include({
 				}
 			}
 
-			var socket_ = app.socket;
-			vex.dialog.open({
-				unsafeMessage: container.outerHTML,
-				buttons: [
-					$.extend({}, vex.dialog.buttons.NO, { text: _('Close') }),
-					$.extend({}, vex.dialog.buttons.YES, { text: _('Show Selected Sheets') })
-				],
-				callback: function (value) {
-					if (value === true) {
-						var checkboxList = document.querySelectorAll('input[id^="hidden-part-checkbox"]');
-						for (var i = 0; i < checkboxList.length; i++) {
-							if (checkboxList[i].checked === true) {
-								var partName_ = partNames_[parseInt(checkboxList[i].id.replace('hidden-part-checkbox-', ''))];
-								var argument = {aTableName: {type: 'string', value: partName_}};
-								socket_.sendMessage('uno .uno:Show ' + JSON.stringify(argument));
-							}
-						}
+			var callback = function() {
+				var checkboxList = document.querySelectorAll('input[id^="hidden-part-checkbox"]');
+				for (var i = 0; i < checkboxList.length; i++) {
+					if (checkboxList[i].checked === true) {
+						var partName_ = partNames_[parseInt(checkboxList[i].id.replace('hidden-part-checkbox-', ''))];
+						var argument = {aTableName: {type: 'string', value: partName_}};
+						app.socket.sendMessage('uno .uno:Show ' + JSON.stringify(argument));
 					}
 				}
-			});
+			};
+
+			this.uiManager.showInfoModal('show-sheets-modal', '', ' ', ' ', _('Close'), callback, true, 'show-sheets-modal-response');
+			document.getElementById('show-sheets-modal').querySelectorAll('label')[0].outerHTML = container.outerHTML;
 		}
 	},
 
@@ -442,6 +457,28 @@ L.Map.include({
 			var argument = {nTabNumber: {type: 'int16', value: tabNumber}};
 			app.socket.sendMessage('uno .uno:Hide ' + JSON.stringify(argument));
 		}
+	},
+
+	hideSlide: function() {
+		for (var index = 0; index < this._docLayer._selectedParts.length; index++) {
+			var id = this._docLayer._selectedParts[index];
+			L.DomUtil.addClass(this._docLayer._preview._previewTiles[id], 'hidden-slide');
+			this._docLayer._hiddenSlides.add(id);
+		}
+
+		app.socket.sendMessage('uno .uno:HideSlide');
+		this.fire('toggleslidehide');
+	},
+
+	showSlide: function() {
+		for (var index = 0; index < this._docLayer._selectedParts.length; index++) {
+			var id = this._docLayer._selectedParts[index];
+			L.DomUtil.removeClass(this._docLayer._preview._previewTiles[id], 'hidden-slide');
+			this._docLayer._hiddenSlides.delete(id);
+		}
+
+		app.socket.sendMessage('uno .uno:ShowSlide');
+		this.fire('toggleslidehide');
 	},
 
 	isHiddenPart: function (part) {

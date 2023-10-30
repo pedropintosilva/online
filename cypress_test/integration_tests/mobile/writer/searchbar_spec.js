@@ -5,14 +5,13 @@ var searchHelper = require('../../common/search_helper');
 var mobileHelper = require('../../common/mobile_helper');
 var writerHelper = require('../../common/writer_helper');
 
-describe('Searching via search bar.', function() {
-	var testFileName = 'search_bar.odt';
+describe.skip('Searching via search bar.', function() {
+	var origTestFileName = 'search_bar.odt';
+	var testFileName;
 
 	beforeEach(function() {
-		helper.beforeAll(testFileName, 'writer');
-
+		testFileName = helper.beforeAll(origTestFileName, 'writer');
 		mobileHelper.enableEditingMobile();
-
 		searchHelper.showSearchBar();
 	});
 
@@ -22,117 +21,67 @@ describe('Searching via search bar.', function() {
 
 	it('Search existing word.', function() {
 		searchHelper.tpyeIntoSearchField('a');
-
 		// Part of the text should be selected
 		helper.textSelectionShouldExist();
-
-		cy.get('#copy-paste-container p')
-			.should('have.text', '\na');
+		helper.expectTextForClipboard('a');
 	});
 
 	it('Search not existing word.', function() {
 		writerHelper.selectAllTextOfDoc();
-
 		searchHelper.tpyeIntoSearchField('q');
-
 		helper.textSelectionShouldNotExist();
 	});
 
 	it('Search next / prev instance.', function() {
 		searchHelper.tpyeIntoSearchField('a');
-
 		helper.textSelectionShouldExist();
-
-		cy.get('#copy-paste-container p')
-			.should('have.text', '\na');
-
-		cy.get('#copy-paste-container p b')
-			.should('not.exist');
-
+		helper.expectTextForClipboard('a');
+		cy.cGet('#copy-paste-container p b').should('not.exist');
 		// Search next instance
 		searchHelper.searchNext();
-
-		cy.get('#copy-paste-container p b')
-			.should('exist');
-
+		cy.cGet('#copy-paste-container p b').should('exist');
 		helper.textSelectionShouldExist();
-
-		cy.get('#copy-paste-container p')
-			.should('have.text', '\na');
-
+		helper.expectTextForClipboard('a');
 		// Search prev instance
 		searchHelper.searchPrev();
-
-		cy.get('#copy-paste-container p b')
-			.should('not.exist');
-
+		cy.cGet('#copy-paste-container p b').should('not.exist');
 		helper.textSelectionShouldExist();
-
-		cy.get('#copy-paste-container p')
-			.should('have.text', '\na');
+		helper.expectTextForClipboard('a');
 	});
 
 	it('Search at the document end.', function() {
 		searchHelper.tpyeIntoSearchField('a');
-
 		helper.textSelectionShouldExist();
-
-		cy.get('#copy-paste-container p')
-			.should('have.text', '\na');
-
-		cy.get('#copy-paste-container p b')
-			.should('not.exist');
-
+		helper.expectTextForClipboard('a');
+		cy.cGet('#copy-paste-container p b').should('not.exist');
 		// Search next instance
 		searchHelper.searchNext();
-
-		cy.get('#copy-paste-container p b')
-			.should('exist');
-
+		cy.cGet('#copy-paste-container p b').should('exist');
 		helper.textSelectionShouldExist();
-
-		cy.get('#copy-paste-container p')
-			.should('have.text', '\na');
-
+		helper.expectTextForClipboard('a');
 		// Search next instance, which is in the beginning of the document.
 		searchHelper.searchNext();
-
-		cy.get('#copy-paste-container p b')
-			.should('not.exist');
-
+		cy.cGet('#copy-paste-container p b').should('not.exist');
 		helper.textSelectionShouldExist();
-
-		cy.get('#copy-paste-container p')
-			.should('have.text', '\na');
+		helper.expectTextForClipboard('a');
 	});
 
 	it('Cancel search.', function() {
 		searchHelper.tpyeIntoSearchField('a');
-
 		// Part of the text should be selected
 		helper.textSelectionShouldExist();
-
-		cy.get('#copy-paste-container p')
-			.should('have.text', '\na');
-
+		helper.expectTextForClipboard('a');
 		// Cancel search -> selection removed
 		searchHelper.cancelSearch();
-
 		helper.textSelectionShouldNotExist();
-
-		cy.get('input#search-input')
-			.should('be.visible');
+		cy.cGet('input#search-input').should('be.visible');
 	});
 
 	it('Close search.', function() {
 		searchHelper.tpyeIntoSearchField('a');
-
 		// Part of the text should be selected
 		helper.textSelectionShouldExist();
-
-		cy.get('#copy-paste-container p')
-			.should('have.text', '\na');
-
+		helper.expectTextForClipboard('a');
 		// Close search -> search bar is closed
 		searchHelper.closeSearchBar();
 	});

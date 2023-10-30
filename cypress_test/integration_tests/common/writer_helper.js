@@ -1,6 +1,7 @@
 /* global cy require*/
 
 var helper = require('./helper');
+var desktopHelper = require('./desktop_helper');
 
 // A special text selection method for Writer. It selects
 // all text of the document, but it also removes previous
@@ -15,7 +16,7 @@ function selectAllTextOfDoc() {
 	// Remove selection if exist
 	cy.wait(500);
 
-	cy.get('.leaflet-marker-pane')
+	cy.cGet('.leaflet-marker-pane')
 		.then(function(body) {
 			if (body.find('.leaflet-selection-marker-start').length !== 0) {
 				helper.typeIntoDocument('{downarrow}');
@@ -23,12 +24,18 @@ function selectAllTextOfDoc() {
 			}
 		});
 
-	cy.get('.leaflet-selection-marker-start')
-		.should('not.exist');
+	cy.cGet('.leaflet-selection-marker-start').should('not.exist');
 
 	helper.selectAllText();
 
 	cy.log('Select all text of Writer document - end.');
 }
 
+function openFileProperties() {
+	desktopHelper.actionOnSelector('fileTab', (selector) => { cy.cGet(selector).click(); });
+
+	desktopHelper.actionOnSelector('documentProperties', (selector) => { cy.cGet(selector).click(); });
+}
+
 module.exports.selectAllTextOfDoc = selectAllTextOfDoc;
+module.exports.openFileProperties = openFileProperties;

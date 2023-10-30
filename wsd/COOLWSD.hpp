@@ -30,12 +30,13 @@
 #include "RequestDetails.hpp"
 #include "WebSocketHandler.hpp"
 #include "QuarantineUtil.hpp"
+
 class ChildProcess;
 class TraceFileWriter;
 class DocumentBroker;
 class ClipboardCache;
 
-std::shared_ptr<ChildProcess> getNewChild_Blocks(unsigned mobileAppDocId = 0);
+std::shared_ptr<ChildProcess> getNewChild_Blocks(unsigned mobileAppDocId);
 
 // A WSProcess object in the WSD process represents a descendant process, either the direct child
 // process ForKit or a grandchild Kit process, with which the WSD process communicates through a
@@ -87,12 +88,7 @@ public:
         {
             LOG_DBG("Closing ChildProcess [" << _pid << "].");
 
-            // Request the child to exit
-            if (isAlive())
-            {
-                LOG_DBG("Stopping ChildProcess [" << _pid << "] by sending 'exit' command.");
-                sendTextFrame("exit");
-            }
+            requestTermination();
 
             // Shutdown the socket.
             if (_ws)
@@ -106,6 +102,17 @@ public:
         _pid = -1; // Detach from child.
     }
 
+    /// Request graceful termination.
+    void requestTermination()
+    {
+        // Request the child to exit
+        if (isAlive())
+        {
+            LOG_DBG("Stopping ChildProcess [" << _pid << "] by sending 'exit' command");
+            sendTextFrame("exit", /*flush=*/true);
+        }
+    }
+
     /// Kill or abandon the child.
     void terminate()
     {
@@ -116,7 +123,12 @@ public:
         if (::kill(_pid, 0) == 0)
         {
             LOG_INF("Killing child [" << _pid << "].");
-            if (!SigUtil::killChild(_pid))
+#if CODE_COVERAGE || VALGRIND_COOLFORKIT
+            constexpr auto signal = SIGTERM;
+#else
+            constexpr auto signal = SIGKILL;
+#endif
+            if (!SigUtil::killChild(_pid, signal))
             {
                 LOG_ERR("Cannot terminate lokit [" << _pid << "]. Abandoning.");
             }
@@ -131,14 +143,22 @@ public:
     pid_t getPid() const { return _pid; }
 
     /// Send a text payload to the child-process WS.
-    virtual bool sendTextFrame(const std::string& data)
+    bool sendTextFrame(const std::string& data, bool flush = false)
+    {
+        return sendFrame(data, false, flush);
+    }
+
+    /// Send a payload to the child-process WS.
+    bool sendFrame(const std::string& data, bool binary = false, bool flush = false)
     {
         try
         {
             if (_ws)
             {
-                LOG_TRC("Send to " << _name << " message: [" << COOLProtocol::getAbbreviatedMessage(data) << "].");
-                _ws->sendMessage(data);
+                LOG_TRC("Send to " << _name << " message: ["
+                                   << COOLProtocol::getAbbreviatedMessage(data) << ']');
+                _ws->sendMessage(data.c_str(), data.size(),
+                                 (binary ? WSOpCode::Binary : WSOpCode::Text), flush);
                 return true;
             }
         }
@@ -179,18 +199,18 @@ protected:
 
 private:
     std::string _name;
-    pid_t _pid;
+    std::atomic<pid_t> _pid; //< The process-id, which can be access from different threads.
     std::shared_ptr<WebSocketHandler> _ws;
     std::shared_ptr<Socket> _socket;
 };
 
 #if !MOBILEAPP
 
-class ForKitProcWSHandler : public WebSocketHandler
+class ForKitProcWSHandler final : public WebSocketHandler
 {
 public:
-    ForKitProcWSHandler(const std::weak_ptr<StreamSocket>& socket,
-                        const Poco::Net::HTTPRequest& request)
+    template <typename T>
+    ForKitProcWSHandler(const std::weak_ptr<StreamSocket>& socket, const T& request)
         : WebSocketHandler(socket.lock(), request)
     {
     }
@@ -198,10 +218,11 @@ public:
     virtual void handleMessage(const std::vector<char>& data) override;
 };
 
-class ForKitProcess : public WSProcess
+class ForKitProcess final : public WSProcess
 {
 public:
-    ForKitProcess(int pid, std::shared_ptr<StreamSocket>& socket, const Poco::Net::HTTPRequest &request)
+    template <typename T>
+    ForKitProcess(int pid, std::shared_ptr<StreamSocket>& socket, const T& request)
         : WSProcess("ForKit", pid, socket, std::make_shared<ForKitProcWSHandler>(socket, request))
     {
         socket->setHandler(getWSHandler());
@@ -210,13 +231,9 @@ public:
 
 #endif
 
-// Forward declarations for classes defined in COOLWSD.cpp.
-class PrisonPoll;
-class COOLWSDServer;
-
 /// The Server class which is responsible for all
 /// external interactions.
-class COOLWSD : public Poco::Util::ServerApplication
+class COOLWSD final : public Poco::Util::ServerApplication
 {
 public:
     COOLWSD();
@@ -230,32 +247,35 @@ public:
     static bool NoCapsForKit;
     static bool NoSeccomp;
     static bool AdminEnabled;
+    static bool UnattendedRun; //< True when run from an unattended test, not interactive.
+    static bool SignalParent;
+    static std::string RouteToken;
 #if ENABLE_DEBUG
     static bool SingleKit;
+    static bool ForceCaching;
 #endif
     static std::shared_ptr<ForKitProcess> ForKitProc;
     static std::atomic<int> ForKitProcId;
-#endif
-#ifdef FUZZER
-    static bool DummyLOK;
-    static std::string FuzzFileName;
 #endif
     static std::string UserInterface;
     static std::string ConfigFile;
     static std::string ConfigDir;
     static std::string SysTemplate;
     static std::string LoTemplate;
+    static std::string CleanupChildRoot;
     static std::string ChildRoot;
     static std::string ServerName;
     static std::string FileServerRoot;
-    static std::string WelcomeFilesRoot; ///< From where we should serve the release notes (or otherwise useful content) that is shown on first install or version update.
     static std::string ServiceRoot; ///< There are installations that need prefixing every page with some path.
+    static std::string TmpFontDir;
     static std::string LOKitVersion;
     static bool EnableTraceEventLogging;
+    static bool EnableAccessibility;
     static FILE *TraceEventFile;
     static void writeTraceEventRecording(const char *data, std::size_t nbytes);
     static void writeTraceEventRecording(const std::string &recording);
     static std::string LogLevel;
+    static std::string LogLevelStartup;
     static std::string MostVerboseLogLevelSettableFromClient;
     static std::string LeastVerboseLogLevelSettableFromClient;
     static bool AnonymizeUserData;
@@ -264,8 +284,6 @@ public:
     static bool IsProxyPrefixEnabled;
     static std::atomic<unsigned> NumConnections;
     static std::unique_ptr<TraceFileWriter> TraceDumper;
-    static std::unordered_map<std::string, std::vector<std::string>> QuarantineMap;
-    static std::string QuarantinePath;
 #if !MOBILEAPP
     static std::unique_ptr<ClipboardCache> SavedClipboards;
 #endif
@@ -277,6 +295,11 @@ public:
     static std::string OverrideWatermark;
     static std::set<const Poco::Util::AbstractConfiguration*> PluginConfigurations;
     static std::chrono::steady_clock::time_point StartTime;
+    static std::string BuyProductUrl;
+    static std::string LatestVersion;
+    static std::mutex FetchUpdateMutex;
+    static bool IsBindMountingEnabled;
+    static std::mutex RemoteConfigMutex;
 #if MOBILEAPP
 #ifndef IOS
     /// This is used to be able to wait until the lokit main thread has finished (and it is safe to load a new document).
@@ -314,6 +337,8 @@ public:
         return false;
 #endif
     }
+
+    static std::shared_ptr<TerminatingPoll> getWebServerPoll();
 
     /// Return true if extension is marked as view action in discovery.xml.
     static bool IsViewFileExtension(const std::string& extension)
@@ -356,6 +381,21 @@ public:
         }
 
         return getConfigValue(Application::instance().config(), name, def);
+    }
+
+    /// Returns the value of the specified application configuration,
+    /// or the default, if one doesn't exist.
+    template <typename T> static T getConfigValueNonZero(const std::string& name, const T def)
+    {
+        static_assert(std::is_integral<T>::value, "Meaningless on non-integral types");
+
+        if (Util::isFuzzing())
+        {
+            return def;
+        }
+
+        const T res = getConfigValue(Application::instance().config(), name, def);
+        return res <= T(0) ? T(0) : res;
     }
 
     /// Reads and processes path entries with the given property
@@ -446,9 +486,14 @@ public:
     {
         return FileUtil::anonymizeUsername(username);
     }
+    static void alertAllUsersInternal(const std::string& msg);
+    static void alertUserInternal(const std::string& dockey, const std::string& msg);
 
+
+#if ENABLE_DEBUG
     /// get correct server URL with protocol + port number for this running server
     static std::string getServerURL();
+#endif
 
 protected:
     void initialize(Poco::Util::Application& self) override
@@ -484,6 +529,9 @@ private:
     static Util::RuntimeConstant<bool> SSLTermination;
 #endif
 
+#if !MOBILEAPP
+    void processFetchUpdate();
+#endif
     void initializeSSL();
     void displayHelp();
 

@@ -19,6 +19,7 @@ class Cursor {
 
 	private position: cool.Point;
 	private size: cool.Point;
+	private width: number;
 	private container: HTMLDivElement;
 	private cursorHeader: HTMLDivElement;
 	private cursor: HTMLDivElement;
@@ -56,6 +57,10 @@ class Cursor {
 		this.domAttached = true;
 
 		this.update();
+
+		let cursor_css = getComputedStyle(this.cursor, null);
+		this.width = parseFloat(cursor_css.getPropertyValue("width"));
+
 		if (this.map._docLayer.isCalc())
 			this.map.on('splitposchanged move', this.update, this);
 		else
@@ -63,15 +68,21 @@ class Cursor {
 
 		window.addEventListener('blur', this.onFocusBlur.bind(this));
 		window.addEventListener('focus', this.onFocusBlur.bind(this));
+		window.addEventListener('resize', this.onResize.bind(this));
 	}
 
 	setMouseCursor() {
-		if (this.container.querySelector('.blinking-cursor') !== null) {
+		if (this.domAttached && this.container && this.container.querySelector('.blinking-cursor') !== null) {
 			if (this.map._docLayer._docType === 'presentation') {
 				$('.leaflet-interactive').css('cursor', 'text');
 			} else {
 				$('.leaflet-pane.leaflet-map-pane').css('cursor', 'text');
 			}
+		}
+	}
+	setMouseCursorForTextBox() {
+		if (this.domAttached && this.container && this.container.querySelector('.blinking-cursor') !== null) {
+			$('.leaflet-interactive').css('cursor', 'text');
 		}
 	}
 
@@ -91,10 +102,18 @@ class Cursor {
 
 		window.removeEventListener('blur', this.onFocusBlur.bind(this));
 		window.removeEventListener('focus', this.onFocusBlur.bind(this));
+		window.removeEventListener('resize', this.onResize.bind(this));
 	}
 
 	isDomAttached(): boolean {
 		return this.domAttached;
+	}
+
+	addCursorClass(visible: boolean) {
+		if (visible)
+			L.DomUtil.removeClass(this.cursor, 'blinking-cursor-hidden');
+		else
+			L.DomUtil.addClass(this.cursor, 'blinking-cursor-hidden');
 	}
 
 	isVisible(): boolean {
@@ -102,10 +121,14 @@ class Cursor {
 	}
 
 	onFocusBlur(ev: FocusEvent) {
-		if (ev.type === 'blur')
-			$('.leaflet-cursor').addClass('blinking-cursor-hidden');
+		this.addCursorClass(ev.type !== 'blur');
+	}
+
+	onResize() {
+		if (window.devicePixelRatio !== 1 )
+			this.cursor.style.width = this.width / window.devicePixelRatio + 'px';
 		else
-			$('.leaflet-cursor').removeClass('blinking-cursor-hidden');
+			this.cursor.style.removeProperty('width');
 	}
 
 	// position and size should be in core pixels.
@@ -161,6 +184,7 @@ class Cursor {
 			if (!paneBounds.contains(cursorBounds)) {
 				this.container.style.visibility = 'hidden';
 				this.visible = false;
+				this.addCursorClass(this.visible);
 				this.showCursorHeader();
 				return;
 			}
@@ -168,6 +192,7 @@ class Cursor {
 
 		this.container.style.visibility = 'visible';
 		this.visible = true;
+		this.addCursorClass(this.visible);
 
 		var tileSectionPos = this.map._docLayer.getTileSectionPos();
 		// Compute tile-section offset in css pixels.
@@ -179,16 +204,17 @@ class Cursor {
 	}
 
 	setOpacity(opacity: number) {
-		if (this.container) {
+		if (this.container)
 			L.DomUtil.setOpacity(this.cursor, opacity);
-		}
+		if (this.cursorHeader)
+			L.DomUtil.setOpacity(this.cursorHeader, opacity);
 	}
 
 	// Shows cursor header if cursor is in visible area.
 	showCursorHeader() {
 		if (this.cursorHeader) {
-			if (!this.visible) {
-				L.DomUtil.setStyle(this.cursorHeader, 'visibility', 'hidden');
+			if (!this.visible || this.map._docLayer._isZooming) {
+				this.hideCursorHeader();
 				return;
 			}
 
@@ -196,9 +222,14 @@ class Cursor {
 
 			clearTimeout(this.blinkTimeout);
 			this.blinkTimeout = setTimeout(L.bind(function () {
-				L.DomUtil.setStyle(this.cursorHeader, 'visibility', 'hidden');
+				this.hideCursorHeader();
 			}, this), this.headerTimeout);
 		}
+	}
+
+	hideCursorHeader() {
+		if (this.cursorHeader)
+			L.DomUtil.setStyle(this.cursorHeader, 'visibility', 'hidden');
 	}
 
 	private initLayout() {
@@ -228,9 +259,17 @@ class Cursor {
 			.disableScrollPropagation(this.container);
 	}
 
+	private transformX(xpos: number): number {
+		if (!this.map._docLayer.isCalcRTL()) {
+			return xpos;
+		}
+
+		return this.map._size.x - xpos;
+	}
+
 	private setPos(pos: cool.Point) {
 		this.container.style.top = pos.y + 'px';
-		this.container.style.left = pos.x + 'px';
+		this.container.style.left = this.transformX(pos.x) + 'px';
 		this.container.style.zIndex = this.zIndex + '';
 		// Restart blinking animation
 		if (this.blink) {

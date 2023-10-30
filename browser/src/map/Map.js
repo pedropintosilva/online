@@ -3,15 +3,8 @@
  * L.Map is the central class of the API - it is used to create a map.
  */
 
-function isAnyVexDialogActive() {
-	var res = false;
-	for (var vexId in vex.getAll()) {
-		res = res || vex.getById(vexId).isOpen;
-	}
-	return res;
-}
+/* global app _ Cursor */
 
-/* global app vex $ _ Cursor */
 L.Map = L.Evented.extend({
 
 	statics: {
@@ -69,8 +62,6 @@ L.Map = L.Evented.extend({
 
 	context: {context: ''},
 
-	lastActiveTime: Date.now(),
-
 	initialize: function (id, options) { // (HTMLElement or String, Object)
 		options = L.setOptions(this, options);
 
@@ -79,7 +70,7 @@ L.Map = L.Evented.extend({
 			this.options.documentContainer = L.DomUtil.get(this.options.documentContainer);
 		}
 
-		if (!window.ThisIsTheiOSApp && !window.ThisIsTheAndroidApp)
+		if (!window.ThisIsAMobileApp)
 			this._clip = L.clipboard(this);
 		this._initContainer(id);
 		this._initLayout();
@@ -115,12 +106,9 @@ L.Map = L.Evented.extend({
 		this._zoomBoundLayers = {};
 		this._sizeChanged = true;
 		this._bDisableKeyboard = false;
-		this._active = true;
 		this._fatal = false;
 		this._enabled = true;
 		this._debugAlwaysActive = false; // disables the dimming / document inactivity when true
-		this._serverRecycling = false;
-		this._documentIdle = false;
 		this._disableDefaultAction = {}; // The events for which the default handler is disabled and only issues postMessage.
 		this.showSidebar = false;
 		this._previewQueue = [];
@@ -138,8 +126,12 @@ L.Map = L.Evented.extend({
 		// True only when searching within the doc, as we need to use winId==0.
 		this._isSearching = false;
 
+		this._accessibilityState = false;
 
-		vex.dialogID = -1;
+		if (L.Browser.cypressTest && window.enableAccessibility && window.isLocalStorageAllowed) {
+			this._accessibilityState = true;
+			window.localStorage.setItem('accessibilityState', 'true');
+		}
 
 		this.callInitHooks();
 
@@ -152,7 +144,6 @@ L.Map = L.Evented.extend({
 			this.addHandler('touchGesture', L.Map.TouchGesture);
 		} else {
 			this.addHandler('mouse', L.Map.Mouse);
-			this.addHandler('boxZoom', L.Map.BoxZoom);
 			this.addHandler('scrollHandler', L.Map.Scroll);
 			this.addHandler('doubleClickZoom', L.Map.DoubleClickZoom);
 		}
@@ -164,9 +155,6 @@ L.Map = L.Evented.extend({
 		app.socket = new app.definitions.Socket(this);
 
 		this._progressBar = L.progressOverlay(new L.point(150, 25));
-
-		this._textInput = L.textInput();
-		this.addLayer(this._textInput);
 
 		// When all these conditions are met, fire statusindicator:initializationcomplete
 		this.initConditions = {
@@ -271,16 +259,34 @@ L.Map = L.Evented.extend({
 			}
 		}, this);
 
+		this.on('commandvalues', function(e) {
+			if (e.commandName === '.uno:LanguageStatus' && L.Util.isArray(e.commandValues)) {
+				app.languages = [];
+				e.commandValues.forEach(function(language) {
+					var split = language.split(';');
+					language = split[0];
+					var code = '';
+					if (split.length > 1)
+						code = split[1];
+					app.languages.push({translated: _(language), neutral: language, iso: code});
+				});
+				app.languages.sort(function(a, b) {
+					return a.translated < b.translated ? -1 : a.translated > b.translated ? 1 : 0;
+				});
+				this.fire('languagesupdated');
+			}
+		});
+
 		this.on('docloaded', function(e) {
 			this._docLoaded = e.status;
 			if (this._docLoaded) {
-				app.socket.sendMessage('blockingcommandstatus isRestrictedUser=' + this.Restriction.isRestrictedUser + ' isFreemiumUser=' + this.Freemium.isFreemiumUser);
-				this.notifyActive();
+				app.socket.sendMessage('blockingcommandstatus isRestrictedUser=' + this.Restriction.isRestrictedUser + ' isLockedUser=' + this.Locking.isLockedUser);
+				app.idleHandler.notifyActive();
 				if (!document.hasFocus()) {
 					this.fire('editorgotfocus');
 					this.focus();
 				}
-				this._activate();
+				app.idleHandler._activate();
 				if (window.ThisIsTheAndroidApp) {
 					window.postMobileMessage('hideProgressbar');
 				}
@@ -291,7 +297,8 @@ L.Map = L.Evented.extend({
 					commentSection.clearList();
 			}
 
-			this.initializeModificationIndicator();
+			if (!window.mode.isMobile())
+				this.initializeModificationIndicator();
 
 			// Show sidebar.
 			if (this._docLayer && !this._docLoadedOnce) {
@@ -306,20 +313,31 @@ L.Map = L.Evented.extend({
 		}, this);
 	},
 
+	initTextInput: function(docType) {
+		var hasAccessibilitySupport = window.enableAccessibility && this._accessibilityState;
+		this._textInput = hasAccessibilitySupport && docType === 'text' ? L.a11yTextInput() : L.textInput();
+		this.addLayer(this._textInput);
+	},
+
 	loadDocument: function(socket) {
 		app.socket.connect(socket);
 		if (this._clip)
 			this._clip.clearSelection();
-		this.removeObjectFocusDarkOverlay();
 	},
 
 	sendInitUNOCommands: function() {
 		// TODO: remove duplicated init code
 		app.socket.sendMessage('commandvalues command=.uno:LanguageStatus');
-		app.socket.sendMessage('commandvalues command=.uno:ViewAnnotations');
 		if (this._docLayer._docType === 'spreadsheet') {
+			this._docLayer._gotFirstCellCursor = false;
+			if (this._docLayer.options.sheetGeometryDataEnabled)
+				this._docLayer.requestSheetGeometryData();
 			this._docLayer.refreshViewData();
+			this._docLayer._update();
 		}
+		// For calc parsing this will need SheetGeometry, so send after
+		// requesting that
+		app.socket.sendMessage('commandvalues command=.uno:ViewAnnotations');
 		this._docLayer._getToolbarCommandsValues();
 	},
 
@@ -940,7 +958,7 @@ L.Map = L.Evented.extend({
 	// We have one global winId that controls what window (dialog, sidebar, or
 	// the main document) has the actual focus.  0 means the document.
 	setWinId: function (id) {
-		// console.log('winId set to: ' + id);
+		// window.app.console.log('winId set to: ' + id);
 		if (typeof id === 'string')
 			id = parseInt(id);
 		this._winId = id;
@@ -948,18 +966,20 @@ L.Map = L.Evented.extend({
 
 	// Getter for the winId, see setWinId() for more.
 	getWinId: function () {
+		if (this.formulabar && this.formulabar.hasFocus())
+			return 0;
 		return this._winId;
 	},
 
 	// Returns true iff the document has input focus,
 	// as opposed to a dialog, sidebar, formula bar, etc.
 	editorHasFocus: function () {
-		return this.getWinId() === 0;
+		return this.getWinId() === 0 && !this.calcInputBarHasFocus();
 	},
 
 	// Returns true iff the formula-bar has the focus.
 	calcInputBarHasFocus: function () {
-		return !this.editorHasFocus() && this._activeDialog && this._activeDialog.isCalcInputBar(this.getWinId());
+		return this.formulabar && this.formulabar.hasFocus();
 	},
 
 	// TODO replace with universal implementation after refactoring projections
@@ -989,6 +1009,18 @@ L.Map = L.Evented.extend({
 		return this.options.crs.pointToLatLng(L.point(point), zoom);
 	},
 
+	/**
+	 * Get LatLng coordinates after negating the X cartesian-coordinate.
+	 * This is useful in Calc RTL mode as mouse events have regular document
+	 * coordinates(latlng) but draw-objects(shapes) have negative document
+	 * X coordinates.
+	 */
+	negateLatLng: function (latlng, zoom) { // (LatLng[, Number]) -> LatLng
+		var docPos = this.project(latlng, zoom);
+		docPos.x = -docPos.x;
+		return this.unproject(docPos, zoom);
+	},
+
 	layerPointToLatLng: function (point) { // (Point)
 		var projectedPoint = L.point(point).add(this.getPixelOrigin());
 		return this.unproject(projectedPoint);
@@ -1016,7 +1048,13 @@ L.Map = L.Evented.extend({
 		var pixelOrigin = this.getPixelOrigin();
 		var mapPanePos = this._getMapPanePos();
 		var result = L.point(point).clone();
-		if (point.x <= splitPos.x) {
+		var pointX = point.x;
+		if (this._docLayer.isCalcRTL()) {
+			pointX = this._container.clientWidth - pointX;
+			result.x = pointX;
+		}
+
+		if (pointX <= splitPos.x) {
 			result.x -= pixelOrigin.x;
 		}
 		else {
@@ -1092,7 +1130,15 @@ L.Map = L.Evented.extend({
 	// @acceptInput (only on "mobile" (= mobile phone) or on iOS and Android in general) true if we want to
 	// accept key input, and show the virtual keyboard.
 	focus: function (acceptInput) {
-		this._textInput.focus(acceptInput);
+		if (this._textInput)
+			this._textInput.focus(acceptInput);
+	},
+
+	// just set the keyboard state for mobile
+	// we dont want to change the focus, we know that keyboard is closed
+	// and we are just setting the state here
+	setAcceptInput: function (acceptInput) {
+		this._textInput._setAcceptInput(acceptInput);
 	},
 
 	// Lose focus to stop accepting keyboard input.
@@ -1102,7 +1148,7 @@ L.Map = L.Evented.extend({
 	},
 
 	hasFocus: function () {
-		return document.activeElement === this._textInput.activeElement();
+		return this._textInput && document.activeElement === this._textInput.activeElement();
 	},
 
 	// Returns true iff the textarea is enabled and we focused on it.
@@ -1296,222 +1342,13 @@ L.Map = L.Evented.extend({
 		if (this.sidebar)
 			this.sidebar.onResize();
 
-		var deckOffset = 0;
-		var sidebar = L.DomUtil.get('#sidebar-dock-wrapper');
-		if (sidebar)
-			deckOffset = sidebar.width;
-
-		this.showCalcInputBar(deckOffset);
+		this.showCalcInputBar();
 	},
 
-	showCalcInputBar: function(deckOffset) {
-		if (this.dialog && this.dialog._calcInputBar && !this.dialog._calcInputBar.isPainting) {
-			var id = this.dialog._calcInputBar.id;
-			var calcInputbar = L.DomUtil.get('calc-inputbar');
-			if (calcInputbar) {
-				var calcInputbarContainer = calcInputbar.children[0];
-				if (calcInputbarContainer) {
-					var sizeChanged = true;
-					var width = calcInputbarContainer.clientWidth - deckOffset;
-					var height = calcInputbarContainer.clientHeight;
-					if (calcInputbarContainer.children && calcInputbarContainer.children.length) {
-						var inputbarCanvas = calcInputbarContainer.children[0];
-						var currentWidth = inputbarCanvas.clientWidth;
-						var currentHeight = inputbarCanvas.clientHeight;
-						sizeChanged = (currentWidth !== width || currentHeight !== height);
-					}
-					if (width > 0 && height > 0 && sizeChanged) {
-						console.log('_onResize: container width: ' + width + ', container height: ' + height + ', _calcInputBar width: ' + this.dialog._calcInputBar.width);
-						app.socket.sendMessage('resizewindow ' + id + ' size=' + width + ',' + height);
-					}
-				}
-			}
-		}
-	},
-
-	makeActive: function() {
-		// console.log('Force active');
-		this.lastActiveTime = Date.now();
-		return this._activate();
-	},
-
-	_activate: function () {
-		if (this._serverRecycling || this._documentIdle) {
-			return false;
-		}
-
-		// console.debug('_activate:');
-		clearTimeout(vex.timer);
-
-		if (!this._active) {
-			// Only activate when we are connected.
-			if (app.socket.connected()) {
-				// console.debug('sending useractive');
-				app.socket.sendMessage('useractive');
-				this._active = true;
-				app.socket.sendMessage('commandvalues command=.uno:ViewAnnotations');
-
-				if (isAnyVexDialogActive()) {
-					for (var vexId in vex.getAll()) {
-						var opts = vex.getById(vexId).options;
-						if (!opts.overlayClosesOnClick || !opts.escapeButtonCloses) {
-							return false;
-						}
-					}
-
-					this._startInactiveTimer();
-					if (window.mode.isDesktop()) {
-						this.focus();
-					}
-					return vex.closeAll();
-				}
-			} else {
-				this.loadDocument();
-			}
-		}
-
-		this._startInactiveTimer();
-		if (window.mode.isDesktop() && !isAnyVexDialogActive()) {
-			this.focus();
-		}
-		return false;
-	},
-
-	documentHidden: function(unknownValue) {
-		var hidden = unknownValue;
-		if (typeof document.hidden !== 'undefined') {
-			hidden = document.hidden;
-		} else if (typeof document.msHidden !== 'undefined') {
-			hidden = document.msHidden;
-		} else if (typeof document.webkitHidden !== 'undefined') {
-			hidden = document.webkitHidden;
-		} else {
-			console.debug('Unusual browser, cant determine if hidden');
-		}
-		return hidden;
-	},
-
-	_dim: function() {
-		if (this.options.alwaysActive || this._debugAlwaysActive === true) {
-			return;
-		}
-
-		// console.debug('_dim:');
-		if (!app.socket.connected() || isAnyVexDialogActive()) {
-			return;
-		}
-
-		clearTimeout(vex.timer);
-
-		if (window.ThisIsTheAndroidApp) {
-			window.postMobileMessage('DIM_SCREEN');
-			return;
-		}
-
-		var map = this;
-		var inactiveMs = Date.now() - this.lastActiveTime;
-		var multiplier = 1;
-		if (!this.documentHidden(true))
-		{
-			// console.debug('document visible');
-			multiplier = 4; // quadruple the grace period
-		}
-		if (inactiveMs <= this.options.outOfFocusTimeoutSecs * 1000 * multiplier) {
-			// console.debug('had activity ' + inactiveMs + 'ms ago vs. threshold ' +
-			//	      (this.options.outOfFocusTimeoutSecs * 1000 * multiplier) +
-			//	      ' - so fending off the dim');
-			vex.timer = setTimeout(function() {
-				map._dim();
-			}, map.options.outOfFocusTimeoutSecs * 1000);
-			return;
-		}
-
-		this._active = false;
-
-		var message = '';
-		if (!map['wopi'].DisableInactiveMessages) {
-			message = '<h3 class="title">' + vex._escapeHtml(_('Inactive document')) + '</h3>';
-			message += '<p class="content">' + vex._escapeHtml(_('Please click to resume editing')) + '</p>';
-		}
-
-		vex.open({
-			unsafeContent: message,
-			contentClassName: 'cool-user-idle',
-			afterOpen: function() {
-				var $vexContent = $(this.contentEl);
-				$vexContent.bind('click.vex', function() {
-					// console.debug('_dim: click.vex function');
-					return map._activate();
-				});
-			},
-			showCloseButton: false
-		});
-
-		$('.vex-overlay').addClass('cool-user-idle-overlay');
-		if (message === '')
-			$('.cool-user-idle').css('display', 'none');
-
-		this._doclayer && this._docLayer._onMessage('textselection:', null);
-		// console.debug('_dim: sending userinactive');
-		map.fire('postMessage', {msgId: 'User_Idle'});
-		app.socket.sendMessage('userinactive');
-	},
-
-	notifyActive : function() {
-		this.lastActiveTime = Date.now();
-		if (window.ThisIsTheAndroidApp) {
-			window.postMobileMessage('LIGHT_SCREEN');
-		}
-	},
-
-	_dimIfInactive: function () {
-		// console.debug('_dimIfInactive: diff=' + (Date.now() - this.lastActiveTime));
-		if (this._docLoaded && // don't dim if document hasn't been loaded yet
-		    (Date.now() - this.lastActiveTime) >= this.options.idleTimeoutSecs * 1000) {
-			this._dim();
-		} else {
-			this._startInactiveTimer();
-		}
-	},
-
-	_startInactiveTimer: function () {
-		if (this._serverRecycling || this._documentIdle || !this._docLoaded) {
-			return;
-		}
-
-		// console.debug('_startInactiveTimer:');
-		clearTimeout(vex.timer);
-		var map = this;
-		vex.timer = setTimeout(function() {
-			map._dimIfInactive();
-		}, 1 * 60 * 1000); // Check once a minute
-	},
-
-	_deactivate: function () {
-		if (this._serverRecycling || this._documentIdle || !this._docLoaded) {
-			return;
-		}
-
-		// console.debug('_deactivate:');
-		clearTimeout(vex.timer);
-
-		if (!this._active || isAnyVexDialogActive()) {
-			// A dialog is already dimming the screen and probably
-			// shows an error message. Leave it alone.
-			this._active = false;
-			this._docLayer && this._docLayer._onMessage('textselection:', null);
-			if (app.socket.connected()) {
-				// console.debug('_deactivate: sending userinactive');
-				app.socket.sendMessage('userinactive');
-			}
-
-			return;
-		}
-
-		var map = this;
-		vex.timer = setTimeout(function() {
-			map._dim();
-		}, map.options.outOfFocusTimeoutSecs * 1000);
+	showCalcInputBar: function() {
+		var wrapper = document.getElementById('calc-inputbar-wrapper');
+		if (wrapper)
+			wrapper.style.display = 'block';
 	},
 
 	// Change the focus to a dialog or editor.
@@ -1539,17 +1376,14 @@ L.Map = L.Evented.extend({
 
 	// Our browser tab lost focus.
 	_onLostFocus: function () {
-		this._deactivate();
+		app.idleHandler._deactivate();
 	},
 
 	// The editor got focus (probably a dialog closed or user clicked to edit).
 	_onEditorGotFocus: function() {
 		this._changeFocusWidget(null, 0);
-		if (this.dialog && this.dialog._calcInputBar) {
-			var inputBarId = this.dialog._calcInputBar.id;
-			this.dialog._updateTextSelection(inputBarId);
+		if (this.formulabar)
 			this.onFormulaBarBlur();
-		}
 	},
 
 	// Our browser tab got focus.
@@ -1561,7 +1395,7 @@ L.Map = L.Evented.extend({
 			this._activeDialog.focus(this.getWinId());
 		}
 
-		this._activate();
+		app.idleHandler._activate();
 	},
 
 	// Event to change the focus to dialog or editor.
@@ -1604,7 +1438,7 @@ L.Map = L.Evented.extend({
 	},
 
 	_handleDOMEvent: function (e) {
-		this.notifyActive();
+		app.idleHandler.notifyActive();
 
 		if (!this._docLayer || !this._loaded || !this._enabled || L.DomEvent._skipped(e)) { return; }
 
@@ -1618,7 +1452,7 @@ L.Map = L.Evented.extend({
 		// Calling from some other place with no real 'click' event doesn't work.
 
 		if (type === 'click' || type === 'dblclick') {
-			if (this.isPermissionEdit()) {
+			if (this.isEditMode()) {
 				this.fire('editorgotfocus');
 				this.focus();
 			}
@@ -1699,7 +1533,7 @@ L.Map = L.Evented.extend({
 
 	_draggableMoved: function (obj) {
 		obj = obj.options.draggable ? obj : this;
-		return (obj.dragging && obj.dragging.moved()) || (this.boxZoom && this.boxZoom.moved());
+		return obj.dragging && obj.dragging.moved();
 	},
 
 	_clearHandlers: function () {
@@ -1722,11 +1556,6 @@ L.Map = L.Evented.extend({
 
 	_getMapPanePos: function () {
 		return L.DomUtil.getPosition(this._mapPane) || new L.Point(0, 0);
-	},
-
-	_moved: function () {
-		var pos = this._getMapPanePos();
-		return pos && !pos.equals([0, 0]);
 	},
 
 	_getTopLeftPoint: function (center, zoom) {
@@ -1846,24 +1675,6 @@ L.Map = L.Evented.extend({
 			args: {FollowedViewId: this._docLayer._followThis,
 				IsFollowUser: followUser,
 				IsFollowEditor: followEditor}});
-	},
-
-	hasObjectFocusDarkOverlay: function() {
-		return !!this.focusLayer;
-	},
-
-	addObjectFocusDarkOverlay: function(xTwips, yTwips, wTwips, hTwips) {
-		if (!this.hasObjectFocusDarkOverlay()) {
-			this.focusLayer = new L.ObjectFocusDarkOverlay().addTo(this);
-			this.focusLayer.show({x: xTwips, y: yTwips, w: wTwips, h: hTwips});
-		}
-	},
-
-	removeObjectFocusDarkOverlay: function() {
-		if (this.hasObjectFocusDarkOverlay()) {
-			this.removeLayer(this.focusLayer);
-			this.focusLayer = null;
-		}
 	},
 
 	getSplitPanesContext: function () {

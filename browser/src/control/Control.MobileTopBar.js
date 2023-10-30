@@ -25,10 +25,11 @@ L.Control.MobileTopBar = L.Control.extend({
 	getToolItems: function(docType) {
 		if (docType == 'text') {
 			return [
-				{type: 'button',  id: 'closemobile',  img: 'closemobile'},
 				{type: 'button',  id: 'undo',  img: 'undo', hint: _UNO('.uno:Undo'), uno: 'Undo', disabled: true},
 				{type: 'button',  id: 'redo',  img: 'redo', hint: _UNO('.uno:Redo'), uno: 'Redo', disabled: true},
-				{type: 'spacer'},
+				{type: 'spacer', id: 'before-PermissionMode'},
+				{type: 'html', id: 'PermissionMode', html:'<div id="PermissionMode" class="cool-font  status-readonly-mode" ""style="padding: 3px 10px;"> ' + _('Read-only') + '</div>', hidden: true},
+				{type: 'spacer', id: 'after-PermissionMode', hidden: true},
 				{type: 'button',  id: 'mobile_wizard', img: 'mobile_wizard', disabled: true},
 				{type: 'button',  id: 'insertion_mobile_wizard', img: 'insertion_mobile_wizard', disabled: true},
 				{type: 'button',  id: 'comment_wizard', img: 'viewcomments'},
@@ -36,7 +37,6 @@ L.Control.MobileTopBar = L.Control.extend({
 			];
 		} else if (docType == 'spreadsheet') {
 			return [
-				{type: 'button',  id: 'closemobile',  img: 'closemobile'},
 				{type: 'button',  id: 'undo',  img: 'undo', hint: _UNO('.uno:Undo'), uno: 'Undo', disabled: true},
 				{type: 'button',  id: 'redo',  img: 'redo', hint: _UNO('.uno:Redo'), uno: 'Redo', disabled: true},
 				{type: 'button', hidden: true, id: 'acceptformula',  img: 'ok', hint: _('Accept')},
@@ -49,7 +49,6 @@ L.Control.MobileTopBar = L.Control.extend({
 			];
 		} else if (docType == 'presentation') {
 			return [
-				{type: 'button',  id: 'closemobile',  img: 'closemobile'},
 				{type: 'button',  id: 'undo',  img: 'undo', hint: _UNO('.uno:Undo'), uno: 'Undo', disabled: true},
 				{type: 'button',  id: 'redo',  img: 'redo', hint: _UNO('.uno:Redo'), uno: 'Redo', disabled: true},
 				{type: 'spacer'},
@@ -61,7 +60,6 @@ L.Control.MobileTopBar = L.Control.extend({
 			];
 		} else if (docType == 'drawing') {
 			return [
-				{type: 'button',  id: 'closemobile',  img: 'closemobile'},
 				{type: 'button',  id: 'undo',  img: 'undo', hint: _UNO('.uno:Undo'), uno: 'Undo', disabled: true},
 				{type: 'button',  id: 'redo',  img: 'redo', hint: _UNO('.uno:Redo'), uno: 'Redo', disabled: true},
 				{type: 'spacer'},
@@ -122,19 +120,10 @@ L.Control.MobileTopBar = L.Control.extend({
 			}
 		}
 		else if (id === 'cancelformula') {
-			this.map.sendUnoCommand('.uno:Cancel');
-			w2ui['actionbar'].hide('acceptformula', 'cancelformula');
-			w2ui['actionbar'].show('undo', 'redo');
+			this.map.dispatch('cancelformula');
 		}
 		else if (id === 'acceptformula') {
-			// focus on map, and press enter
-			this.map.focus();
-			this.map._docLayer.postKeyboardEvent('input',
-				this.map.keyboard.keyCodes.enter,
-				this.map.keyboard._toUNOKeyCode(this.map.keyboard.keyCodes.enter));
-
-			w2ui['actionbar'].hide('acceptformula', 'cancelformula');
-			w2ui['actionbar'].show('undo', 'redo');
+			this.map.dispatch('acceptformula');
 		}
 		else if (id === 'comment_wizard') {
 			if (window.commentWizard) {
@@ -153,10 +142,6 @@ L.Control.MobileTopBar = L.Control.extend({
 				this.map.fire('mobilewizard', {data: menuData});
 				toolbar.check(id);
 			}
-		}
-		else if (id === 'closemobile') {
-			// Call global onClick handler
-			window.onClick(e, id, item);
 		}
 		else if (id === 'fullscreen-drawing') {
 			if (item.checked) {
@@ -220,7 +205,9 @@ L.Control.MobileTopBar = L.Control.extend({
 				toolbarDownButtons.forEach(function(id) {
 					toolbar.enable(id);
 				});
-				toolbar.set('closemobile', {img: 'editmode'});
+				toolbar.hide('PermissionMode');
+				toolbar.hide('after-PermissionMode');
+				$('#tb_actionbar_item_before-PermissionMode').width('');
 			}
 		} else {
 			toolbar = w2ui['actionbar'];
@@ -229,7 +216,12 @@ L.Control.MobileTopBar = L.Control.extend({
 					toolbar.disable(id);
 				});
 				toolbar.enable('comment_wizard');
-				toolbar.set('closemobile', {img: 'closemobile'});
+				if ($('#mobile-edit-button').is(':hidden')) {
+					toolbar.show('PermissionMode');
+					toolbar.show('after-PermissionMode');
+					$('#tb_actionbar_item_before-PermissionMode').width('50%');
+					$('#tb_actionbar_item_after-PermissionMode').width('50%');
+				}
 			}
 		}
 	},
@@ -238,7 +230,7 @@ L.Control.MobileTopBar = L.Control.extend({
 		var commandName = e.commandName;
 		var state = e.state;
 
-		if (this.map.isPermissionEdit() && (state === 'enabled' || state === 'disabled')) {
+		if (this.map.isEditMode() && (state === 'enabled' || state === 'disabled')) {
 			var id = window.unoCmdToToolbarId(commandName);
 			var toolbar = w2ui['actionbar'];
 

@@ -12,10 +12,12 @@
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
+#include <cstddef>
 #include <deque>
 #include <map>
 #include <memory>
 #include <mutex>
+#include <sstream>
 #include <string>
 #include <thread>
 #include <utility>
@@ -23,6 +25,7 @@
 #include <Poco/URI.h>
 
 #include "Log.hpp"
+#include "QuarantineUtil.hpp"
 #include "TileDesc.hpp"
 #include "Util.hpp"
 #include "net/Socket.hpp"
@@ -43,24 +46,22 @@ struct LockContext;
 class TileCache;
 class Message;
 
-#include "COOLWSD.hpp"
-
 /// A ChildProcess object represents a Kit process that hosts a document and manipulates the
 /// document using the LibreOfficeKit API. It isn't actually a child of the WSD process, but a
 /// grandchild. The comments loosely talk about "child" anyway.
 
-class ChildProcess : public WSProcess
+class ChildProcess final : public WSProcess
 {
 public:
     /// @param pid is the process ID of the child.
-    /// @param socket is the underlying Sockeet to the child.
-    ChildProcess(const pid_t pid,
-                 const std::string& jailId,
-                 const std::shared_ptr<StreamSocket>& socket,
-                 const Poco::Net::HTTPRequest &request) :
-        WSProcess("ChildProcess", pid, socket, std::make_shared<WebSocketHandler>(socket, request)),
-        _jailId(jailId),
-        _smapsFD(-1)
+    /// @param socket is the underlying Socket to the child.
+    template <typename T>
+    ChildProcess(const pid_t pid, const std::string& jailId,
+                 const std::shared_ptr<StreamSocket>& socket, const T& request)
+        : WSProcess("ChildProcess", pid, socket,
+                    std::make_shared<WebSocketHandler>(socket, request))
+        , _jailId(jailId)
+        , _smapsFD(-1)
     {
     }
 
@@ -155,7 +156,7 @@ class ClientSession;
 /// activity). Once we get the save result from Core
 /// (and ideally with success), we upload the document
 /// immediately. Previously, this was a synchronous
-/// process, which is now being reworked into an asynch.
+/// process, which is now being reworked into an async.
 ///
 /// The user can invoke both Save and Upload operations
 /// however, and in more than one way.
@@ -252,8 +253,8 @@ public:
     /// Flag for termination. Note that this doesn't save any unsaved changes in the document
     void stop(const std::string& reason);
 
-    /// Hard removes a session by ID, only for ClientSession.
-    void finalRemoveSession(const std::string& id);
+    /// Hard removes a session, only for ClientSession.
+    void finalRemoveSession(const std::shared_ptr<ClientSession>& session);
 
     /// Create new client session
     std::shared_ptr<ClientSession> createNewClientSession(
@@ -281,11 +282,9 @@ public:
     virtual void setInteractive(bool value);
 
     /// If not yet locked, try to lock
-    bool attemptLock(const ClientSession& session, std::string& failReason);
+    bool attemptLock(ClientSession& session, std::string& failReason);
 
     bool isDocumentChangedInStorage() { return _documentChangedInStorage; }
-
-    bool isLastStorageUploadSuccessful() { return _storageManager.lastUploadSuccessful(); }
 
     /// Invoked by the client to rename the document filename.
     /// Returns an error message in case of failure, otherwise an empty string.
@@ -293,22 +292,27 @@ public:
 
     /// Handle the save response from Core and upload to storage as necessary.
     /// Also notifies clients of the result.
-    void handleSaveResponse(const std::string& sessionId, bool success, const std::string& result);
+    void handleSaveResponse(const std::shared_ptr<ClientSession>& session,
+                            const Poco::JSON::Object::Ptr& json);
+
+    /// Check if uploading is needed, and start uploading.
+    /// The current state of uploading must be introspected separately.
+    void checkAndUploadToStorage(const std::shared_ptr<ClientSession>& session, bool justSaved);
 
     /// Upload the document to Storage if it needs persisting.
     /// Results are logged and broadcast to users.
-    void uploadToStorage(const std::string& sesionId, bool success, const std::string& result,
-                         bool force);
+    void uploadToStorage(const std::shared_ptr<ClientSession>& session, bool force);
 
     /// UploadAs the document to Storage, with a new name.
     /// @param uploadAsPath Absolute path to the jailed file.
-    void uploadAsToStorage(const std::string& sessionId, const std::string& uploadAsPath,
-                           const std::string& uploadAsFilename, const bool isRename);
+    void uploadAsToStorage(const std::shared_ptr<ClientSession>& session,
+                           const std::string& uploadAsPath, const std::string& uploadAsFilename,
+                           const bool isRename, const bool isExport);
 
     /// Uploads the document right after loading from a template.
     /// Template-loading requires special handling because the
     /// document changes once loaded into a non-template format.
-    void uploadAfterLoadingTemplate(const std::string& sessionId);
+    void uploadAfterLoadingTemplate(const std::shared_ptr<ClientSession>& session);
 
     bool isModified() const { return _isModified; }
     void setModified(const bool value);
@@ -319,9 +323,12 @@ public:
     /// @param dontSaveIfUnmodified when true, save will fail if the document is not modified.
     /// @return true if attempts to save or it also waits
     /// and receives save notification. Otherwise, false.
-    bool autoSave(const bool force, const bool dontSaveIfUnmodified = true);
+    bool autoSave(const bool force, const bool dontSaveIfUnmodified);
 
-    bool isAsyncSaveInProgress() const;
+    /// Saves the document and stops if there was nothing to autosave.
+    void autoSaveAndStop(const std::string& reason);
+
+    bool isAsyncUploading() const;
 
     Poco::URI getPublicUri() const { return _uriPublic; }
     const std::string& getJailId() const { return _jailId; }
@@ -333,7 +340,7 @@ public:
 
     /// Are we running in either shutdown, or the polling thread.
     /// Asserts in the debug builds, otherwise just logs.
-    void assertCorrectThread() const;
+    void assertCorrectThread(const char* filename = "?", int line = 0) const;
 
     /// Pretty print internal state to a stream.
     void dumpState(std::ostream& os);
@@ -344,7 +351,7 @@ public:
     std::size_t addSession(const std::shared_ptr<ClientSession>& session);
 
     /// Removes a session by ID. Returns the new number of sessions.
-    std::size_t removeSession(const std::string& id);
+    std::size_t removeSession(const std::shared_ptr<ClientSession>& session);
 
     /// Add a callback to be invoked in our polling thread.
     void addCallback(const SocketPoll::CallbackFn& fn);
@@ -377,12 +384,11 @@ public:
         _tileCache->invalidateTiles(tiles, normalizedViewId);
     }
 
-    void handleTileRequest(const StringVector &tokens,
+    void handleTileRequest(const StringVector &tokens, bool forceKeyframe,
                            const std::shared_ptr<ClientSession>& session);
-    void handleTileCombinedRequest(TileCombined& tileCombined,
+    void handleTileCombinedRequest(TileCombined& tileCombined, bool forceKeyframe,
                                    const std::shared_ptr<ClientSession>& session);
     void sendRequestedTiles(const std::shared_ptr<ClientSession>& session);
-    void cancelTileRequests(const std::shared_ptr<ClientSession>& session);
 
     enum ClipboardRequest {
         CLIP_REQUEST_SET,
@@ -395,24 +401,50 @@ public:
     static bool lookupSendClipboardTag(const std::shared_ptr<StreamSocket> &socket,
                                        const std::string &tag, bool sendError = false);
 
+    void handleMediaRequest(const std::shared_ptr<Socket>& socket, const std::string& tag);
+
+    /// True if any flag to unload or terminate is set.
+    bool isUnloading() const
+    {
+        return _docState.isMarkedToDestroy() || _stop || _docState.isUnloadRequested() ||
+               _docState.isCloseRequested() || SigUtil::getShutdownRequestFlag() ||
+               SigUtil::getTerminationFlag();
+    }
+
     bool isMarkedToDestroy() const { return _docState.isMarkedToDestroy() || _stop; }
 
-    virtual bool handleInput(const std::vector<char>& payload);
+    virtual bool handleInput(const std::shared_ptr<Message>& message);
 
     /// Forward a message from client session to its respective child session.
-    bool forwardToChild(const std::string& viewId, const std::string& message);
+    bool forwardToChild(const std::shared_ptr<ClientSession>& session, const std::string& message,
+                        bool binary = false);
 
     int getRenderedTileCount() { return _debugRenderedTileCount; }
 
     /// Ask the document broker to close. Makes sure that the document is saved.
     void closeDocument(const std::string& reason);
 
+    /// Flag that we have been disconnected from the Kit and request unloading.
+    void disconnectedFromKit();
+
     /// Get the PID of the associated child process
     pid_t getPid() const { return _childProcess ? _childProcess->getPid() : 0; }
 
     std::unique_lock<std::mutex> getLock() { return std::unique_lock<std::mutex>(_mutex); }
 
-    void updateLastActivityTime();
+    /// Update the last activity time to now.
+    /// Best to be inlined as it's called frequently.
+    void updateLastActivityTime()
+    {
+        _lastActivityTime = std::chrono::steady_clock::now();
+        // posted to admin console in the main polling loop.
+    }
+
+    /// Sets the last activity timestamp that is most likely to modify the document.
+    void updateLastModifyingActivityTime()
+    {
+        _lastModifyActivityTime = std::chrono::steady_clock::now();
+    }
 
     /// This updates the editing sessionId which is used for auto-saving.
     void updateEditingSessionId(const std::string& viewId)
@@ -421,13 +453,13 @@ public:
             _lastEditingSessionId = viewId;
     }
 
-    /// Sends the .uno:Save command to LoKit.
-    bool sendUnoSave(const std::string& sessionId, bool dontTerminateEdit = true,
-                     bool dontSaveIfUnmodified = true, bool isAutosave = false,
-                     bool isExitSave = false, const std::string& extendedData = std::string());
+    /// User wants to issue a save on the document.
+    bool manualSave(const std::shared_ptr<ClientSession>& session, bool dontTerminateEdit,
+                    bool dontSaveIfUnmodified, const std::string& extendedData);
 
-    /// Sends a message to all sessions
-    void broadcastMessage(const std::string& message) const;
+    /// Sends a message to all sessions.
+    /// Returns the number of sessions sent the message to.
+    std::size_t broadcastMessage(const std::string& message) const;
 
     /// Sends a message to all sessions except for the session passed as the param
     void broadcastMessageToOthers(const std::string& message, const std::shared_ptr<ClientSession>& _session) const;
@@ -462,9 +494,15 @@ public:
     /// Remove download id mapping
     void unregisterDownloadId(const std::string& downloadId);
 
+    /// Add embedded media objects. Returns json with external URL.
+    void addEmbeddedMedia(const std::string& id, const std::string& json);
+    /// Remove embedded media objects.
+    void removeEmbeddedMedia(const std::string& json);
+
 private:
-    /// get the session id of a session that can write the document for save / locking.
-    std::string getWriteableSessionId() const;
+    /// Get the session that can write the document for save / locking / uploading.
+    /// Note that if there is no loaded and writable session, the first will be returned.
+    std::shared_ptr<ClientSession> getWriteableSession() const;
 
     void refreshLock();
 
@@ -473,22 +511,19 @@ private:
     bool isLoaded() const { return _docState.hadLoaded(); }
     bool isInteractive() const { return _docState.isInteractive(); }
 
+    /// Updates the document's lock in storage to either locked or unlocked.
+    /// Returns true iff the operation was successful.
+    bool updateStorageLockState(ClientSession& session, bool lock, std::string& error);
+
     std::size_t getIdleTimeSecs() const
     {
         const auto duration = (std::chrono::steady_clock::now() - _lastActivityTime);
         return std::chrono::duration_cast<std::chrono::seconds>(duration).count();
     }
 
-    std::unique_lock<std::mutex> getDeferredLock() { return std::unique_lock<std::mutex>(_mutex, std::defer_lock); }
-
-    /// Called by the ChildProcess object to notify
-    /// that it has terminated on its own.
-    /// This happens either when the child exists
-    /// or upon failing to process an incoming message.
-    void childSocketTerminated();
-    void handleTileResponse(const std::vector<char>& payload);
+    void handleTileResponse(const std::shared_ptr<Message>& message);
     void handleDialogPaintResponse(const std::vector<char>& payload, bool child);
-    void handleTileCombinedResponse(const std::vector<char>& payload);
+    void handleTileCombinedResponse(const std::shared_ptr<Message>& message);
     void handleDialogRequest(const std::string& dialogCmd);
 
     /// Invoked to issue a save before renaming the document filename.
@@ -504,26 +539,79 @@ private:
     /// with the child and cleans up ChildProcess etc.
     void terminateChild(const std::string& closeReason);
 
-    /// Encodes whether or not uploading is needed.
-    enum class NeedToUpload
-    {
-        No, //< No need to upload, data up-to-date.
-        Yes, //< Data is out of date.
-        Force //< Force uploading, typically because always_save_on_exit is set.
-    };
+    /// Encodes whether or not saving is possible
+    /// (regardless of whether we need to or not).
+    STATE_ENUM(
+        CanSave,
+        Yes, //< Saving is possible.
+        NoKit, //< There is no Kit.
+        NotLoaded, //< No document is loaded.
+        NoWriteSession, //< No available session can write.
+    );
 
-    /// Returns true iff the Document in Storage is
-    /// out-of-date and we must upload the last file on disk.
+    /// Returns the state of whether saving is possible.
+    /// (regardless of whether we need to or not).
+    CanSave canSaveToDisk() const
+    {
+        if (_docState.isDisconnected() || getPid() <= 0)
+        {
+            return CanSave::NoKit;
+        }
+
+        if (!isLoaded())
+        {
+            return CanSave::NotLoaded;
+        }
+
+        if (_sessions.empty() || !getWriteableSession())
+        {
+            return CanSave::NoWriteSession;
+        }
+
+        return CanSave::Yes;
+    }
+
+    /// Encodes whether or not uploading is possible.
+    /// (regardless of whether we need to or not).
+    STATE_ENUM(
+        CanUpload,
+        Yes, //< Uploading is possible.
+        NoStorage, //< Storage instance missing.
+    );
+
+    /// Returns the state of whether uploading is possible.
+    /// (regardless of whether we need to or not).
+    CanUpload canUploadToStorage() const
+    {
+        return _storage ? CanUpload::Yes : CanUpload::NoStorage;
+    }
+
+    /// Encodes whether or not uploading is needed.
+    STATE_ENUM(NeedToUpload,
+               No, //< No need to upload, data up-to-date.
+               Yes, //< Data is out of date.
+    );
+
+    /// Returns the state of the need to upload.
+    /// This includes out-of-date Document in Storage or
+    /// always_save_on_exit.
     NeedToUpload needToUploadToStorage() const;
 
+    /// Returns true iff the document on disk is newer than the one in Storage.
+    bool isStorageOutdated() const;
+
     /// Upload the doc to the storage.
-    void uploadToStorageInternal(const std::string& sesionId, bool success,
-                                 const std::string& result, const std::string& saveAsPath,
-                                 const std::string& saveAsFilename, const bool isRename,
-                                 const bool force);
+    void uploadToStorageInternal(const std::shared_ptr<ClientSession>& session,
+                                 const std::string& saveAsPath, const std::string& saveAsFilename,
+                                 const bool isRename, const bool isExport, const bool force);
 
     /// Handles the completion of uploading to storage, both success and failure cases.
     void handleUploadToStorageResponse(const StorageBase::UploadResult& uploadResult);
+
+    /// Sends the .uno:Save command to LoKit.
+    bool sendUnoSave(const std::shared_ptr<ClientSession>& session, bool dontTerminateEdit = true,
+                     bool dontSaveIfUnmodified = true, bool isAutosave = false,
+                     const std::string& extendedData = std::string());
 
     /**
      * Report back the save result to PostMessage users (Action_Save_Resp)
@@ -537,12 +625,52 @@ private:
     /// Broadcasts to all sessions the last modification time of the document.
     void broadcastLastModificationTime(const std::shared_ptr<ClientSession>& session = nullptr) const;
 
+    /// True if there has been activity from a client after we last *requested* saving,
+    /// since there are race conditions vis-a-vis user activity while saving.
+    bool haveActivityAfterSaveRequest() const
+    {
+        return _saveManager.lastSaveRequestTime() < _lastActivityTime;
+    }
+
+    /// True if there has been potentially *document-modifying* activity from a client
+    /// after we last *requested* saving, since there are race conditions while saving.
+    bool haveModifyActivityAfterSaveRequest() const
+    {
+        return _saveManager.lastSaveRequestTime() < _lastModifyActivityTime;
+    }
+
+    /// Encodes whether or not saving is needed.
+    STATE_ENUM(NeedToSave,
+               No, //< No need to save, data up-to-date.
+               Maybe, //< We have activity post saving.
+               Yes_Modified, //< Data is out of date.
+               Yes_LastSaveFailed, //< Yes, need to produce file on disk.
+    );
+
+    /// Returns the state of the need to save.
+    NeedToSave needToSaveToDisk() const;
+
     /// True if we know the doc is modified or
     /// if there has been activity from a client after we last *requested* saving,
     /// since there are race conditions vis-a-vis user activity while saving.
     bool isPossiblyModified() const
     {
-        return isModified() || (_saveManager.lastSaveRequestTime() < _lastActivityTime);
+        if (haveModifyActivityAfterSaveRequest())
+        {
+            // Always assume possible modification when we have
+            // user input after sending a .uno:Save, due to racing.
+            return true;
+        }
+
+        if (_isViewFileExtension)
+        {
+            // ViewFileExtensions do not update the ModifiedStatus,
+            // but, we want a success save anyway (including unmodified).
+            return !_saveManager.lastSaveSuccessful();
+        }
+
+        // Regulard editable files, rely on the ModifiedStatus.
+        return isModified();
     }
 
     /// True iff there is at least one non-readonly session other than the given.
@@ -551,11 +679,15 @@ private:
     /// every editable session disconnect, lest we lose data due to racing.
     bool haveAnotherEditableSession(const std::string& id) const;
 
+    /// Returns the number of active sessions.
+    /// This includes only those that are loaded and not waiting disconnection.
+    std::size_t countActiveSessions() const;
+
     /// Loads a new session and adds to the sessions container.
     std::size_t addSessionInternal(const std::shared_ptr<ClientSession>& session);
 
     /// Starts the Kit <-> DocumentBroker shutdown handshake
-    void disconnectSessionInternal(const std::string& id);
+    void disconnectSessionInternal(const std::shared_ptr<ClientSession>& session);
 
     /// Forward a message from child session to its respective client session.
     bool forwardToClient(const std::shared_ptr<Message>& payload);
@@ -573,17 +705,18 @@ private:
     /// a convert-to request or doctored to look like one.
     virtual bool isConvertTo() const { return false; }
 
-private:
     /// Request manager.
     /// Encapsulates common fields for
     /// Save and Upload requests.
-    class RequestManager
+    class RequestManager final
     {
     public:
-        RequestManager()
-            : _lastRequestTime(now())
+        RequestManager(std::chrono::milliseconds minTimeBetweenRequests)
+            : _minTimeBetweenRequests(minTimeBetweenRequests)
+            , _lastRequestTime(now())
             , _lastResponseTime(now())
-            , _lastRequestSuccessful(true)
+            , _lastRequestDuration(0)
+            , _lastRequestFailureCount(0)
         {
         }
 
@@ -595,9 +728,10 @@ private:
 
         /// How much time passed since the last request,
         /// regardless of whether we got a response or not.
-        const std::chrono::milliseconds timeSinceLastRequest() const
+        const std::chrono::milliseconds timeSinceLastRequest(
+            const std::chrono::steady_clock::time_point now = RequestManager::now()) const
         {
-            return std::chrono::duration_cast<std::chrono::milliseconds>(now() - _lastRequestTime);
+            return std::chrono::duration_cast<std::chrono::milliseconds>(now - _lastRequestTime);
         }
 
         /// True iff there is an active request and it has timed out.
@@ -608,40 +742,68 @@ private:
 
 
         /// Sets the time the last response was received to now.
-        void markLastResponseTime() { _lastResponseTime = now(); }
+        void markLastResponseTime()
+        {
+            _lastResponseTime = now();
+            _lastRequestDuration = std::chrono::duration_cast<std::chrono::milliseconds>(
+                _lastResponseTime - _lastRequestTime);
+        }
 
         /// Returns the time the last response was received.
         std::chrono::steady_clock::time_point lastResponseTime() const { return _lastResponseTime; }
 
+        /// Returns the duration of the last request.
+        std::chrono::milliseconds lastRequestDuration() const { return _lastRequestDuration; }
+
         /// How much time passed since the last response,
         /// regardless of whether there is a newer request or not.
-        const std::chrono::milliseconds timeSinceLastResponse() const
+        const std::chrono::milliseconds timeSinceLastResponse(
+            const std::chrono::steady_clock::time_point now = RequestManager::now()) const
         {
-            return std::chrono::duration_cast<std::chrono::milliseconds>(now() - _lastResponseTime);
+            return std::chrono::duration_cast<std::chrono::milliseconds>(now - _lastResponseTime);
         }
 
 
         /// Returns true iff there is an active request in progress.
         bool isActive() const { return _lastResponseTime < _lastRequestTime; }
 
+        /// The minimum time to wait between requests.
+        std::chrono::milliseconds minTimeBetweenRequests() const { return _minTimeBetweenRequests; }
+
+        /// Checks whether or not we can issue a new request now.
+        /// Returns true iff there is no active request and sufficient
+        /// time has elapsed since the last request, including that
+        /// more time than half the last request's duration has passed.
+        /// When unloading, we reduce throttling significantly.
+        bool canRequestNow(bool unloading) const
+        {
+            const std::chrono::milliseconds minTimeBetweenRequests =
+                unloading ? _minTimeBetweenRequests / 10 : _minTimeBetweenRequests;
+            const auto now = RequestManager::now();
+            return !isActive() && std::min(timeSinceLastRequest(now), timeSinceLastResponse(now)) >=
+                                      std::max(minTimeBetweenRequests, _lastRequestDuration / 2);
+        }
 
         /// Sets the last request's result, either to success or failure.
         /// And marks the last response time.
         void setLastRequestResult(bool success)
         {
             markLastResponseTime();
-            _lastRequestSuccessful = success;
+            if (success)
+            {
+                _lastRequestFailureCount = 0;
+            }
+            else
+            {
+                ++_lastRequestFailureCount;
+            }
         }
 
         /// Indicates whether the last request was successful or not.
-        bool lastRequestSuccessful() const { return _lastRequestSuccessful; }
+        bool lastRequestSuccessful() const { return _lastRequestFailureCount == 0; }
 
-
-        /// Set the modified time of the document.
-        void setModifiedTime(std::chrono::system_clock::time_point time) { _modifiedTime = time; }
-
-        /// Returns the modified time of the document.
-        std::chrono::system_clock::time_point getModifiedTime() const { return _modifiedTime; }
+        /// Returns the number of failures in the previous requests. 0 for success.
+        std::size_t lastRequestFailureCount() const { return _lastRequestFailureCount; }
 
 
         /// Helper to get the current time.
@@ -651,58 +813,99 @@ private:
         }
 
     private:
+        /// The minimum time between requests.
+        const std::chrono::milliseconds _minTimeBetweenRequests;
+
         /// The last time we started an a request.
         std::chrono::steady_clock::time_point _lastRequestTime;
 
         /// The last time we received a response.
         std::chrono::steady_clock::time_point _lastResponseTime;
 
-        /// The document's last-modified time.
-        std::chrono::system_clock::time_point _modifiedTime;
+        /// The time we spent in the last request.
+        std::chrono::milliseconds _lastRequestDuration;
 
-        /// Indicates whether the last request resulted in success.
-        /// Note that this is interpretted by the request in question.
+        /// Counts the number of previous requests that failed.
+        /// Note that this is interpreted by the request in question.
         /// For example, Core's Save operation turns 'false' for success
         /// when the file is unmodified, but that is still a successful result.
-        bool _lastRequestSuccessful;
+        std::size_t _lastRequestFailureCount;
     };
 
     /// Responsible for managing document saving.
-    /// Tracks auto-saveing and its frequency.
+    /// Tracks idle-saving and its interval.
+    /// Tracks auto-saving and its interval.
     /// Tracks the last save request and response times.
     /// Tracks the local file's last modified time.
     /// Tracks the time a save response was received.
     class SaveManager final
     {
+        /// Decide the auto-save interval. Returns 0 when disabled,
+        /// otherwise, the minimum of idle- and auto-save.
+        static std::chrono::milliseconds
+        getCheckInterval(std::chrono::milliseconds idleSaveInterval,
+                         std::chrono::milliseconds autoSaveInterval)
+        {
+            if (idleSaveInterval > idleSaveInterval.zero())
+            {
+                if (autoSaveInterval > autoSaveInterval.zero())
+                    return std::min(idleSaveInterval, autoSaveInterval);
+                return idleSaveInterval; // It's the only non-zero of the two.
+            }
+
+            return autoSaveInterval; // Regardless of whether it's 0 or not.
+        }
+
     public:
-        SaveManager()
-            : _autosaveInterval(std::chrono::seconds(30))
+        SaveManager(std::chrono::milliseconds idleSaveInterval,
+                    std::chrono::milliseconds autoSaveInterval,
+                    std::chrono::milliseconds minTimeBetweenSaves)
+            : _request(minTimeBetweenSaves)
+            , _idleSaveInterval(idleSaveInterval)
+            , _autoSaveInterval(autoSaveInterval)
+            , _checkInterval(getCheckInterval(idleSaveInterval, autoSaveInterval))
+            , _savingTimeout(std::chrono::seconds::zero())
             , _lastAutosaveCheckTime(RequestManager::now())
-            , _isAutosaveEnabled(std::getenv("COOL_NO_AUTOSAVE") == nullptr)
+            , _version(0)
         {
+            if (Log::traceEnabled())
+            {
+                std::ostringstream oss;
+                dumpState(oss, ", ");
+                LOG_TRC("Created SaveManager: " << oss.str());
+            }
         }
 
-        /// Return true iff auto save is enabled.
-        bool isAutosaveEnabled() const { return _isAutosaveEnabled; }
+        /// Returns true iff idle-save is enabled.
+        bool isIdleSaveEnabled() const { return _idleSaveInterval > _idleSaveInterval.zero(); }
 
-        /// Returns true if we should issue an auto-save.
-        bool needAutosaveCheck() const
+        /// Returns the idle-save interval.
+        std::chrono::milliseconds idleSaveInterval() const { return _idleSaveInterval; }
+
+        /// Returns true iff auto-save is enabled.
+        bool isAutoSaveEnabled() const { return _autoSaveInterval > _autoSaveInterval.zero(); }
+
+        /// Returns the auto-save interval.
+        std::chrono::milliseconds autoSaveInterval() const { return _autoSaveInterval; }
+
+        /// Returns true if it's time for an auto-save check.
+        /// This is the minimum of idle-save and auto-save interval.
+        bool needAutoSaveCheck() const
         {
-            return isAutosaveEnabled()
-                   && std::chrono::duration_cast<std::chrono::seconds>(RequestManager::now()
-                                                                       - _lastAutosaveCheckTime)
-                          >= _autosaveInterval;
+            return _checkInterval > _checkInterval.zero() &&
+                   std::chrono::duration_cast<std::chrono::seconds>(
+                       RequestManager::now() - _lastAutosaveCheckTime) >= _checkInterval;
         }
 
-        /// Marks autosave check done.
-        void autosaveChecked() { _lastAutosaveCheckTime = RequestManager::now(); }
+        /// Marks autoSave check done.
+        void autoSaveChecked() { _lastAutosaveCheckTime = RequestManager::now(); }
 
         /// Called to postpone autosaving by at least the given duration.
         void postponeAutosave(std::chrono::seconds seconds)
         {
             const auto now = RequestManager::now();
 
-            const auto nextAutosaveCheck = _lastAutosaveCheckTime + _autosaveInterval;
+            const auto nextAutosaveCheck = _lastAutosaveCheckTime + _autoSaveInterval;
             const auto postponeTime = now + seconds;
             if (nextAutosaveCheck < postponeTime)
             {
@@ -715,27 +918,33 @@ private:
             }
         }
 
-        /// Marks the last save request as now.
+        /// Marks the last save request time as now.
         void markLastSaveRequestTime() { _request.markLastRequestTime(); }
 
         /// Returns whether the last save was successful or not.
         bool lastSaveSuccessful() const { return _request.lastRequestSuccessful(); }
 
+        /// Returns the number of previous save failures. 0 for success.
+        std::size_t saveFailureCount() const { return _request.lastRequestFailureCount(); }
+
         /// Sets whether the last save was successful or not.
-        void setLastSaveResult(bool success) { _request.setLastRequestResult(success); }
+        void setLastSaveResult(bool success, bool newVersion)
+        {
+            LOG_DBG("Saving version #" << version() + 1 << (success ? " succeeded" : " failed")
+                                       << " after " << _request.timeSinceLastRequest());
+            _request.setLastRequestResult(success);
+
+            if (newVersion)
+                ++_version; // Bump the version.
+        }
 
         /// Returns the last save request time.
-        /// TODO: Remove: temporary for logging only.
         std::chrono::steady_clock::time_point lastSaveRequestTime() const
         {
             return _request.lastRequestTime();
         }
 
-        /// Marks the last save response as now.
-        void markLastSaveResponseTime() { _request.markLastResponseTime(); }
-
         /// Returns the last save response time.
-        /// TODO: Remove: temporary for logging only.
         std::chrono::steady_clock::time_point lastSaveResponseTime() const
         {
             return _request.lastResponseTime();
@@ -744,23 +953,31 @@ private:
         /// Set the last modified time of the document.
         void setLastModifiedTime(std::chrono::system_clock::time_point time)
         {
-            _request.setModifiedTime(time);
+            _lastModifiedTime = time;
         }
 
         /// Returns the last modified time of the document.
         std::chrono::system_clock::time_point getLastModifiedTime() const
         {
-            return _request.getModifiedTime();
+            return _lastModifiedTime;
         }
 
         /// True iff a save is in progress (requested but not completed).
         bool isSaving() const { return _request.isActive(); }
 
-        /// True iff the last save request has timed out.
-        bool hasSavingTimedOut(std::chrono::milliseconds timeoutMs
-                               = std::chrono::milliseconds(COMMAND_TIMEOUT_MS)) const
+        /// Set the maximum time to wait for saving to finish.
+        void setSavingTimeout(std::chrono::seconds savingTimeout)
         {
-            return _request.hasLastRequestTimedOut(timeoutMs);
+            _savingTimeout = savingTimeout;
+        }
+
+        /// Get the maximum time to wait for saving to finish.
+        std::chrono::seconds getSavingTimeout() const { return _savingTimeout; }
+
+        /// True iff the last save request has timed out.
+        bool hasSavingTimedOut() const
+        {
+            return _request.hasLastRequestTimedOut(_savingTimeout);
         }
 
         /// The duration elapsed since we sent the last save request to Core.
@@ -769,18 +986,84 @@ private:
             return _request.timeSinceLastRequest();
         }
 
+        /// The duration elapsed since we received the last save response from Core.
+        std::chrono::milliseconds timeSinceLastSaveResponse() const
+        {
+            return _request.timeSinceLastResponse();
+        }
+
+        /// Returns how long the last save took.
+        std::chrono::milliseconds lastSaveDuration() const
+        {
+            return _request.lastRequestDuration();
+        }
+
+        /// Returns the minimum time between saves.
+        std::chrono::milliseconds minTimeBetweenSaves() const
+        {
+            return _request.minTimeBetweenRequests();
+        }
+
+        /// Returns the current saved version on disk, since loading.
+        /// 0 for original, as-loaded version.
+        std::size_t version() const { return _version.load(); }
+
+        /// True if we aren't saving and the minimum time since last save has elapsed.
+        bool canSaveNow(bool unloading) const { return _request.canRequestNow(unloading); }
+
+        void dumpState(std::ostream& os, const std::string& indent = "\n  ") const
+        {
+            const auto now = std::chrono::steady_clock::now();
+            os << indent << "version: " << version();
+            os << indent << "isSaving now: " << std::boolalpha << isSaving();
+            os << indent << "idle-save enabled: " << std::boolalpha << isIdleSaveEnabled();
+            os << indent << "idle-save interval: " << idleSaveInterval();
+            os << indent << "auto-save enabled: " << std::boolalpha << isAutoSaveEnabled();
+            os << indent << "auto-save interval: " << autoSaveInterval();
+            os << indent << "check interval: " << _checkInterval;
+            os << indent
+               << "last auto-save check time: " << Util::getTimeForLog(now, _lastAutosaveCheckTime);
+            os << indent << "auto-save check needed: " << std::boolalpha << needAutoSaveCheck();
+
+            os << indent
+               << "last save request: " << Util::getTimeForLog(now, lastSaveRequestTime());
+            os << indent
+               << "last save response: " << Util::getTimeForLog(now, lastSaveResponseTime());
+            os << indent << "last save duration: " << lastSaveDuration();
+            os << indent << "min time between saves: " << minTimeBetweenSaves();
+
+            os << indent
+               << "file last modified time: " << Util::getTimeForLog(now, _lastModifiedTime);
+            os << indent << "saving-timeout: " << getSavingTimeout();
+            os << indent << "last save timed-out: " << std::boolalpha << hasSavingTimedOut();
+            os << indent << "last save successful: " << lastSaveSuccessful();
+            os << indent << "save failure count: " << saveFailureCount();
+        }
+
     private:
         /// Request tracking logic.
         RequestManager _request;
 
-        /// The number of seconds between autosave checks for modification.
-        const std::chrono::seconds _autosaveInterval;
+        /// The document's last-modified time.
+        std::chrono::system_clock::time_point _lastModifiedTime;
+
+        /// The number of milliseconds between idlesave checks for modification.
+        const std::chrono::milliseconds _idleSaveInterval;
+
+        /// The number of milliseconds between autosave checks for modification.
+        const std::chrono::milliseconds _autoSaveInterval;
+
+        /// The number of milliseconds between idlesave/autosave checks.
+        const std::chrono::milliseconds _checkInterval;
+
+        /// The maximum time to wait for saving to finish.
+        std::chrono::seconds _savingTimeout;
 
         /// The last autosave check time.
         std::chrono::steady_clock::time_point _lastAutosaveCheckTime;
 
-        /// Whether auto-saving is enabled at all or not.
-        const bool _isAutosaveEnabled;
+        /// Current saved file version. Incremented after each successful save.
+        std::atomic_int_fast32_t _version;
     };
 
     /// Represents an upload request.
@@ -790,12 +1073,13 @@ private:
         UploadRequest(std::string uriAnonym,
                       std::chrono::system_clock::time_point newFileModifiedTime,
                       const std::shared_ptr<class ClientSession>& session, bool isSaveAs,
-                      bool isRename)
+                      bool isExport, bool isRename)
             : _startTime(std::chrono::steady_clock::now())
             , _uriAnonym(std::move(uriAnonym))
             , _newFileModifiedTime(newFileModifiedTime)
             , _session(session)
             , _isSaveAs(isSaveAs)
+            , _isExport(isExport)
             , _isRename(isRename)
         {
         }
@@ -814,6 +1098,7 @@ private:
 
         std::shared_ptr<class ClientSession> session() const { return _session.lock(); }
         bool isSaveAs() const { return _isSaveAs; }
+        bool isExport() const { return _isExport; }
         bool isRename() const { return _isRename; }
 
     private:
@@ -822,6 +1107,7 @@ private:
         const std::chrono::system_clock::time_point _newFileModifiedTime;
         const std::weak_ptr<class ClientSession> _session;
         const bool _isSaveAs;
+        const bool _isExport;
         const bool _isRename;
     };
 
@@ -829,23 +1115,48 @@ private:
     class StorageManager final
     {
     public:
-        StorageManager()
-            : _lastUploadTime(RequestManager::now())
-            , _lastUploadedFileModifiedTime(std::chrono::system_clock::now())
+        StorageManager(std::chrono::milliseconds minTimeBetweenUploads)
+            : _request(minTimeBetweenUploads)
         {
+            if (Log::traceEnabled())
+            {
+                std::ostringstream oss;
+                dumpState(oss, ", ");
+                LOG_TRC("Created StorageManager: " << oss.str());
+            }
         }
-
-        /// Marks the last time we attempted to upload, regardless of outcome, to now.
-        void markLastUploadTime() { _lastUploadTime = RequestManager::now(); }
-
-        // Gets the last time we attempted to upload.
-        std::chrono::steady_clock::time_point getLastUploadTime() const { return _lastUploadTime; }
 
         /// Returns whether the last upload was successful or not.
         bool lastUploadSuccessful() const { return _request.lastRequestSuccessful(); }
 
         /// Sets whether the last upload was successful or not.
-        void setLastUploadResult(bool success) { _request.setLastRequestResult(success); }
+        void setLastUploadResult(bool success)
+        {
+            LOG_DBG("Upload " << (success ? "succeeded" : "failed") << " after "
+                              << _request.timeSinceLastRequest());
+            _request.setLastRequestResult(success);
+        }
+
+        /// True iff an upload is in progress (requested but not completed).
+        bool isUploading() const { return _request.isActive(); }
+
+        /// Marks the last upload request time as now.
+        void markLastUploadRequestTime() { _request.markLastRequestTime(); }
+
+        /// The duration elapsed since we sent the last upload request to storage.
+        std::chrono::milliseconds timeSinceLastUploadRequest() const
+        {
+            return _request.timeSinceLastRequest();
+        }
+
+        /// The duration elapsed since we received the last upload response from storage.
+        std::chrono::milliseconds timeSinceLastUploadResponse() const
+        {
+            return _request.timeSinceLastResponse();
+        }
+
+        /// Returns the number of previous upload failures. 0 for success.
+        std::size_t uploadFailureCount() const { return _request.lastRequestFailureCount(); }
 
         /// Get the modified-timestamp of the local file on disk we last uploaded.
         std::chrono::system_clock::time_point getLastUploadedFileModifiedTime() const
@@ -860,32 +1171,53 @@ private:
         }
 
         /// Set the last modified time of the document.
-        void setLastModifiedTime(std::chrono::system_clock::time_point time)
-        {
-            _request.setModifiedTime(time);
-        }
+        void setLastModifiedTime(const std::string& time) { _lastModifiedTime = time; }
 
         /// Returns the last modified time of the document.
-        std::chrono::system_clock::time_point getLastModifiedTime() const
+        const std::string& getLastModifiedTime() const { return _lastModifiedTime; }
+
+        /// Returns how long the last upload took.
+        std::chrono::milliseconds lastUploadDuration() const
         {
-            return _request.getModifiedTime();
+            return _request.lastRequestDuration();
+        }
+
+        /// Returns the minimum time between uploads.
+        std::chrono::milliseconds minTimeBetweenUploads() const
+        {
+            return _request.minTimeBetweenRequests();
+        }
+
+        /// True if we aren't uploading and the minimum time since last upload has elapsed.
+        bool canUploadNow(bool unloading) const { return _request.canRequestNow(unloading); }
+
+        void dumpState(std::ostream& os, const std::string& indent = "\n  ") const
+        {
+            const auto now = std::chrono::steady_clock::now();
+            os << indent << "isUploading now: " << std::boolalpha << isUploading();
+            os << indent << "last upload request time: "
+               << Util::getTimeForLog(now, _request.lastRequestTime());
+            os << indent << "last upload response time: "
+               << Util::getTimeForLog(now, _request.lastResponseTime());
+            os << indent << "last upload duration: " << lastUploadDuration();
+            os << indent << "min time between uploads: " << minTimeBetweenUploads();
+            os << indent << "last modified time (on server): " << getLastModifiedTime();
+            os << indent
+               << "file last modified: " << Util::getTimeForLog(now, _lastUploadedFileModifiedTime);
+            os << indent << "last upload was successful: " << std::boolalpha
+               << lastUploadSuccessful();
+            os << indent << "upload failure count: " << uploadFailureCount();
         }
 
     private:
         /// Request tracking logic.
         RequestManager _request;
 
-        /// The last time we tried uploading, regardless of whether the
-        /// document was modified and a newer version saved
-        /// and uploaded or not. In effect, this tracks the time we
-        /// synchronized with Storage (i.e. the last time we either uploaded
-        /// or had nothing new to upload). It is redundant as it is
-        /// equivalent to the larger of 'Last Save Response Time' and
-        /// 'Last Storage Response Time', and should be removed.
-        std::chrono::steady_clock::time_point _lastUploadTime;
-
         /// The modified-timestamp of the local file on disk we uploaded last.
         std::chrono::system_clock::time_point _lastUploadedFileModifiedTime;
+
+        /// The modified time of the document in storage, as reported by the server.
+        std::string _lastModifiedTime;
     };
 
 protected:
@@ -909,79 +1241,40 @@ private:
 
     /// The state of the document.
     /// This regulates all other primary operations.
-    class DocumentState
+    class DocumentState final
     {
     public:
         /// Strictly speaking, these are phases that are directional.
         /// A document starts as New and progresses towards Unloaded.
         /// Upon error, intermediary states may be skipped.
-        enum class Status
-        {
-            None, //< Doesn't exist, pending downloading.
-            Downloading, //< Download from Storage to disk. Synchronous.
-            Loading, //< Loading the document in Core.
-            Live, //< General availability for viewing/editing.
-            Destroying, //< End-of-life, marked to destroy.
-            Destroyed //< Unloading complete, destruction pending.
-        };
+        STATE_ENUM(Status,
+                   None, //< Doesn't exist, pending downloading.
+                   Downloading, //< Download from Storage to disk. Synchronous.
+                   Loading, //< Loading the document in Core.
+                   Live, //< General availability for viewing/editing.
+                   Destroying, //< End-of-life, marked to destroy.
+                   Destroyed //< Unloading complete, destruction pending.
+        );
 
         /// The current activity taking place.
         /// Meaningful only when Status is Status::Live, but
         /// we may Save and Upload during Status::Destroying.
-        enum class Activity
-        {
-            None, //< No particular activity.
-            Rename, //< The document is being renamed.
-            SaveAs, //< The document format is being converted.
-            Conflict, //< The document is conflicted in storaged.
-            Save, //< The document is being saved, manually or auto-save.
-            Upload, //< The document is being uploaded to storage.
-        };
-
-        static std::string toString(Status status)
-        {
-#define CASE(X)                                                                                    \
-    case X:                                                                                        \
-        return #X;
-            switch (status)
-            {
-                CASE(Status::None);
-                CASE(Status::Downloading);
-                CASE(Status::Loading);
-                CASE(Status::Live);
-                CASE(Status::Destroying);
-                CASE(Status::Destroyed);
-            }
-
-#undef CASE
-            return "Unknown Document Status";
-        }
-
-        static std::string toString(Activity activity)
-        {
-#define CASE(X)                                                                                    \
-    case X:                                                                                        \
-        return #X;
-            switch (activity)
-            {
-                CASE(Activity::None);
-                CASE(Activity::Rename);
-                CASE(Activity::SaveAs);
-                CASE(Activity::Conflict);
-                CASE(Activity::Save);
-                CASE(Activity::Upload);
-            }
-
-#undef CASE
-            return "Unknown Document Activity";
-        }
+        STATE_ENUM(Activity,
+                   None, //< No particular activity.
+                   Rename, //< The document is being renamed.
+                   SaveAs, //< The document format is being converted.
+                   Conflict, //< The document is conflicted in storaged.
+                   Save, //< The document is being saved, manually or auto-save.
+                   Upload, //< The document is being uploaded to storage.
+        );
 
         DocumentState()
             : _status(Status::None)
             , _activity(Activity::None)
-            , _closeRequested(false)
             , _loaded(false)
+            , _closeRequested(false)
             , _unloadRequested(false)
+            , _disconnected(false)
             , _interactive(false)
         {
         }
@@ -1030,17 +1323,32 @@ private:
         void setInteractive(bool value) { _interactive = value; }
         bool isInteractive() const { return _interactive; }
 
-        /// Flag to unload the document. May be reset when a new view is opened.
+        /// Flag to unload the document. Irreversible.
         void setUnloadRequested() { _unloadRequested = true; }
-        void resetUnloadRequested() { _unloadRequested = false; }
         bool isUnloadRequested() const { return _unloadRequested; }
+
+        /// Flag that we are disconnected from the Kit. Irreversible.
+        void setDisconnected() { _disconnected = true; }
+        bool isDisconnected() const { return _disconnected; }
+
+        void dumpState(std::ostream& os, const std::string& indent = "\n  ") const
+        {
+            os << indent << "doc state: " << toString(status());
+            os << indent << "doc activity: " << toString(activity());
+            os << indent << "doc loaded: " << _loaded;
+            os << indent << "interactive: " << _interactive;
+            os << indent << "close requested: " << _closeRequested;
+            os << indent << "unload requested: " << _unloadRequested;
+            os << indent << "disconnected from kit: " << _disconnected;
+        }
 
     private:
         Status _status;
         Activity _activity;
-        std::atomic<bool> _closeRequested; //< Owner-Termination flag.
         std::atomic<bool> _loaded; //< If the document ever loaded (check isLive to see if it still is).
+        std::atomic<bool> _closeRequested; //< Owner-Termination flag.
         std::atomic<bool> _unloadRequested; //< Unload-Requested flag, which may be reset.
+        std::atomic<bool> _disconnected; //< Disconnected from the Kit. Implies unloading.
         bool _interactive; //< If the document has interactive dialogs before load
     };
 
@@ -1074,12 +1382,19 @@ private:
         _docState.setActivity(DocumentState::Activity::None);
     }
 
+    /// Performs aggregated work after servicing all client sessions
+    void processBatchUpdates();
+
     /// The main state of the document.
     DocumentState _docState;
 
     /// Set to true when document changed in storage and we are waiting
     /// for user's command to act.
     bool _documentChangedInStorage;
+
+    /// True for file that COOLWSD::IsViewFileExtension return true.
+    /// These files, such as PDF, don't have a reliable ModifiedStatus.
+    bool _isViewFileExtension;
 
     /// Manage saving in Core.
     SaveManager _saveManager;
@@ -1098,6 +1413,20 @@ private:
     std::set<std::string> _isInitialStateSet;
 
     std::unique_ptr<StorageBase> _storage;
+
+    /// The next upload request's attributes, used during uno:Save only.
+    /// Updated right before saving and when saving is completed.
+    StorageBase::Attributes _nextStorageAttrs;
+    /// The current upload request's attributes.
+    /// Updated after saving and merged with 'last' when upload fails.
+    StorageBase::Attributes _currentStorageAttrs;
+    /// The last upload request's attributes. Re-used to retry after failure.
+    /// Updated right before uploading.
+    StorageBase::Attributes _lastStorageAttrs;
+
+    /// The Quarantine manager.
+    std::unique_ptr<Quarantine> _quarantine;
+
     std::unique_ptr<TileCache> _tileCache;
     std::atomic<bool> _isModified;
     int _cursorPosX;
@@ -1119,7 +1448,14 @@ private:
 
     int _debugRenderedTileCount;
 
+    std::chrono::steady_clock::time_point _lastNotifiedActivityTime;
+
+    /// Time of the last interactive event received.
     std::chrono::steady_clock::time_point _lastActivityTime;
+
+    /// Time of the last interactive event that very likely modified the document.
+    std::chrono::steady_clock::time_point _lastModifyActivityTime;
+
     std::chrono::steady_clock::time_point _threadStart;
     std::chrono::milliseconds _loadDuration;
     std::chrono::milliseconds _wopiDownloadDuration;
@@ -1132,6 +1468,18 @@ private:
 
     // Maps download id -> URL
     std::map<std::string, std::string> _registeredDownloadLinks;
+
+    /// Embedded media map [id, json].
+    std::map<std::string, std::string> _embeddedMedia;
+
+    /// True iff the config per_document.always_save_on_exit is true.
+    const bool _alwaysSaveOnExit;
+
+    // Last member.
+    /// The UnitWSD instance. We capture it here since
+    /// this is our instance, but the test framework
+    /// has a single global instance via UnitWSD::get().
+    UnitWSD* const _unitWsd;
 };
 
 #if !MOBILEAPP
@@ -1154,10 +1502,11 @@ public:
     static void removeFile(const std::string &uri);
 };
 
-class ConvertToBroker final : public StatelessBatchBroker
+class ConvertToBroker : public StatelessBatchBroker
 {
     const std::string _format;
     const std::string _sOptions;
+    const std::string _lang;
 
 public:
     /// Construct DocumentBroker with URI and docKey
@@ -1165,8 +1514,12 @@ public:
                     const Poco::URI& uriPublic,
                     const std::string& docKey,
                     const std::string& format,
-                    const std::string& sOptions);
+                    const std::string& sOptions,
+                    const std::string& lang);
     virtual ~ConvertToBroker();
+
+    /// _lang accessors
+    const std::string& getLang() { return _lang; }
 
     /// Move socket to this broker for response & do conversion
     bool startConversion(SocketDisposition &disposition, const std::string &id);
@@ -1180,8 +1533,52 @@ public:
     /// How many live conversions are running.
     static std::size_t getInstanceCount();
 
-private:
+protected:
     bool isConvertTo() const override { return true; }
+
+    virtual bool isGetThumbnail() const { return false; }
+
+    virtual void sendStartMessage(const std::shared_ptr<ClientSession>& clientSession,
+                                  const std::string& encodedFrom);
+};
+
+class ExtractLinkTargetsBroker final : public ConvertToBroker
+{
+public:
+    /// Construct DocumentBroker with URI and docKey
+    ExtractLinkTargetsBroker(const std::string& uri,
+                    const Poco::URI& uriPublic,
+                    const std::string& docKey,
+                    const std::string& lang)
+                    : ConvertToBroker(uri, uriPublic, docKey, "", "", lang)
+                    {}
+
+private:
+    void sendStartMessage(const std::shared_ptr<ClientSession>& clientSession,
+                          const std::string& encodedFrom) override;
+};
+
+class GetThumbnailBroker final : public ConvertToBroker
+{
+    std::string _target;
+
+public:
+    /// Construct DocumentBroker with URI and docKey
+    GetThumbnailBroker(const std::string& uri,
+                    const Poco::URI& uriPublic,
+                    const std::string& docKey,
+                    const std::string& lang,
+                    const std::string& target)
+                    : ConvertToBroker(uri, uriPublic, docKey, std::string(), std::string(), lang)
+                    , _target(target)
+                    {}
+
+protected:
+    bool isGetThumbnail() const override { return true; }
+
+private:
+    void sendStartMessage(const std::shared_ptr<ClientSession>& clientSession,
+                          const std::string& encodedFrom) override;
 };
 
 class RenderSearchResultBroker final : public StatelessBatchBroker
@@ -1213,7 +1610,7 @@ public:
     void dispose() override;
 
     /// Override to filter out the data that is returned by a command
-    bool handleInput(const std::vector<char>& payload) override;
+    bool handleInput(const std::shared_ptr<Message>& message) override;
 
     /// How many instances are running.
     static std::size_t getInstanceCount();

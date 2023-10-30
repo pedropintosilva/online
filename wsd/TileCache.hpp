@@ -12,9 +12,12 @@
 #include <string>
 #include <thread>
 #include <unordered_map>
+#include <unordered_set>
 
 #include <Rectangle.hpp>
 
+#include "Log.hpp"
+#include "Common.hpp"
 #include "TileDesc.hpp"
 
 class ClientSession;
@@ -31,7 +34,8 @@ struct TileDescCacheCompareEq final
                l.getTilePosY() == r.getTilePosY() &&
                l.getTileWidth() == r.getTileWidth() &&
                l.getTileHeight() == r.getTileHeight() &&
-               l.getNormalizedViewId() == r.getNormalizedViewId();
+               l.getNormalizedViewId() == r.getNormalizedViewId() &&
+               l.getEditMode() == r.getEditMode();
     }
 };
 
@@ -42,6 +46,7 @@ struct TileDescCacheHasher final
     {
         size_t hash = t.getPart();
 
+        hash = (hash << 5) + hash + t.getEditMode();
         hash = (hash << 5) + hash + t.getWidth();
         hash = (hash << 5) + hash + t.getHeight();
         hash = (hash << 5) + hash + t.getTilePosX();
@@ -54,6 +59,147 @@ struct TileDescCacheHasher final
     }
 };
 
+struct TileData
+{
+    TileData(TileWireId start, const char *data, const size_t size)
+    {
+        appendBlob(start, data, size);
+    }
+
+    // Add a frame or delta and - return the size change
+    ssize_t appendBlob(TileWireId id, const char *data, const size_t dataSize)
+    {
+        size_t oldCacheSize = size();
+
+        assert (dataSize >= 1); // kit provides us a 'Z' or a 'D' or a png
+        if (isKeyframe(data, dataSize))
+        {
+            LOG_TRC("received key-frame - clearing tile");
+            _wids.clear();
+            _offsets.clear();
+            _deltas.clear();
+        }
+        else
+        {
+            LOG_TRC("received delta of size " << dataSize << " - appending to existing " << _wids.size());
+            // Issues #5532 and #5831 Replace assert with a log message
+            // Remove assert and allow delta messages to be handled even if
+            // there is no keyframe. Although it might make sense to skip
+            // delta messages if there is no keyframe, that causes some
+            // content, at least in Impress documents, to not render.
+            if (!_wids.size())
+                LOG_DBG("no underlying keyframe!");
+        }
+
+        size_t oldSize = size();
+
+        // If we have an empty delta at the end - then just
+        // bump the associated wid. There is no risk to sending
+        // an empty delta twice.x
+        if (dataSize == 1 && // just a 'D'
+            _offsets.size() > 1 &&
+            _offsets.back() == _deltas.size())
+        {
+            LOG_TRC("received empty delta - bumping wid from " << _wids.back() << " to " << id);
+            _wids.back() = id;
+        }
+        else
+        {
+            // FIXME: too many/large deltas means we should reset -
+            // but not here - when requesting the tiles.
+            _wids.push_back(id);
+            _offsets.push_back(_deltas.size());
+            if (dataSize > 1)
+            {
+                _deltas.resize(oldSize + dataSize - 1);
+                std::memcpy(_deltas.data() + oldSize, data + 1, dataSize - 1);
+            }
+        }
+
+        // FIXME: possible race - should store a seq. from the invalidation(s) ?
+        _valid = true;
+
+        return size() - oldCacheSize;
+    }
+
+    bool isPng() const { return (_deltas.size() > 1 &&
+                                 _deltas[0] == (char)0x89); }
+
+    static bool isKeyframe(const char *data, size_t dataSize)
+    {
+        // keyframe or png
+        return dataSize > 0 && (data[0] == 'Z' || data[0] == (char)0x89);
+    }
+
+    bool isValid() const { return _valid; }
+    void invalidate() { _valid = false; }
+
+    bool _valid; // not true - waiting for a new tile if in view.
+    std::vector<TileWireId> _wids;
+    std::vector<size_t> _offsets; // offset of the start of data
+    BlobData _deltas; // first item is a key-frame, followed by deltas at _offsets
+
+    size_t size()
+    {
+        return _deltas.size();
+    }
+
+    const BlobData &data()
+    {
+        return _deltas;
+    }
+
+    /// if we send changes since this seq - do we need to first send the keyframe ?
+    bool needsKeyframe(TileWireId since)
+    {
+        return since < _wids[0];
+    }
+
+    bool appendChangesSince(std::vector<char> &output, TileWireId since)
+    {
+        size_t i;
+        for (i = 0; since != 0 && i < _wids.size() && _wids[i] <= since; ++i);
+
+        if (i >= _wids.size())
+        {
+            // We don't throttle delta sending - yet the code thinks we do still.
+            // We just send all the deltas we have on top of the keyframe.
+            // LOG_WRN("odd outcome - requested for a later id " << since <<
+            //        " than the last known: " << ((_wids.size() > 0) ? _wids.back() : -1));
+            return false;
+        }
+        else
+        {
+            size_t offset = _offsets[i];
+            if (i != _offsets.size() - 1)
+                LOG_TRC("appending from " << i << " to " << (_offsets.size() - 1) <<
+                        " from wid: " << _wids[i] << " to wid: " << since <<
+                        " from offset: " << offset << " to " << _deltas.size());
+
+            size_t extra = _deltas.size() - offset;
+            size_t dest = output.size();
+            output.resize(output.size() + extra);
+
+            std::memcpy(output.data() + dest, _deltas.data() + offset, extra);
+            return true;
+        }
+    }
+
+    void dumpState(std::ostream& os)
+    {
+        if (_wids.size() < 2)
+            os << "keyframe";
+        else {
+            os << "deltas: ";
+            for (size_t i = 0; i < _wids.size(); ++i)
+            {
+                os << i << ": " << _wids[i] << " -> " << _offsets[i] << " ";
+            }
+        }
+    }
+};
+using Tile = std::shared_ptr<TileData>;
+
 /// Handles the caching of tiles of one document.
 class TileCache
 {
@@ -62,8 +208,6 @@ class TileCache
     std::shared_ptr<TileBeingRendered> findTileBeingRendered(const TileDesc& tile);
 
 public:
-    using Tile = std::shared_ptr<std::vector<char>>;
-
     /// When the docURL is a non-file:// url, the timestamp has to be provided by the caller.
     /// For file:// url's, it's ignored.
     /// When it is missing for non-file:// url, it is assumed the document must be read, and no cached value used.
@@ -81,11 +225,6 @@ public:
     /// Otherwise returns 0 to signify a subscription exists.
     void subscribeToTileRendering(const TileDesc& tile, const std::shared_ptr<ClientSession>& subscriber,
                                   const std::chrono::steady_clock::time_point& now);
-
-    /// Create the TileBeingRendered object for the given tile indicating that the tile was sent to
-    /// the kit for rendering. Note: subscribeToTileRendering calls this internally, so you don't need
-    /// to call this method if you need also to subscribe for the rendered tile.
-    void registerTileBeingRendered(const TileDesc& tile);
 
     /// Cancels all tile requests by the given subscriber.
     std::string cancelTiles(const std::shared_ptr<ClientSession>& subscriber);
@@ -108,21 +247,23 @@ public:
     bool getTextStream(StreamType type, const std::string& fileName, std::string& content);
 
     // Save some text into a file in the cache directory
-    void saveTextStream(StreamType type, const std::string& text, const std::string& fileName);
+    void saveTextStream(StreamType type, const std::string& fileName, const std::vector<char>& data);
 
     // Saves a font / style / etc rendering
     void saveStream(StreamType type, const std::string& name, const char* data, size_t size);
 
-    /// Return the tile data if we have it, or nothing.
-    Tile lookupCachedStream(StreamType type, const std::string& name);
+    /// Return the data if we have it, or nothing.
+    Blob lookupCachedStream(StreamType type, const std::string& name);
 
     // The tiles parameter is an invalidatetiles: message as sent by the child process
     void invalidateTiles(const std::string& tiles, int normalizedViewId);
 
-    /// Parse invalidateTiles message to a part number and a rectangle of the invalidated area
-    static std::pair<int, Util::Rectangle> parseInvalidateMsg(const std::string& tiles);
+    /// Parse invalidateTiles message to rectangle and associated attributes of the invalidated area
+    static Util::Rectangle parseInvalidateMsg(const std::string& tiles, int &part, int &mode, TileWireId &wid);
 
-    void forgetTileBeingRendered(const std::shared_ptr<TileCache::TileBeingRendered>& tileBeingRendered);
+    /// Forget the tile being rendered if it is the latest version we expect.
+    void forgetTileBeingRendered(const TileDesc& descForKitReply,
+                                 const std::shared_ptr<TileCache::TileBeingRendered>& tileBeingRendered);
 
     size_t countTilesBeingRenderedForSession(const std::shared_ptr<ClientSession>& session,
                                              const std::chrono::steady_clock::time_point& now);
@@ -138,32 +279,28 @@ public:
 
     // Debugging bits ...
     void dumpState(std::ostream& os);
-    void setThreadOwner(const std::thread::id &id) { _owner = id; }
-    void assertCorrectThread();
+    void setThreadOwner(const std::thread::id& id) { _owner = id; }
     void assertCacheSize();
 
 private:
     void ensureCacheSize();
     static size_t itemCacheSize(const Tile &tile);
 
-    void invalidateTiles(int part, int x, int y, int width, int height, int normalizedViewId);
+    void invalidateTiles(int part, int mode, int x, int y, int width, int height, int normalizedViewId);
 
     /// Lookup tile in our cache.
-    TileCache::Tile findTile(const TileDesc &desc);
-
-    /// Lookup tile in our stream cache.
-    TileCache::Tile findStreamTile(StreamType type, const std::string &fileName);
-
-    /// Removes the named stream from the cache
-    void removeStream(StreamType type, const std::string& fileName);
+    Tile findTile(const TileDesc &desc);
 
     static std::string cacheFileName(const TileDesc& tileDesc);
-    static bool parseCacheFileName(const std::string& fileName, int& part, int& width, int& height, int& tilePosX, int& tilePosY, int& tileWidth, int& tileHeight, int& nviewid);
+    static bool parseCacheFileName(const std::string& fileName, int& part, int& mode,
+                                   int& width, int& height, int& tilePosX, int& tilePosY,
+                                   int& tileWidth, int& tileHeight, int& nviewid);
 
     /// Extract location from fileName, and check if it intersects with [x, y, width, height].
-    static bool intersectsTile(const TileDesc &tileDesc, int part, int x, int y, int width, int height, int normalizedViewId);
+    static bool intersectsTile(const TileDesc &tileDesc, int part, int mode, int x, int y,
+                               int width, int height, int normalizedViewId);
 
-    void saveDataToCache(const TileDesc& desc, const char* data, size_t size);
+    Tile saveDataToCache(const TileDesc& desc, const char* data, size_t size);
     void saveDataToStreamCache(StreamType type, const std::string& fileName, const char* data,
                                size_t size);
 
@@ -189,7 +326,64 @@ private:
                        TileDescCacheCompareEq> _tilesBeingRendered;
 
     // old-style file-name to data grab-bag.
-    std::map<std::string, Tile> _streamCache[static_cast<int>(StreamType::Last)];
+    std::map<std::string, Blob> _streamCache[static_cast<int>(StreamType::Last)];
 };
+
+/// Tracks view-port area tiles to track which we last
+/// sent to avoid re-sending an existing delta causing grief
+class ClientDeltaTracker final {
+public:
+    // FIXME: could be a simple 2d TileWireId array for better packing.
+    std::unordered_set<TileDesc,
+                       TileDescCacheHasher,
+                       TileDescCacheCompareEq> _cache;
+    ClientDeltaTracker() {
+    }
+
+    // FIXME: only need to store this for the current viewports
+    void updateViewPort( /* ... */ )
+    {
+        // copy the set to another while filtering I guess.
+    }
+
+    /// return wire-id of last tile sent - or 0 if not present
+    /// update last-tile sent wire-id to curSeq if found.
+    TileWireId updateTileSeq(const TileDesc &desc)
+    {
+        auto it = _cache.find(desc);
+        if (it == _cache.end())
+        {
+            _cache.insert(desc);
+            return 0;
+        }
+        const TileWireId curSeq = desc.getWireId();
+        TileWireId last = it->getWireId();
+        // id is not included in the hash.
+        auto pDesc = const_cast<TileDesc *>(&(*it));
+        pDesc->setWireId(curSeq);
+        return last;
+    }
+
+    void resetTileSeq(const TileDesc &desc)
+    {
+        auto it = _cache.find(desc);
+        if (it == _cache.end())
+            return;
+        // id is not included in the hash.
+        auto pDesc = const_cast<TileDesc *>(&(*it));
+        pDesc->setWireId(0);
+    }
+};
+
+inline std::ostream& operator<< (std::ostream& os, const Tile& tile)
+{
+    if (!tile)
+        os << "nullptr";
+    else
+        os << "keyframe id " << tile->_wids[0] <<
+            " size: " << tile->_deltas.size() <<
+            " deltas: " << (tile->_wids.size() - 1);
+    return os;
+}
 
 /* vim:set shiftwidth=4 softtabstop=4 expandtab: */

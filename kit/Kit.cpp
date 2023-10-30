@@ -10,8 +10,10 @@
  */
 
 #include <config.h>
+#include <config_version.h>
 
 #include <dlfcn.h>
+#include <limits>
 #ifdef __linux__
 #include <ftw.h>
 #include <sys/vfs.h>
@@ -20,7 +22,6 @@
 #include <sys/sysmacros.h>
 #endif
 #ifdef __FreeBSD__
-#include <sys/capsicum.h>
 #include <ftw.h>
 #define FTW_CONTINUE 0
 #define FTW_STOP (-1)
@@ -45,6 +46,7 @@
 #include <string>
 #include <sstream>
 #include <thread>
+#include <mutex>
 
 #define LOK_USE_UNSTABLE_API
 #include <LibreOfficeKit/LibreOfficeKitInit.h>
@@ -68,7 +70,6 @@
 #include <Log.hpp>
 #include <Png.hpp>
 #include <Rectangle.hpp>
-#include <TileDesc.hpp>
 #include <Unit.hpp>
 #include <UserMessages.hpp>
 #include <Util.hpp>
@@ -84,11 +85,6 @@
 #include <utility>
 #endif
 
-#ifdef FUZZER
-#include <kit/DummyLibreOfficeKit.hpp>
-#include <wsd/COOLWSD.hpp>
-#endif
-
 #if MOBILEAPP
 #include "COOLWSD.hpp"
 #endif
@@ -102,7 +98,6 @@
 
 using Poco::Exception;
 using Poco::File;
-using Poco::JSON::Array;
 using Poco::JSON::Object;
 using Poco::JSON::Parser;
 using Poco::URI;
@@ -120,6 +115,8 @@ extern "C" { void dump_kit_state(void); /* easy for gdb */ }
 class Document;
 static Document *singletonDocument = nullptr;
 #endif
+
+_LibreOfficeKit* loKitPtr = nullptr;
 
 /// Used for test code to accelerating waiting until idle and to
 /// flush sockets with a 'processtoidle' -> 'idle' reply.
@@ -149,6 +146,8 @@ static std::string JailRoot;
 static void flushTraceEventRecordings();
 #endif
 
+
+
 // Abnormally we get LOK events from another thread, which must be
 // push safely into our main poll loop to process to keep all
 // socket buffer & event processing in a single, thread.
@@ -160,6 +159,36 @@ static LokHookFunction2* initFunction = nullptr;
 
 namespace
 {
+    // for later consistency checking.
+    static std::string UserDirPath;
+    static std::string InstDirPath;
+
+    std::string pathFromFileURL(const std::string &uri)
+    {
+        std::string decoded;
+        Poco::URI::decode(uri, decoded);
+        if (decoded.rfind("file://", 0) != 0)
+        {
+            LOG_ERR("Asked to load a very unusual file path: '" << uri << "' -> '" << decoded << "'");
+            return std::string();
+        }
+        return decoded.substr(7);
+    }
+
+    void consistencyCheckFileExists(const std::string &uri)
+    {
+        std::string path = pathFromFileURL(uri);
+        if (path.empty())
+            return;
+        FileUtil::Stat stat(path);
+        if (!stat.good() && stat.isFile())
+            LOG_ERR("Fatal system error: created file passed into document doesn't exist: '" << path << "'");
+        else
+            LOG_TRC("File path '" << path << "' exists of length " << stat.size());
+
+        consistencyCheckJail();
+    }
+
 #ifndef BUILDING_TESTS
     enum class LinkOrCopyType
     {
@@ -168,7 +197,7 @@ namespace
     };
     LinkOrCopyType linkOrCopyType;
     std::string sourceForLinkOrCopy;
-    Path destinationForLinkOrCopy;
+    Poco::Path destinationForLinkOrCopy;
     bool forceInitialCopy; // some stackable file-systems have very slow first hard link creation
     std::string linkableForLinkOrCopy; // Place to stash copies that we can hard-link from
     std::chrono::time_point<std::chrono::steady_clock> linkOrCopyStartTime;
@@ -323,7 +352,7 @@ namespace
             if (errno == ENOENT)
             {
                 File(Path(linkableCopy).parent()).createDirectories();
-                if (!FileUtil::copy(fpath, linkableCopy.c_str(), /*log=*/false, /*throw_on_error=*/false))
+                if (!FileUtil::copy(fpath, linkableCopy, /*log=*/false, /*throw_on_error=*/false))
                     LOG_TRC("Failed to create linkable copy [" << fpath << "] to [" << linkableCopy.c_str() << "]");
                 else {
                     // Match system permissions, so a file we can write is not shared across jails.
@@ -356,8 +385,7 @@ namespace
         if (!FileUtil::copy(fpath, newPath.c_str(), /*log=*/false, /*throw_on_error=*/false))
         {
             LOG_FTL("Failed to copy or link [" << fpath << "] to [" << newPath << "]. Exiting.");
-            Log::shutdown();
-            std::_Exit(EX_SOFTWARE);
+            Util::forcedExit(EX_SOFTWARE);
         }
     }
 
@@ -387,13 +415,13 @@ namespace
 
         assert(fpath[strlen(sourceForLinkOrCopy.c_str())] == '/');
         const char *relativeOldPath = fpath + strlen(sourceForLinkOrCopy.c_str()) + 1;
-        const Path newPath(destinationForLinkOrCopy, Path(relativeOldPath));
+        const Poco::Path newPath(destinationForLinkOrCopy, Poco::Path(relativeOldPath));
 
         switch (typeflag)
         {
         case FTW_F:
         case FTW_SLN:
-            File(newPath.parent()).createDirectories();
+            Poco::File(newPath.parent()).createDirectories();
 
             if (shouldLinkFile(relativeOldPath))
                 linkOrCopyFile(fpath, newPath.toString());
@@ -411,7 +439,8 @@ namespace
                     LOG_TRC("nftw: Skipping redundant path: " << relativeOldPath);
                     return FTW_SKIP_SUBTREE;
                 }
-                File(newPath).createDirectories();
+
+                Poco::File(newPath).createDirectories();
                 struct utimbuf ut;
                 ut.actime = st.st_atime;
                 ut.modtime = st.st_mtime;
@@ -425,20 +454,20 @@ namespace
         case FTW_SL:
             {
                 const std::size_t size = sb->st_size;
-                char target[size + 1];
-                const ssize_t written = readlink(fpath, target, size);
+                std::vector<char> target(size + 1);
+                char* target_data = target.data();
+                const ssize_t written = readlink(fpath, target_data, size);
                 if (written <= 0 || static_cast<std::size_t>(written) > size)
                 {
                     LOG_SYS("nftw: readlink(\"" << fpath << "\") failed");
-                    Log::shutdown();
-                    std::_Exit(EX_SOFTWARE);
+                    Util::forcedExit(EX_SOFTWARE);
                 }
-                target[written] = '\0';
+                target_data[written] = '\0';
 
-                File(newPath.parent()).createDirectories();
-                if (symlink(target, newPath.toString().c_str()) == -1)
+                Poco::File(newPath.parent()).createDirectories();
+                if (symlink(target_data, newPath.toString().c_str()) == -1)
                 {
-                    LOG_SYS("nftw: symlink(\"" << target << "\", \"" << newPath.toString()
+                    LOG_SYS("nftw: symlink(\"" << target_data << "\", \"" << newPath.toString()
                                                << "\") failed");
                     return FTW_STOP;
                 }
@@ -459,9 +488,7 @@ namespace
         return FTW_CONTINUE;
     }
 
-    void linkOrCopy(std::string source,
-                    const Path& destination,
-                    std::string linkable,
+    void linkOrCopy(std::string source, const Poco::Path& destination, const std::string& linkable,
                     LinkOrCopyType type)
     {
         std::string resolved = FileUtil::realpath(source);
@@ -487,7 +514,7 @@ namespace
 
         if (nftw(source.c_str(), linkOrCopyFunction, 10, FTW_ACTIONRETVAL|FTW_PHYS) == -1)
         {
-            LOG_SYS("linkOrCopy: nftw() failed for '" << source << '\'');
+            LOG_ERR("linkOrCopy: nftw() failed for '" << source << '\'');
         }
 
         if (linkOrCopyVerboseLogging)
@@ -504,6 +531,104 @@ namespace
         }
     }
 
+#if CODE_COVERAGE
+    std::string childRootForGCDAFiles;
+    std::string sourceForGCDAFiles;
+    std::string destForGCDAFiles;
+
+    int linkGCDAFilesFunction(const char* fpath, const struct stat*, int typeflag,
+                              struct FTW* /*ftwbuf*/)
+    {
+        if (strcmp(fpath, sourceForGCDAFiles.c_str()) == 0)
+        {
+            LOG_TRC("nftw: Skipping redundant path: " << fpath);
+            return FTW_CONTINUE;
+        }
+
+        if (Util::startsWith(fpath, childRootForGCDAFiles))
+        {
+            LOG_TRC("nftw: Skipping childRoot subtree: " << fpath);
+            return FTW_SKIP_SUBTREE;
+        }
+
+        assert(fpath[strlen(sourceForGCDAFiles.c_str())] == '/');
+        const char* relativeOldPath = fpath + strlen(sourceForGCDAFiles.c_str()) + 1;
+        const Poco::Path newPath(destForGCDAFiles, Poco::Path(relativeOldPath));
+
+        switch (typeflag)
+        {
+            case FTW_F:
+            case FTW_SLN:
+            {
+                const char* dot = strrchr(relativeOldPath, '.');
+                if (dot && !strcmp(dot, ".gcda"))
+                {
+                    Poco::File(newPath.parent()).createDirectories();
+                    if (link(fpath, newPath.toString().c_str()) != 0)
+                    {
+                        LOG_SYS("nftw: Failed to link [" << fpath << "] -> [" << newPath.toString()
+                                                         << ']');
+                    }
+                }
+            }
+            break;
+            case FTW_D:
+            case FTW_SL:
+                break;
+            case FTW_DNR:
+                LOG_ERR("nftw: Cannot read directory '" << fpath << '\'');
+                break;
+            case FTW_NS:
+                LOG_ERR("nftw: stat failed for '" << fpath << '\'');
+                break;
+            default:
+                LOG_FTL("nftw: unexpected typeflag: '" << typeflag);
+                assert(!"nftw: unexpected typeflag.");
+                break;
+        }
+
+        return FTW_CONTINUE;
+    }
+
+    /// Link .gcda (gcov) files from the src directory into the jail.
+    /// We need this so we can easily extract the profile data from within
+    /// the jail. Otherwise, we lose coverage info of the kit process.
+    void linkGCDAFiles(const std::string& destPath)
+    {
+        Poco::Path sourcePathInJail(destPath);
+        const auto sourcePath = std::string(DEBUG_ABSSRCDIR);
+        sourcePathInJail.append(sourcePath);
+        Poco::File(sourcePathInJail).createDirectories();
+        LOG_INF("Linking .gcda files from " << sourcePath << " -> " << sourcePathInJail.toString());
+
+        const auto childRootPtr = std::getenv("BASE_CHILD_ROOT");
+        if (childRootPtr == nullptr || strlen(childRootPtr) == 0)
+        {
+            LOG_ERR("Cannot collect code-coverage stats for the Kit processes. BASE_CHILD_ROOT "
+                    "envar missing.");
+            return;
+        }
+
+        // Trim the trailing /.
+        const std::string childRoot = childRootPtr;
+        const size_t last = childRoot.find_last_not_of('/');
+        if (last != std::string::npos)
+            childRootForGCDAFiles = childRoot.substr(0, last + 1);
+        else
+            childRootForGCDAFiles = childRoot;
+
+        sourceForGCDAFiles = sourcePath;
+        destForGCDAFiles = sourcePathInJail.toString() + '/';
+        LOG_INF("nftw .gcda files from " << sourceForGCDAFiles << " -> " << destForGCDAFiles << " ("
+                                         << childRootForGCDAFiles << ')');
+
+        if (nftw(sourcePath.c_str(), linkGCDAFilesFunction, 10, FTW_ACTIONRETVAL | FTW_PHYS) == -1)
+        {
+            LOG_ERR("linkGCDAFiles: nftw() failed for '" << sourcePath << '\'');
+        }
+    }
+#endif
+
 #ifndef __FreeBSD__
     void dropCapability(cap_value_t capability)
     {
@@ -514,8 +639,7 @@ namespace
         if (caps == nullptr)
         {
             LOG_SFL("cap_get_proc() failed");
-            Log::shutdown();
-            std::_Exit(1);
+            Util::forcedExit(EX_SOFTWARE);
         }
 
         char *capText = cap_to_text(caps, nullptr);
@@ -526,15 +650,13 @@ namespace
             cap_set_flag(caps, CAP_PERMITTED, sizeof(cap_list)/sizeof(cap_list[0]), cap_list, CAP_CLEAR) == -1)
         {
             LOG_SFL("cap_set_flag() failed");
-            Log::shutdown();
-            std::_Exit(1);
+            Util::forcedExit(EX_SOFTWARE);
         }
 
         if (cap_set_proc(caps) == -1)
         {
             LOG_SFL("cap_set_proc() failed");
-            Log::shutdown();
-            std::_Exit(1);
+            Util::forcedExit(EX_SOFTWARE);
         }
 
         capText = cap_to_text(caps, nullptr);
@@ -544,10 +666,10 @@ namespace
         cap_free(caps);
     }
 #endif // __FreeBSD__
-#endif
-}
+#endif // BUILDING_TESTS
+} // namespace
 
-#endif
+#endif // !MOBILEAPP
 
 /// A document container.
 /// Owns LOKitDocument instance and connections.
@@ -558,12 +680,6 @@ namespace
 /// per user or group of users (a trusted circle).
 class Document final : public DocumentManagerInterface
 {
-public:
-    /// We have two types of password protected documents
-    /// 1) Documents which require password to view
-    /// 2) Document which require password to modify
-    enum class PasswordType { ToView, ToModify };
-
 public:
     Document(const std::shared_ptr<lok::Office>& loKit,
              const std::string& jailId,
@@ -583,10 +699,11 @@ public:
         _websocketHandler(websocketHandler),
         _haveDocPassword(false),
         _isDocPasswordProtected(false),
-        _docPasswordType(PasswordType::ToView),
+        _docPasswordType(DocumentPasswordType::ToView),
         _stop(false),
         _editorId(-1),
         _editorChangeWarning(false),
+        _lastMemTrimTime(std::chrono::steady_clock::now()),
         _mobileAppDocId(mobileAppDocId),
         _inputProcessingEnabled(true)
     {
@@ -620,6 +737,7 @@ public:
 #ifdef IOS
         DocumentData::deallocate(_mobileAppDocId);
 #endif
+
     }
 
     const std::string& getUrl() const { return _url; }
@@ -634,11 +752,11 @@ public:
             return false;
         }
 
-        _websocketHandler->sendMessage(data, size, code);
+        _websocketHandler->sendMessage(data, size, code, /*flush=*/true);
         return true;
     }
 
-    bool createSession(const std::string& sessionId, int canonicalViewId)
+    bool createSession(const std::string& sessionId)
     {
         try
         {
@@ -656,13 +774,15 @@ public:
                 _websocketHandler, sessionId,
                 _jailId, JailRoot, *this);
             _sessions.emplace(sessionId, session);
-            session->setCanonicalViewId(canonicalViewId);
+            _deltaGen.setSessionCount(_sessions.size());
 
-            int viewId = session->getViewId();
+            const int viewId = session->getViewId();
             _lastUpdatedAt[viewId] = std::chrono::steady_clock::now();
             _speedCount[viewId] = 0;
 
-            LOG_DBG("Sessions: " << _sessions.size());
+            LOG_DBG("Have " << _sessions.size() << " active sessions after creating "
+                            << session->getId());
+            LOG_INF("New session [" << sessionId << "]");
             return true;
         }
         catch (const std::exception& ex)
@@ -689,6 +809,7 @@ public:
             {
                 if (it->second->isCloseFrame())
                 {
+                    LOG_DBG("Removing session [" << it->second->getId() << ']');
                     deadSessions.push_back(it->second);
                     it = _sessions.erase(it);
                 }
@@ -704,12 +825,17 @@ public:
             {
                 LOG_FTL("Document [" << anonymizeUrl(_url) << "] has no more views, exiting bluntly.");
                 flushTraceEventRecordings();
-                Log::shutdown();
-                std::_Exit(EX_OK);
+                Util::forcedExit(EX_OK);
             }
 #endif
         }
 
+        LOG_TRC("Purging dead sessions, have " << num_sessions << " active sessions.");
+
+        // Don't destroy sessions while holding our lock.
+        // We may deadlock if a session is waiting on us
+        // during callback initiated while handling a command
+        // and the dtor tries to take its lock (which is taken).
         deadSessions.clear();
 
         return num_sessions;
@@ -732,9 +858,9 @@ public:
         // One thing for sure, this is a password protected document
         _isDocPasswordProtected = true;
         if (passwordType == LOK_CALLBACK_DOCUMENT_PASSWORD)
-            _docPasswordType = PasswordType::ToView;
+            _docPasswordType = DocumentPasswordType::ToView;
         else if (passwordType == LOK_CALLBACK_DOCUMENT_PASSWORD_TO_MODIFY)
-            _docPasswordType = PasswordType::ToModify;
+            _docPasswordType = DocumentPasswordType::ToModify;
 
         LOG_INF("Calling _loKit->setDocumentPassword");
         if (_haveDocPassword)
@@ -778,11 +904,9 @@ public:
             return;
         }
 
-#ifdef FIXME_RENDER_SETTINGS
         // if necessary select a suitable rendering view eg. with 'show non-printing chars'
         if (tileCombined.getNormalizedViewId())
             _loKitDocument->setView(session->getViewId());
-#endif
 
         const auto blenderFunc = [&](unsigned char* data, int offsetX, int offsetY,
                                      std::size_t pixmapWidth, std::size_t pixmapHeight,
@@ -796,8 +920,9 @@ public:
             postMessage(buffer, length, WSOpCode::Binary);
         };
 
-        if (!RenderTiles::doRender(_loKitDocument, tileCombined, _pngCache, _pngPool, combined,
-                                   blenderFunc, postMessageFunc, _mobileAppDocId))
+        if (!RenderTiles::doRender(_loKitDocument, _deltaGen, tileCombined, _pngPool,
+                                   combined, blenderFunc, postMessageFunc, _mobileAppDocId,
+                                   session->getCanonicalViewId(), session->getDumpTiles()))
         {
             LOG_DBG("All tiles skipped, not producing empty tilecombine: message");
             return;
@@ -832,6 +957,50 @@ public:
     unsigned getMobileAppDocId() const override
     {
         return _mobileAppDocId;
+    }
+
+    void trimIfInactive() override
+    {
+        LOG_TRC("Should we trim our caches ?");
+        // FIXME: multi-document mobile optimization ?
+        for (const auto& it : _sessions)
+        {
+            if (it.second->isActive())
+            {
+                LOG_TRC("have active session, don't trim");
+                return;
+            }
+        }
+        // FIXME: be more clever - detect if we rendered recently,
+        // measure memory pressure etc.
+        LOG_WRN("Sessions are all inactive - trim memory");
+        _loKit->trimMemory(4096);
+        _deltaGen.dropCache();
+    }
+
+    void trimIfExcessive()
+    {
+        LOG_TRC("Should we trim our caches ?");
+        if (std::chrono::duration_cast<std::chrono::seconds>(std::chrono::steady_clock::now() -
+                                                             _lastMemTrimTime) < std::chrono::seconds(30))
+        {
+            LOG_TRC("Too soon to trim again");
+            return;
+        }
+
+        double minInactivityMs = std::numeric_limits<double>::max();
+        for (const auto& it : _sessions)
+        {
+            minInactivityMs = std::min(it.second->getInactivityMS(), minInactivityMs);
+        }
+
+        if (minInactivityMs >= 9999)
+        {
+            LOG_DBG("Trimming Core caches");
+            _loKit->trimMemory(4096);
+
+            _lastMemTrimTime = std::chrono::steady_clock::now();
+        }
     }
 
     static void GlobalCallback(const int type, const char* p, void* data)
@@ -928,7 +1097,7 @@ public:
 
         if (type == LOK_CALLBACK_CELL_CURSOR)
         {
-            StringVector tokens(Util::tokenize(payload, ','));
+            StringVector tokens(StringVector::tokenize(payload, ','));
             // Payload may be 'EMPTY'.
             if (tokens.size() == 4)
             {
@@ -946,7 +1115,7 @@ public:
             const Poco::Dynamic::Var result = parser.parse(payload);
             const auto& command = result.extract<Poco::JSON::Object::Ptr>();
             std::string rectangle = command->get("rectangle").toString();
-            StringVector tokens(Util::tokenize(rectangle, ','));
+            StringVector tokens(StringVector::tokenize(rectangle, ','));
             // Payload may be 'EMPTY'.
             if (tokens.size() == 4)
             {
@@ -967,7 +1136,7 @@ public:
             targetViewId = command->get("viewId").toString();
             std::string part = command->get("part").toString();
             std::string text = command->get("rectangle").toString();
-            StringVector tokens(Util::tokenize(text, ','));
+            StringVector tokens(StringVector::tokenize(text, ','));
             // Payload may be 'EMPTY'.
             if (tokens.size() == 4)
             {
@@ -979,12 +1148,49 @@ public:
                 tileQueue->updateCursorPosition(std::stoi(targetViewId), std::stoi(part), cursorX, cursorY, cursorWidth, cursorHeight);
             }
         }
+        else if (type == LOK_CALLBACK_DOCUMENT_PASSWORD_RESET)
+        {
+            Document* document = dynamic_cast<Document*>(descriptor->getDoc());
+            Poco::JSON::Object::Ptr object;
+            if (document && JsonUtil::parseJSON(payload, object))
+            {
+                std::string password = JsonUtil::getJSONValue<std::string>(object, "password");
+                bool isToModify = JsonUtil::getJSONValue<bool>(object, "isToModify");
+                document->_isDocPasswordProtected = !password.empty();
+                document->_haveDocPassword = document->_isDocPasswordProtected;
+                document->_docPassword = password;
+                document->_docPasswordType =
+                    isToModify ? DocumentPasswordType::ToModify : DocumentPasswordType::ToView;
+            }
+            return;
+        }
+        else if (type == LOK_CALLBACK_VIEW_RENDER_STATE)
+        {
+            Document* document = dynamic_cast<Document*>(descriptor->getDoc());
+            if (document)
+            {
+                std::shared_ptr<ChildSession> session = document->findSessionByViewId(descriptor->getViewId());
+                if (session)
+                {
+                    session->setViewRenderState(payload);
+                    document->invalidateCanonicalId(session->getId());
+                }
+                else
+                {
+                    LOG_ERR("Cannot find session for viewId: " << descriptor->getViewId());
+                }
+            }
+            else
+            {
+                // This shouldn't happen, but for consistency.
+                LOG_ERR("Failed to downcast DocumentManagerInterface to Document");
+            }
+            return;
+        }
 
         // merge various callback types together if possible
-        if (type == LOK_CALLBACK_INVALIDATE_TILES ||
-            type == LOK_CALLBACK_DOCUMENT_SIZE_CHANGED)
+        if (type == LOK_CALLBACK_INVALIDATE_TILES)
         {
-            // no point in handling invalidations or page resizes per-view,
             // all views have to be in sync
             tileQueue->put("callback all " + std::to_string(type) + ' ' + payload);
         }
@@ -1022,12 +1228,15 @@ private:
         try
         {
             if (!load(session, renderOpts))
+            {
                 return false;
+            }
         }
         catch (const std::exception &exc)
         {
             LOG_ERR("Exception while loading url [" << uriAnonym <<
                     "] for session [" << sessionId << "]: " << exc.what());
+            session->sendTextFrameAndLogError("error: cmd=load kind=faileddocloading");
             return false;
         }
 
@@ -1060,8 +1269,7 @@ private:
             {
                 LOG_INF("Document [" << anonymizeUrl(_url) << "] has no more views, exiting bluntly.");
                 flushTraceEventRecordings();
-                Log::shutdown();
-                std::_Exit(EX_OK);
+                Util::forcedExit(EX_OK);
             }
 #endif
             LOG_INF("Document [" << anonymizeUrl(_url) << "] has no more views, but has " <<
@@ -1110,6 +1318,26 @@ private:
         return _editorId;
     }
 
+    bool isDocPasswordProtected() const override
+    {
+        return _isDocPasswordProtected;
+    }
+
+    bool haveDocPassword() const override
+    {
+        return _haveDocPassword;
+    }
+
+    std::string getDocPassword() const override
+    {
+        return _docPassword;
+    }
+
+    DocumentPasswordType getDocPasswordType() const override
+    {
+        return _docPasswordType;
+    }
+
     /// Notify all views with the given message
     bool notifyAll(const std::string& msg) override
     {
@@ -1131,11 +1359,13 @@ private:
 
         // Double check if list of viewids from core and our list matches,
         // and create an array of JSON objects containing id and username
-        std::ostringstream oss;
-        oss << "viewinfo: [";
+
+        std::map<int, std::string> viewStrings; // viewId -> public data string
+
         for (const auto& viewId : viewIds)
         {
-            oss << "{\"id\":" << viewId << ',';
+            std::ostringstream oss;
+            oss << "\"id\":" << viewId << ',';
             int color = 0;
             const auto itView = viewInfoMap.find(viewId);
             if (itView == viewInfoMap.end())
@@ -1159,15 +1389,70 @@ private:
                 }
             }
 
-            oss << "\"color\":" << color << "},";
+            oss << "\"color\":" << color;
+
+            viewStrings[viewId] = oss.str();
         }
 
-        if (viewCount > 0)
-            oss.seekp(-1, std::ios_base::cur); // Remove last comma.
-        oss << ']';
+        // Broadcast updated viewinfo to all clients. Every view gets own userprivateinfo.
 
-        // Broadcast updated viewinfo to all clients.
-        notifyAll(oss.str());
+        for (const auto& it : _sessions)
+        {
+            std::ostringstream oss;
+            oss << "viewinfo: [";
+
+            for (const auto& viewId : viewIds)
+            {
+                if (viewId == it.second->getViewId() && !it.second->getUserPrivateInfo().empty())
+                {
+                    oss << "{" << viewStrings[viewId];
+                    oss << ",\"userprivateinfo\":" << it.second->getUserPrivateInfo();
+                    oss << "},";
+                }
+                else
+                    oss << "{" << viewStrings[viewId] << "},";
+            }
+
+            if (viewCount > 0)
+                oss.seekp(-1, std::ios_base::cur); // Remove last comma.
+
+            oss << ']';
+
+            it.second->sendTextFrame(oss.str());
+        }
+    }
+
+    std::shared_ptr<ChildSession> findSessionByViewId(int viewId)
+    {
+        for (const auto& it : _sessions)
+        {
+            if (it.second && it.second->getViewId() == viewId)
+                return it.second;
+        }
+
+        return nullptr;
+    }
+
+    void invalidateCanonicalId(const std::string& sessionId)
+    {
+        auto it = _sessions.find(sessionId);
+        if (it == _sessions.end())
+        {
+            LOG_ERR("Session [" << sessionId << "] not found");
+            return;
+        }
+        std::shared_ptr<ChildSession> session = it->second;
+        int newCanonicalId = _sessions.createCanonicalId(getViewProps(session));
+        if (newCanonicalId == session->getCanonicalViewId())
+            return;
+        session->setCanonicalViewId(newCanonicalId);
+        std::string message = "canonicalidchange: viewid=" + std::to_string(session->getViewId()) + " canonicalid=" + std::to_string(newCanonicalId);
+        session->sendTextFrame(message);
+    }
+
+    std::string getViewProps(const std::shared_ptr<ChildSession>& session)
+    {
+        return session->getWatermarkText() + "|" + session->getViewRenderState();
     }
 
     void updateEditorSpeeds(int id, int speed) override
@@ -1269,7 +1554,12 @@ private:
         const std::string& batchMode = session->getBatchMode();
         const std::string& enableMacrosExecution = session->getEnableMacrosExecution();
         const std::string& macroSecurityLevel = session->getMacroSecurityLevel();
-        std::string spellOnline;
+        const bool accessibilityState = session->getAccessibilityState();
+        const std::string& userTimezone = session->getTimezone();
+
+#if !MOBILEAPP
+        consistencyCheckFileExists(uri);
+#endif
 
         std::string options;
         if (!lang.empty())
@@ -1287,6 +1577,10 @@ private:
         if (!macroSecurityLevel.empty())
             options += ",MacroSecurityLevel=" + macroSecurityLevel;
 
+        if (!userTimezone.empty())
+            options += ",Timezone=" + userTimezone;
+
+        std::string spellOnline;
         if (!_loKitDocument)
         {
             // This is the first time we are loading the document
@@ -1334,9 +1628,9 @@ private:
                     {
                         LOG_INF("No password provided for password-protected document [" << uriAnonym << "].");
                         std::string passwordFrame = "passwordrequired:";
-                        if (_docPasswordType == PasswordType::ToView)
+                        if (_docPasswordType == DocumentPasswordType::ToView)
                             passwordFrame += "to-view";
-                        else if (_docPasswordType == PasswordType::ToModify)
+                        else if (_docPasswordType == DocumentPasswordType::ToModify)
                             passwordFrame += "to-modify";
                         session->sendTextFrameAndLogError("error: cmd=load kind=" + passwordFrame);
                     }
@@ -1349,6 +1643,10 @@ private:
                 }
 
                 session->sendTextFrameAndLogError("error: cmd=load kind=faileddocloading");
+                session->shutdownNormal();
+
+                LOG_FTL("Failed to load the document. Setting TerminationFlag");
+                SigUtil::setTerminationFlag();
                 return nullptr;
             }
 
@@ -1367,9 +1665,9 @@ private:
                 if (!haveDocPassword)
                 {
                     std::string passwordFrame = "passwordrequired:";
-                    if (_docPasswordType == PasswordType::ToView)
+                    if (_docPasswordType == DocumentPasswordType::ToView)
                         passwordFrame += "to-view";
-                    else if (_docPasswordType == PasswordType::ToModify)
+                    else if (_docPasswordType == DocumentPasswordType::ToModify)
                         passwordFrame += "to-modify";
                     session->sendTextFrameAndLogError("error: cmd=load kind=" + passwordFrame);
                     return nullptr;
@@ -1399,9 +1697,12 @@ private:
         session->setViewId(viewId);
 
         _sessionUserInfo[viewId] = UserInfo(session->getViewUserId(), session->getViewUserName(),
-                                            session->getViewUserExtraInfo(), session->isReadOnly());
+                                            session->getViewUserExtraInfo(), session->getViewUserPrivateInfo(),
+                                            session->isReadOnly());
 
         _loKitDocument->setViewLanguage(viewId, lang.c_str());
+        _loKitDocument->setViewTimezone(viewId, userTimezone.c_str());
+        _loKitDocument->setAccessibilityState(viewId, accessibilityState);
 
         // viewId's monotonically increase, and CallbackDescriptors are never freed.
         _viewIdToCallbackDescr.emplace(viewId,
@@ -1415,6 +1716,7 @@ private:
 
         session->initWatermark();
 
+        invalidateCanonicalId(sessionId);
         return _loKitDocument;
     }
 
@@ -1460,6 +1762,8 @@ private:
                     const std::size_t count = _sessions.size();
                     LOG_DBG("Have " << count << " child" << (count == 1 ? "" : "ren") <<
                             " after removing ChildSession [" << sessionId << "].");
+
+                    _deltaGen.setSessionCount(count);
 
                     // No longer needed, and allow session dtor to take it.
                     session.reset();
@@ -1522,8 +1826,11 @@ private:
         }
 
         // By default we enable spell-checking, unless it's disabled explicitly.
-        const bool bSet = (spellOnline != "false");
-        renderOptsObj->set(".uno:SpellOnline", makePropertyValue("boolean", bSet));
+        if (!spellOnline.empty())
+        {
+            const bool bSet = (spellOnline != "false");
+            renderOptsObj->set(".uno:SpellOnline", makePropertyValue("boolean", bSet));
+        }
 
         if (renderOptsObj)
         {
@@ -1575,7 +1882,7 @@ public:
 
                 LOG_TRC("Kit handling queue message: " << COOLProtocol::getAbbreviatedMessage(input));
 
-                const StringVector tokens = Util::tokenize(input.data(), input.size());
+                const StringVector tokens = StringVector::tokenize(input.data(), input.size());
 
                 if (tokens.equals(0, "eof"))
                 {
@@ -1608,16 +1915,10 @@ public:
                     {
                         bool broadcast = false;
                         int viewId = -1;
-                        int exceptViewId = -1;
 
                         const std::string& target = tokens[1];
                         if (target == "all")
                         {
-                            broadcast = true;
-                        }
-                        else if (COOLProtocol::matchPrefix("except-", target))
-                        {
-                            exceptViewId = std::stoi(target.substr(7));
                             broadcast = true;
                         }
                         else
@@ -1640,8 +1941,7 @@ public:
                                 continue;
 
                             ChildSession& session = *it.second;
-                            if ((broadcast && (session.getViewId() != exceptViewId))
-                                || (!broadcast && (session.getViewId() == viewId)))
+                            if (broadcast || (!broadcast && (session.getViewId() == viewId)))
                             {
                                 if (!session.isCloseFrame())
                                 {
@@ -1688,8 +1988,7 @@ public:
             LOG_FTL("drainQueue: Exception: " << exc.what());
 #if !MOBILEAPP
             flushTraceEventRecordings();
-            Log::shutdown();
-            std::_Exit(EX_SOFTWARE);
+            Util::forcedExit(EX_SOFTWARE);
 #endif
         }
         catch (...)
@@ -1697,8 +1996,7 @@ public:
             LOG_FTL("drainQueue: Unknown exception");
 #if !MOBILEAPP
             flushTraceEventRecordings();
-            Log::shutdown();
-            std::_Exit(EX_SOFTWARE);
+            Util::forcedExit(EX_SOFTWARE);
 #endif
         }
     }
@@ -1736,6 +2034,8 @@ public:
     void dumpState(std::ostream& oss)
     {
         oss << "Kit Document:\n"
+            << std::boolalpha
+            << "\n\tpid: " << getpid()
             << "\n\tstop: " << _stop
             << "\n\tjailId: " << _jailId
             << "\n\tdocKey: " << _docKey
@@ -1756,7 +2056,6 @@ public:
         // dumpState:
         // TODO: _websocketHandler - but this is an odd one.
         _tileQueue->dumpState(oss);
-        _pngCache.dumpState(oss);
         oss << "\tviewIdToCallbackDescr:";
         for (const auto &it : _viewIdToCallbackDescr)
         {
@@ -1768,6 +2067,8 @@ public:
 
         _pngPool.dumpState(oss);
         _sessions.dumpState(oss);
+
+        _deltaGen.dumpState(oss);
 
         oss << "\tlastUpdatedAt:";
         for (const auto &it : _lastUpdatedAt)
@@ -1798,6 +2099,13 @@ public:
                 << " readOnly: " << it.second.isReadOnly();
         }
         oss << "\n";
+
+        char *pState = nullptr;
+        _loKit->dumpState("", &pState);
+        oss << "lok state:\n";
+        if (pState)
+            oss << pState;
+        oss << "\n";
     }
 
 private:
@@ -1819,8 +2127,6 @@ private:
     std::shared_ptr<TileQueue> _tileQueue;
     std::shared_ptr<WebSocketHandler> _websocketHandler;
 
-    PngCache _pngCache;
-
     // Document password provided
     std::string _docPassword;
     // Whether password was provided or not
@@ -1828,17 +2134,21 @@ private:
     // Whether document is password protected
     bool _isDocPasswordProtected;
     // Whether password is required to view the document, or modify it
-    PasswordType _docPasswordType;
+    DocumentPasswordType _docPasswordType;
 
     std::atomic<bool> _stop;
 
     ThreadPool _pngPool;
+    DeltaGenerator _deltaGen;
 
     std::condition_variable _cvLoading;
     int _editorId;
     bool _editorChangeWarning;
     std::map<int, std::unique_ptr<CallbackDescriptor>> _viewIdToCallbackDescr;
     SessionMap<ChildSession> _sessions;
+
+    /// The timestamp of the last memory trimming.
+    std::chrono::steady_clock::time_point _lastMemTrimTime;
 
     std::map<int, std::chrono::steady_clock::time_point> _lastUpdatedAt;
     std::map<int, int> _speedCount;
@@ -1852,37 +2162,45 @@ private:
     bool _inputProcessingEnabled;
 };
 
-#if !defined FUZZER && !defined BUILDING_TESTS && !MOBILEAPP
+#if !defined BUILDING_TESTS && !MOBILEAPP && !LIBFUZZER
 
 // When building the fuzzer we link COOLWSD.cpp into the same executable so the
 // Protected::emitOneRecording() there gets used. When building the unit tests the one in
 // TraceEvent.cpp gets used.
 
-static constexpr int traceEventRecordingsCapacity = 100;
-static std::vector<std::string> traceEventRecordings;
+static std::mutex traceEventLock;
+static std::vector<std::string> traceEventRecords[2];
 
 static void flushTraceEventRecordings()
 {
-    if (traceEventRecordings.size() == 0)
-        return;
+    std::unique_lock<std::mutex> lock(traceEventLock);
 
-    std::size_t totalLength = 0;
-    for (const auto& i: traceEventRecordings)
-        totalLength += i.length();
+    for (size_t n = 0; n < 2; ++n)
+    {
+        std::vector<std::string> &r = traceEventRecords[n];
 
-    std::string recordings;
-    recordings.reserve(totalLength);
+        if (r.empty())
+            return;
 
-    for (const auto& i: traceEventRecordings)
-        recordings += i;
+        std::size_t totalLength = 0;
+        for (const auto& i: r)
+            totalLength += i.length();
 
-    singletonDocument->sendTextFrame("traceevent: \n" + recordings);
-    traceEventRecordings.clear();
+        std::string recordings;
+        recordings.reserve(totalLength);
+
+        for (const auto& i: r)
+            recordings += i;
+
+        std::string name = "forcetraceevent: \n";
+        if (n == 1 )
+            name = "traceevent: \n";
+        singletonDocument->sendTextFrame(name + recordings);
+        r.clear();
+    }
 }
 
-// The checks for singletonDocument below are to catch if this gets called in the ForKit process.
-
-void TraceEvent::emitOneRecordingIfEnabled(const std::string &recording)
+static void addRecording(const std::string &recording, bool force)
 {
     // This can be called before the config system is initialized. Guard against that, as calling
     // config::getBool() would cause an assertion failure.
@@ -1898,29 +2216,26 @@ void TraceEvent::emitOneRecordingIfEnabled(const std::string &recording)
     if (configChecked && !traceEventsEnabled)
         return;
 
+    // catch if this gets called in the ForKit process & skip.
     if (singletonDocument == nullptr)
         return;
 
-    singletonDocument->sendTextFrame("forcedtraceevent: \n" + recording);
+    if (!TraceEvent::isRecordingOn() && !force)
+        return;
+
+    std::unique_lock<std::mutex> lock(traceEventLock);
+
+    traceEventRecords[force ? 0 : 1].push_back(recording + "\n");
+}
+
+void TraceEvent::emitOneRecordingIfEnabled(const std::string &recording)
+{
+    addRecording(recording, true);
 }
 
 void TraceEvent::emitOneRecording(const std::string &recording)
 {
-    static const bool traceEventsEnabled = config::getBool("trace_event[@enable]", false);
-    if (!traceEventsEnabled)
-        return;
-
-    if (!TraceEvent::isRecordingOn())
-        return;
-
-    if (singletonDocument == nullptr)
-        return;
-
-    if (traceEventRecordings.size() >= traceEventRecordingsCapacity)
-        flushTraceEventRecordings();
-    else if (traceEventRecordings.size() == 0 && traceEventRecordings.capacity() < traceEventRecordingsCapacity)
-        traceEventRecordings.reserve(traceEventRecordingsCapacity);
-    traceEventRecordings.emplace_back(recording + "\n");
+    addRecording(recording, false);
 }
 
 #elif !MOBILEAPP
@@ -1983,8 +2298,7 @@ public:
 
     static std::shared_ptr<KitSocketPoll> create()
     {
-        KitSocketPoll *p = new KitSocketPoll();
-        auto result = std::shared_ptr<KitSocketPoll>(p);
+        std::shared_ptr<KitSocketPoll> result(new KitSocketPoll());
 
 #ifdef IOS
         std::unique_lock<std::mutex> lock(KSPollsMutex);
@@ -2070,12 +2384,19 @@ public:
             if (remainingTime < std::chrono::microseconds(timeoutMicroS))
                 _document->checkIdle();
             else
-                LOG_TRC("Poll of woudl not close gap - continuing");
+                LOG_TRC("Poll of would not close gap - continuing");
         }
 
         drainQueue();
 
+        if (_document)
+        {
+            _document->trimIfExcessive();
+        }
+
 #if !MOBILEAPP
+        flushTraceEventRecordings();
+
         if (_document && _document->purgeSessions() == 0)
         {
             LOG_INF("Last session discarded. Setting TerminationFlag");
@@ -2142,6 +2463,7 @@ class KitWebSocketHandler final : public WebSocketHandler
     std::string _socketName;
     std::shared_ptr<lok::Office> _loKit;
     std::string _jailId;
+    std::string _docKey; //< When we get it while creating a new view.
     std::shared_ptr<Document> _document;
     std::shared_ptr<KitSocketPoll> _ksPoll;
     const unsigned _mobileAppDocId;
@@ -2153,7 +2475,7 @@ public:
         _socketName(socketName),
         _loKit(loKit),
         _jailId(jailId),
-        _ksPoll(ksPoll),
+        _ksPoll(std::move(ksPoll)),
         _mobileAppDocId(mobileAppDocId)
     {
     }
@@ -2166,7 +2488,7 @@ public:
 protected:
     void handleMessage(const std::vector<char>& data) override
     {
-        // To get A LOT of Trace Events, to exercide their handling, uncomment this:
+        // To get A LOT of Trace Events, to exercise their handling, uncomment this:
         // ProfileZone profileZone("KitWebSocketHandler::handleMessage");
 
         std::string message(data.data(), data.size());
@@ -2175,25 +2497,22 @@ protected:
         if (UnitKit::get().filterKitMessage(this, message))
             return;
 #endif
-        StringVector tokens = Util::tokenize(message);
-        Log::StreamLogger logger = Log::debug();
-        if (logger.enabled())
-        {
-            logger << _socketName << ": recv [";
-            for (const auto& token : tokens)
-            {
-                // Don't log user-data, there are anonymized versions that get logged instead.
-                if (tokens.startsWith(token, "jail") ||
-                    tokens.startsWith(token, "author") ||
-                    tokens.startsWith(token, "name") ||
-                    tokens.startsWith(token, "url"))
-                    continue;
+        StringVector tokens = StringVector::tokenize(message);
 
-                logger << tokens.getParam(token) << ' ';
-            }
+        LOG_DBG(_socketName << ": recv [" <<
+                [&](auto& log)
+                {
+                    for (const auto& token : tokens)
+                    {
+                        // Don't log user-data, there are anonymized versions that get logged instead.
+                        if (tokens.startsWith(token, "jail") ||
+                            tokens.startsWith(token, "author") ||
+                            tokens.startsWith(token, "name") || tokens.startsWith(token, "url"))
+                            continue;
 
-            LOG_END(logger, true);
-        }
+                        log << tokens.getParam(token) << ' ';
+                    }
+                });
 
         // Note: Syntax or parsing errors here are unexpected and fatal.
         if (SigUtil::getTerminationFlag())
@@ -2203,22 +2522,20 @@ protected:
         else if (tokens.equals(0, "session"))
         {
             const std::string& sessionId = tokens[1];
-            const std::string& docKey = tokens[2];
+            _docKey = tokens[2];
             const std::string& docId = tokens[3];
-            const int canonicalViewId = std::stoi(tokens[4]);
-            const std::string fileId = Util::getFilenameFromURL(docKey);
+            const std::string fileId = Util::getFilenameFromURL(_docKey);
             Util::mapAnonymized(fileId, fileId); // Identity mapping, since fileId is already obfuscated
 
             std::string url;
-            URI::decode(docKey, url);
-            LOG_INF("New session [" << sessionId << "] request on url [" << url << "] with viewId " << canonicalViewId);
+            URI::decode(_docKey, url);
 #ifndef IOS
             Util::setThreadName("kit" SHARED_DOC_THREADNAME_SUFFIX + docId);
 #endif
             if (!_document)
             {
                 _document = std::make_shared<Document>(
-                    _loKit, _jailId, docKey, docId, url, _queue,
+                    _loKit, _jailId, _docKey, docId, url, _queue,
                     std::static_pointer_cast<WebSocketHandler>(shared_from_this()),
                     _mobileAppDocId);
                 _ksPoll->setDocument(_document);
@@ -2236,7 +2553,7 @@ protected:
             }
 
             // Validate and create session.
-            if (!(url == _document->getUrl() && _document->createSession(sessionId, canonicalViewId)))
+            if (!(url == _document->getUrl() && _document->createSession(sessionId)))
             {
                 LOG_DBG("CreateSession failed.");
             }
@@ -2247,8 +2564,7 @@ protected:
 #if !MOBILEAPP
             LOG_INF("Terminating immediately due to parent 'exit' command.");
             flushTraceEventRecordings();
-            Log::shutdown();
-            std::_Exit(EX_SOFTWARE);
+            Util::forcedExit(EX_OK);
 #else
 #ifdef IOS
             LOG_INF("Setting our KitSocketPoll's termination flag due to 'exit' command.");
@@ -2262,9 +2578,9 @@ protected:
             _document.reset();
 #endif
         }
-        else if (tokens.equals(0, "tile") || tokens.equals(0, "tilecombine") || tokens.equals(0, "canceltiles") ||
-                tokens.equals(0, "paintwindow") || tokens.equals(0, "resizewindow") ||
-                COOLProtocol::getFirstToken(tokens[0], '-') == "child")
+        else if (tokens.equals(0, "tile") || tokens.equals(0, "tilecombine") ||
+                 tokens.equals(0, "paintwindow") || tokens.equals(0, "resizewindow") ||
+                 COOLProtocol::getFirstToken(tokens[0], '-') == "child")
         {
             if (_document)
             {
@@ -2311,7 +2627,10 @@ protected:
     void onDisconnect() override
     {
 #if !MOBILEAPP
-        LOG_ERR("Kit connection lost without exit arriving from wsd. Setting TerminationFlag");
+        //FIXME: We could try to recover.
+        LOG_ERR("Kit for DocBroker ["
+                << _docKey
+                << "] connection lost without exit arriving from wsd. Setting TerminationFlag");
         SigUtil::setTerminationFlag();
 #endif
 #ifdef IOS
@@ -2333,6 +2652,8 @@ void documentViewCallback(const int type, const char* payload, void* data)
 /// Called by LOK main-loop the central location for data processing.
 int pollCallback(void* pData, int timeoutUs)
 {
+    if (timeoutUs < 0)
+        timeoutUs = SocketPoll::DefaultPollTimeoutMicroS.count();
 #ifndef IOS
     if (!pData)
         return 0;
@@ -2348,7 +2669,7 @@ int pollCallback(void* pData, int timeoutUs)
             v.push_back(p);
     }
     lock.unlock();
-    if (v.size() == 0)
+    if (v.empty())
     {
         std::this_thread::sleep_for(std::chrono::microseconds(timeoutUs));
     }
@@ -2373,7 +2694,7 @@ void wakeCallback(void* pData)
         return reinterpret_cast<KitSocketPoll*>(pData)->wakeup();
 #else
     std::unique_lock<std::mutex> lock(KitSocketPoll::KSPollsMutex);
-    if (KitSocketPoll::KSPolls.size() == 0)
+    if (KitSocketPoll::KSPolls.empty())
         return;
 
     std::vector<std::shared_ptr<KitSocketPoll>> v;
@@ -2391,13 +2712,54 @@ void wakeCallback(void* pData)
 
 #ifndef BUILDING_TESTS
 
+namespace
+{
+#if !MOBILEAPP
+void copyCertificateDatabaseToTmp(Poco::Path const& jailPath)
+{
+    std::string aCertificatePathString = config::getString("certificates.database_path", "");
+    if (!aCertificatePathString.empty())
+    {
+        auto aFileStat = FileUtil::Stat(aCertificatePathString);
+
+        if (!aFileStat.exists() || !aFileStat.isDirectory())
+        {
+            LOG_WRN("Certificate database wasn't copied into the jail as path '" << aCertificatePathString << "' doesn't exist");
+            return;
+        }
+
+        Poco::Path aCertificatePath(aCertificatePathString);
+
+        Poco::Path aJailedCertDBPath(jailPath, "/tmp/certdb");
+        Poco::File(aJailedCertDBPath).createDirectories();
+
+        bool bCopied = false;
+        for (const char* pFilename : { "cert8.db", "cert9.db", "secmod.db", "key3.db", "key4.db" })
+        {
+            bool bResult = FileUtil::copy(Poco::Path(aCertificatePath, pFilename).toString(),
+                                Poco::Path(aJailedCertDBPath, pFilename).toString(), false, false);
+            bCopied |= bResult;
+        }
+        if (bCopied)
+        {
+            LOG_INF("Certificate database files found in '" << aCertificatePathString << "' and were copied to the jail");
+            ::setenv("LO_CERTIFICATE_DATABASE_PATH", "/tmp/certdb", 1);
+        }
+        else
+        {
+            LOG_WRN("No Certificate database files could be found in path '" << aCertificatePathString << "'");
+        }
+    }
+}
+#endif
+}
+
 void lokit_main(
 #if !MOBILEAPP
                 const std::string& childRoot,
                 const std::string& jailId,
                 const std::string& sysTemplate,
                 const std::string& loTemplate,
-                const std::string& loSubPath,
                 bool noCapabilities,
                 bool noSeccomp,
                 bool queryVersion,
@@ -2411,10 +2773,8 @@ void lokit_main(
 {
 #if !MOBILEAPP
 
-#ifndef FUZZER
     SigUtil::setFatalSignals("kit startup of " COOLWSD_VERSION " " COOLWSD_VERSION_HASH);
-    SigUtil::setTerminationSignals();
-#endif
+    SigUtil::setUserSignals();
 
     Util::setThreadName("kit_spare_" + Util::encodeId(numericIdentifier, 3));
 
@@ -2422,6 +2782,7 @@ void lokit_main(
     const bool logToFile = std::getenv("COOL_LOGFILE");
     const char* logFilename = std::getenv("COOL_LOGFILENAME");
     const char* logLevel = std::getenv("COOL_LOGLEVEL");
+    const char* logLevelStartup = std::getenv("COOL_LOGLEVEL_STARTUP");
     const bool logColor = config::getBool("logging.color", true) && isatty(fileno(stderr));
     std::map<std::string, std::string> logProperties;
     if (logToFile && logFilename)
@@ -2432,11 +2793,13 @@ void lokit_main(
     Util::rng::reseed();
 
     const std::string LogLevel = logLevel ? logLevel : "trace";
+    const std::string LogLevelStartup = logLevelStartup ? logLevelStartup : "trace";
     const bool bTraceStartup = (std::getenv("COOL_TRACE_STARTUP") != nullptr);
-    Log::initialize("kit", bTraceStartup ? "trace" : logLevel, logColor, logToFile, logProperties);
-    if (bTraceStartup && LogLevel != "trace")
+    Log::initialize("kit", bTraceStartup ? LogLevelStartup : logLevel, logColor, logToFile, logProperties);
+    if (bTraceStartup && LogLevel != LogLevelStartup)
     {
-        LOG_INF("Setting log-level to [trace] and delaying setting to configured [" << LogLevel << "] until after Kit initialization.");
+        LOG_INF("Setting log-level to [" << LogLevelStartup << "] and delaying "
+                "setting to [" << LogLevel << "] until after Kit initialization.");
     }
 
     const char* pAnonymizationSalt = std::getenv("COOL_ANONYMIZATION_SALT");
@@ -2451,7 +2814,6 @@ void lokit_main(
     assert(!childRoot.empty());
     assert(!sysTemplate.empty());
     assert(!loTemplate.empty());
-    assert(!loSubPath.empty());
 
     LOG_INF("Kit process for Jail [" << jailId << "] started.");
 
@@ -2471,9 +2833,7 @@ void lokit_main(
 #if !MOBILEAPP
         const Path jailPath = Path::forDirectory(childRoot + '/' + jailId);
         const std::string jailPathStr = jailPath.toString();
-        LOG_INF("Jail path: " << jailPathStr);
-        File(jailPath).createDirectories();
-        chmod(jailPathStr.c_str(), S_IXUSR | S_IWUSR | S_IRUSR);
+        JailUtil::createJailPath(jailPathStr);
 
         if (!ChildSession::NoCapsForKit)
         {
@@ -2481,9 +2841,9 @@ void lokit_main(
                 = std::chrono::steady_clock::now();
 
             userdir_url = "file:///tmp/user";
-            instdir_path = '/' + loSubPath + "/program";
+            instdir_path = '/' + std::string(JailUtil::LO_JAIL_SUBPATH) + "/program";
 
-            Poco::Path jailLOInstallation(jailPath, loSubPath);
+            Poco::Path jailLOInstallation(jailPath, JailUtil::LO_JAIL_SUBPATH);
             jailLOInstallation.makeDirectory();
             const std::string loJailDestPath = jailLOInstallation.toString();
 
@@ -2502,7 +2862,7 @@ void lokit_main(
 
                 // Mount loTemplate inside it.
                 LOG_INF("Mounting " << loTemplate << " -> " << loJailDestPath);
-                Poco::File(loJailDestPath).createDirectories();
+                JailUtil::createJailPath(loJailDestPath);
                 if (!JailUtil::bind(loTemplate, loJailDestPath)
                     || !JailUtil::remountReadonly(loTemplate, loJailDestPath))
                 {
@@ -2531,10 +2891,16 @@ void lokit_main(
             bool bindMount = JailUtil::isBindMountingEnabled();
             if (bindMount)
             {
+#if CODE_COVERAGE
+                // Code coverage is not supported with bind-mounting.
+                LOG_ERR("Mounting is not compatible with code-coverage.");
+                assert(!"Mounting is not compatible with code-coverage.");
+#endif // CODE_COVERAGE
+
                 if (!mountJail())
                 {
                     LOG_INF("Cleaning up jail before linking/copying.");
-                    JailUtil::removeJail(jailPathStr);
+                    JailUtil::tryRemoveJail(jailPathStr);
                     bindMount = false;
                     JailUtil::disableBindMounting();
                 }
@@ -2545,11 +2911,22 @@ void lokit_main(
                 LOG_INF("Mounting is disabled, will link/copy " << sysTemplate << " -> "
                                                                 << jailPathStr);
 
+                // Make sure we have the jail directory.
+                JailUtil::createJailPath(jailPathStr);
+
+                // Create a file to mark this a copied jail.
+                JailUtil::markJailCopied(jailPathStr);
+
                 const std::string linkablePath = childRoot + "/linkable";
 
                 linkOrCopy(sysTemplate, jailPath, linkablePath, LinkOrCopyType::All);
 
                 linkOrCopy(loTemplate, loJailDestPath, linkablePath, LinkOrCopyType::LO);
+
+#if CODE_COVERAGE
+                // Link the .gcda files.
+                linkGCDAFiles(jailPathStr);
+#endif
 
                 // Update the dynamic files inside the jail.
                 if (!JailUtil::SysTemplate::updateDynamicFiles(jailPathStr))
@@ -2561,14 +2938,13 @@ void lokit_main(
                            "read-only, running the installation scripts with the owner's account "
                            "should update these files. Some functionality may be missing.");
                 }
-
-                // Create a file to mark this a copied jail.
-                JailUtil::markJailCopied(jailPathStr);
             }
 
             // Setup the devices inside /tmp and set TMPDIR.
             JailUtil::setupJailDevNodes(Poco::Path(jailPath, "/tmp").toString());
             ::setenv("TMPDIR", "/tmp", 1);
+
+            copyCertificateDatabaseToTmp(jailPath);
 
             // HOME must be writable, so create it in /tmp.
             constexpr const char* HomePathInJail = "/tmp/home";
@@ -2587,15 +2963,13 @@ void lokit_main(
             if (chroot(jailPathStr.c_str()) == -1)
             {
                 LOG_SFL("chroot(\"" << jailPathStr << "\") failed");
-                Log::shutdown();
-                std::_Exit(EX_SOFTWARE);
+                Util::forcedExit(EX_SOFTWARE);
             }
 
             if (chdir("/") == -1)
             {
                 LOG_SFL("chdir(\"/\") in jail failed");
-                Log::shutdown();
-                std::_Exit(EX_SOFTWARE);
+                Util::forcedExit(EX_SOFTWARE);
             }
 
 #ifndef __FreeBSD__
@@ -2603,8 +2977,6 @@ void lokit_main(
             dropCapability(CAP_MKNOD);
             dropCapability(CAP_FOWNER);
             dropCapability(CAP_CHOWN);
-#else
-            cap_enter();
 #endif
 
             LOG_DBG("Initialized jail nodes, dropped caps.");
@@ -2622,6 +2994,9 @@ void lokit_main(
         LOG_DBG("Initializing LOK with instdir [" << instdir_path << "] and userdir ["
                                                   << userdir_url << "].");
 
+        UserDirPath = pathFromFileURL(userdir_url);
+        InstDirPath = instdir_path;
+
         LibreOfficeKit *kit;
         {
             const char *instdir = instdir_path.c_str();
@@ -2630,10 +3005,6 @@ void lokit_main(
             kit = UnitKit::get().lok_init(instdir, userdir);
 #else
             kit = nullptr;
-#ifdef FUZZER
-            if (COOLWSD::DummyLOK)
-                kit = dummy_lok_init_2(instdir, userdir);
-#endif
 #endif
             if (!kit)
             {
@@ -2645,8 +3016,7 @@ void lokit_main(
             if (!loKit)
             {
                 LOG_FTL("LibreOfficeKit initialization failed. Exiting.");
-                Log::shutdown();
-                std::_Exit(EX_SOFTWARE);
+                Util::forcedExit(EX_SOFTWARE);
             }
         }
 
@@ -2656,8 +3026,7 @@ void lokit_main(
             if (!noSeccomp)
             {
                 LOG_FTL("LibreOfficeKit seccomp security lockdown failed. Exiting.");
-                Log::shutdown();
-                std::_Exit(EX_SOFTWARE);
+                Util::forcedExit(EX_SOFTWARE);
             }
 
             LOG_ERR("LibreOfficeKit seccomp security lockdown failed, but configured to continue. "
@@ -2756,7 +3125,12 @@ void lokit_main(
             std::make_shared<KitWebSocketHandler>("child_ws", loKit, jailId, mainKit, numericIdentifier);
 
 #if !MOBILEAPP
-        mainKit->insertNewUnixSocket(MasterLocation, pathAndQuery, websocketHandler, ProcSMapsFile);
+        if (!mainKit->insertNewUnixSocket(MasterLocation, pathAndQuery, websocketHandler,
+                                          ProcSMapsFile))
+        {
+            LOG_SFL("Failed to connect to WSD. Will exit.");
+            Util::forcedExit(EX_SOFTWARE);
+        }
 #else
         mainKit->insertNewFakeSocket(docBrokerSocket, websocketHandler);
 #endif
@@ -2764,7 +3138,7 @@ void lokit_main(
         LOG_INF("New kit client websocket inserted.");
 
 #if !MOBILEAPP
-        if (bTraceStartup && LogLevel != "trace")
+        if (bTraceStartup && LogLevel != LogLevelStartup)
         {
             LOG_INF("Kit initialization complete: setting log-level to [" << LogLevel << "] as configured.");
             Log::logger().setLevel(LogLevel);
@@ -2776,10 +3150,11 @@ void lokit_main(
         {
             LOG_FTL("Kit is missing Unipoll API");
             std::cout << "Fatal: out of date LibreOfficeKit - no Unipoll API\n";
-            std::_Exit(EX_SOFTWARE);
+            Util::forcedExit(EX_SOFTWARE);
         }
 
         LOG_INF("Kit unipoll loop run");
+
         loKit->runLoop(pollCallback, wakeCallback, mainKit.get());
 
         LOG_INF("Kit unipoll loop run terminated.");
@@ -2790,7 +3165,6 @@ void lokit_main(
         // Trap the signal handler, if invoked,
         // to prevent exiting.
         LOG_INF("Kit process for Jail [" << jailId << "] finished.");
-        Log::shutdown();
 
         // Let forkit handle the jail cleanup.
 #endif
@@ -2814,10 +3188,9 @@ void lokit_main(
 
     LOG_INF("Kit process for Jail [" << jailId << "] finished.");
     flushTraceEventRecordings();
-    Log::shutdown();
     // Wait for the signal handler, if invoked, to prevent exiting until done.
     SigUtil::waitSigHandlerTrap();
-    std::_Exit(EX_OK);
+    Util::forcedExit(EX_OK);
 
 #endif
 }
@@ -2851,6 +3224,48 @@ void runKitLoopInAThread()
 
 #endif // !BUILDING_TESTS
 
+#if !MOBILEAPP
+
+void consistencyCheckJail()
+{
+    static bool warned = false;
+    if (!warned)
+    {
+        bool failedTmp, failedLo, failedUser;
+        FileUtil::Stat tmp("/tmp");
+        if ((failedTmp = (!tmp.good() || !tmp.isDirectory())))
+            LOG_ERR("Fatal system error: Kit jail is missing its /tmp directory");
+
+        FileUtil::Stat lo(InstDirPath + "/unorc");
+        if ((failedLo = (!lo.good() || !lo.isFile())))
+            LOG_ERR("Fatal system error: Kit jail is missing its LibreOfficeKit directory at '" << InstDirPath << "'");
+
+        FileUtil::Stat user(UserDirPath);
+        if ((failedUser = (!user.good() || !user.isDirectory())))
+            LOG_ERR("Fatal system error: Kit jail is missing its user directory at '" << UserDirPath << "'");
+
+        if (failedTmp || failedLo || failedUser)
+        {
+            LOG_ERR("A fatal system error indicates that, outside the control of COOL "
+                    "major structural changes have occured in our filesystem. These are "
+                    "potentially indicative of an operator damaging the system, and will "
+                    "inevitably cause document data-loss and/or malfunction.");
+            warned = true;
+            assert(!"Fatal system error with jail setup.");
+        }
+        else
+            LOG_TRC("Passed system consistency check");
+    }
+}
+
+#endif // !MOBILEAPP
+
+/// Fetch the latest montonically incrementing wire-id
+TileWireId getCurrentWireId(bool increment)
+{
+    return RenderTiles::getCurrentWireId(increment);
+}
+
 std::string anonymizeUrl(const std::string& url)
 {
 #ifndef BUILDING_TESTS
@@ -2865,10 +3280,6 @@ std::string anonymizeUrl(const std::string& url)
 /// Initializes LibreOfficeKit for cross-fork re-use.
 bool globalPreinit(const std::string &loTemplate)
 {
-#ifdef FUZZER
-    if (COOLWSD::DummyLOK)
-        return true;
-#endif
     const std::string libSofficeapp = loTemplate + "/program/" LIB_SOFFICEAPP;
     const std::string libMerged = loTemplate + "/program/" LIB_MERGED;
 
@@ -2905,10 +3316,10 @@ bool globalPreinit(const std::string &loTemplate)
         }
     }
 
-    LokHookPreInit* preInit = reinterpret_cast<LokHookPreInit *>(dlsym(handle, "lok_preinit"));
+    LokHookPreInit2* preInit = reinterpret_cast<LokHookPreInit2 *>(dlsym(handle, "lok_preinit_2"));
     if (!preInit)
     {
-        LOG_FTL("No lok_preinit symbol in " << loadedLibrary << ": " << dlerror());
+        LOG_FTL("No lok_preinit_2 symbol in " << loadedLibrary << ": " << dlerror());
         return false;
     }
 
@@ -2930,13 +3341,15 @@ bool globalPreinit(const std::string &loTemplate)
              "javaloader javavm jdbc rpt rptui rptxml ",
              0 /* no overwrite */);
 
-    LOG_TRC("Invoking lok_preinit(" << loTemplate << "/program\", \"file:///tmp/user\")");
+    LOG_TRC("Invoking lok_preinit_2(" << loTemplate << "/program\", \"file:///tmp/user\")");
     const auto start = std::chrono::steady_clock::now();
-    if (preInit((loTemplate + "/program").c_str(), "file:///tmp/user") != 0)
+    if (preInit((loTemplate + "/program").c_str(), "file:///tmp/user", &loKitPtr) != 0)
     {
         LOG_FTL("lok_preinit() in " << loadedLibrary << " failed");
         return false;
     }
+
+    LOG_DBG("After lok_preinit_2: loKitPtr=" << loKitPtr);
 
     LOG_TRC("Finished lok_preinit(" << loTemplate << "/program\", \"file:///tmp/user\") in "
                                     << std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -2965,5 +3378,14 @@ void dump_kit_state()
     fprintf(stderr, "%s", msg.c_str());
     LOG_TRC(msg);
 }
+
+#if defined __GLIBC__
+#  include <malloc.h>
+void dump_malloc_state()
+{
+    malloc_info(0, stderr);
+    fflush(stderr);
+}
+#endif
 
 /* vim:set shiftwidth=4 softtabstop=4 expandtab: */

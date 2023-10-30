@@ -81,7 +81,7 @@ namespace FileUtil
 {
     std::string createRandomDir(const std::string& path)
     {
-        const std::string name = Util::rng::getFilename(64);
+        std::string name = Util::rng::getFilename(64);
 #if HAVE_STD_FILESYSTEM
         filesystem::create_directory(path + '/' + name);
 #else
@@ -210,6 +210,23 @@ namespace FileUtil
         return newTmp;
     }
 
+    std::string createTmpDir(std::string dirName, std::string root)
+    {
+        if (root.empty())
+            root = getSysTempDirectoryPath();
+
+        Poco::File(root).createDirectories();
+
+        // Don't const to allow for automatic move on return.
+        std::string newTmp = root + '/' + dirName;
+        if (::mkdir(newTmp.c_str(), S_IRWXU) < 0)
+        {
+            LOG_SYS("Failed to create temp directory [" << newTmp << ']');
+            return root;
+        }
+        return newTmp;
+    }
+
     std::string getTempFileCopyPath(const std::string& srcDir, const std::string& srcFilename, const std::string& dstFilenamePrefix)
     {
         const std::string srcPath = srcDir + '/' + srcFilename;
@@ -279,11 +296,15 @@ namespace FileUtil
                 nftw(path.c_str(), nftw_cb, 128, FTW_DEPTH | FTW_PHYS);
             }
         }
-        catch (const std::exception&e)
+        catch (const std::exception& e)
         {
-            // Already removed or we don't care about failures.
-            LOG_ERR("Failed to remove [" << path << "] " << (recursive ? "recursively: " : "only: ")
-                                         << e.what());
+            // Don't complain if already non-existant.
+            if (FileUtil::Stat(path).exists())
+            {
+                // Error only if it still exists.
+                LOG_ERR("Failed to remove ["
+                        << path << "] " << (recursive ? "recursively: " : "only: ") << e.what());
+            }
         }
 #endif
     }
@@ -321,7 +342,7 @@ namespace FileUtil
         if (access(path, W_OK) == 0)
             return true;
 
-        LOG_ERR("Cannot access path [" << path << "]: " << strerror(errno));
+        LOG_INF("No write access to path [" << path << "]: " << strerror(errno));
         return false;
     }
 
@@ -462,25 +483,32 @@ namespace FileUtil
     std::string checkDiskSpaceOnRegisteredFileSystems(const bool cacheLastCheck)
     {
         static std::chrono::steady_clock::time_point lastCheck;
+        static std::string lastResult;
         std::chrono::steady_clock::time_point now(std::chrono::steady_clock::now());
 
         std::lock_guard<std::mutex> lock(fsmutex);
 
-        // Don't check more often than once a minute
-        if (std::chrono::duration_cast<std::chrono::seconds>(now - lastCheck).count() < 60)
-            return std::string();
-
         if (cacheLastCheck)
+        {
+            // Don't check more often than once a minute
+            if (std::chrono::duration_cast<std::chrono::seconds>(now - lastCheck).count() < 60)
+                return lastResult;
+
             lastCheck = now;
+        }
 
         for (const auto& i: filesystems)
         {
             if (!checkDiskSpace(i.getPath()))
             {
+                if (cacheLastCheck)
+                    lastResult = i.getPath();
                 return i.getPath();
             }
         }
 
+        if (cacheLastCheck)
+            lastResult = std::string();
         return std::string();
     }
 #endif
@@ -490,18 +518,20 @@ namespace FileUtil
         assert(!path.empty());
 
 #if !MOBILEAPP
-        bool hookResult;
+        bool hookResult = true;
         if (UnitBase::get().filterCheckDiskSpace(path, hookResult))
             return hookResult;
 #endif
 
         // we should be able to run just OK with 5GB for production or 1GB for development
+#if defined(__linux__) || defined(__FreeBSD__) || defined(IOS)
 #if ENABLE_DEBUG
-        const int64_t gb(1);
+        constexpr int64_t gb(1);
 #else
-        const int64_t gb(5);
+        constexpr int64_t gb(5);
 #endif
         constexpr int64_t ENOUGH_SPACE = gb*1024*1024*1024;
+#endif
 
 #if defined(__linux__) || defined(__FreeBSD__)
         struct statfs sfs;
@@ -555,6 +585,11 @@ namespace FileUtil
     std::string anonymizeUsername(const std::string& username)
     {
         return AnonymizeUserData ? Util::anonymize(username, AnonymizationSalt) : username;
+    }
+
+    std::string extractFileExtension(const std::string& path)
+    {
+        return Util::splitLast(path, '.', true).second;
     }
 
 } // namespace FileUtil

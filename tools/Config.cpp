@@ -9,7 +9,10 @@
 
 #include <iostream>
 #include <iomanip>
+#include <pwd.h>
 #include <sstream>
+#include <sys/stat.h>
+#include <sys/types.h>
 #include <sysexits.h>
 #include <termios.h>
 #include <unistd.h>
@@ -17,7 +20,9 @@
 #include <openssl/rand.h>
 #include <openssl/evp.h>
 
+#include <Poco/Crypto/RSAKey.h>
 #include <Poco/Exception.h>
+#include <Poco/File.h>
 #include <Poco/Util/Application.h>
 #include <Poco/Util/HelpFormatter.h>
 #include <Poco/Util/Option.h>
@@ -72,10 +77,12 @@ class Config: public Application
 
 public:
     static std::string ConfigFile;
+    static std::string OldConfigFile;
     static std::string SupportKeyString;
     static bool SupportKeyStringProvided;
     static std::uint64_t AnonymizationSalt;
     static bool AnonymizationSaltProvided;
+    static bool Write;
 
 protected:
     void defineOptions(OptionSet&) override;
@@ -91,10 +98,15 @@ std::string Config::ConfigFile =
 #endif
     "/coolwsd.xml";
 
+std::string Config::OldConfigFile = "/etc/loolwsd/loolwsd.xml";
+bool Config::Write = false;
+
 std::string Config::SupportKeyString;
 bool Config::SupportKeyStringProvided = false;
 std::uint64_t Config::AnonymizationSalt = 0;
 bool Config::AnonymizationSaltProvided = false;
+
+int MigrateConfig(std::string, std::string,  bool);
 
 void Config::displayHelp()
 {
@@ -111,12 +123,14 @@ void Config::displayHelp()
     // Command list
     std::cout << std::endl
               << "Commands: " << std::endl
+              << "    migrateconfig [--old-config-file=<path>] [--config-file=<path>] [--write]" << std::endl
               << "    anonymize [string-1]...[string-n]" << std::endl
               << "    set-admin-password" << std::endl
 #if ENABLE_SUPPORT_KEY
               << "    set-support-key" << std::endl
 #endif
               << "    set <key> <value>" << std::endl
+              << "    generate-proof-key" << std::endl
               << "    update-system-template" << std::endl << std::endl;
 }
 
@@ -131,11 +145,15 @@ void Config::defineOptions(OptionSet& optionSet)
                         .required(false)
                         .repeatable(false)
                         .argument("path"));
+    optionSet.addOption(Option("old-config-file", "", "Specify configuration file path to migrate manually.")
+                        .required(false)
+                        .repeatable(false)
+                        .argument("path"));
 
     optionSet.addOption(Option("pwd-salt-length", "", "Length of the salt to use to hash password [set-admin-password].")
                         .required(false)
-                        .repeatable(false).
-                        argument("number"));
+                        .repeatable(false)
+                        .argument("number"));
     optionSet.addOption(Option("pwd-iterations", "", "Number of iterations to do in PKDBF2 password hashing [set-admin-password].")
                         .required(false)
                         .repeatable(false)
@@ -156,6 +174,10 @@ void Config::defineOptions(OptionSet& optionSet)
                         .required(false)
                         .repeatable(false)
                         .argument("salt"));
+
+    optionSet.addOption(Option("write", "", "Write migrated configuration.")
+                        .required(false)
+                        .repeatable(false));
 }
 
 void Config::handleOption(const std::string& optionName, const std::string& optionValue)
@@ -164,11 +186,15 @@ void Config::handleOption(const std::string& optionName, const std::string& opti
     if (optionName == "help")
     {
         displayHelp();
-        std::exit(EX_OK);
+        Util::forcedExit(EX_OK);
     }
     else if (optionName == "config-file")
     {
         ConfigFile = optionValue;
+    }
+    else if (optionName == "old-config-file")
+    {
+        OldConfigFile = optionValue;
     }
     else if (optionName == "pwd-salt-length")
     {
@@ -211,6 +237,10 @@ void Config::handleOption(const std::string& optionName, const std::string& opti
         AnonymizationSaltProvided = true;
         std::cout << "Anonymization Salt: [" << AnonymizationSalt << "]." << std::endl;
     }
+    else if (optionName == "write")
+    {
+        Write = true;
+    }
 }
 
 int Config::main(const std::vector<std::string>& args)
@@ -229,9 +259,9 @@ int Config::main(const std::vector<std::string>& args)
     if (args[0] == "set-admin-password")
     {
 #if HAVE_PKCS5_PBKDF2_HMAC
-        unsigned char pwdhash[_adminConfig.getPwdHashLength()];
-        unsigned char salt[_adminConfig.getPwdSaltLength()];
-        RAND_bytes(salt, _adminConfig.getPwdSaltLength());
+        std::vector<unsigned char> pwdhash(_adminConfig.getPwdHashLength());
+        std::vector<unsigned char> salt(_adminConfig.getPwdSaltLength());
+        RAND_bytes(salt.data(), _adminConfig.getPwdSaltLength());
         std::stringstream stream;
 
         // Ask for admin username
@@ -267,10 +297,10 @@ int Config::main(const std::vector<std::string>& args)
 
         // Do the magic !
         PKCS5_PBKDF2_HMAC(adminPwd.c_str(), -1,
-                          salt, _adminConfig.getPwdSaltLength(),
+                          salt.data(), _adminConfig.getPwdSaltLength(),
                           _adminConfig.getPwdIterations(),
                           EVP_sha512(),
-                          _adminConfig.getPwdHashLength(), pwdhash);
+                          _adminConfig.getPwdHashLength(), pwdhash.data());
 
         // Make salt randomness readable
         for (unsigned j = 0; j < _adminConfig.getPwdSaltLength(); ++j)
@@ -348,11 +378,14 @@ int Config::main(const std::vector<std::string>& args)
                 const std::string val = _coolConfig.getString(args[1]);
                 std::cout << "Previous value found in config file: \""  << val << '"' << std::endl;
                 std::cout << "Changing value to: \"" << args[2] << '"' << std::endl;
-                _coolConfig.setString(args[1], args[2]);
-                changed = true;
             }
             else
-                std::cerr << "No property, \"" << args[1] << "\"," << " found in config file." << std::endl;
+            {
+                std::cout << "No property, \"" << args[1] << "\"," << " found in config file." << std::endl;
+                std::cout << "Adding it as new with value: \"" << args[2] << '"' << std::endl;
+            }
+            _coolConfig.setString(args[1], args[2]);
+            changed = true;
         }
         else
             std::cerr << "set expects a key and value as arguments" << std::endl
@@ -382,6 +415,77 @@ int Config::main(const std::vector<std::string>& args)
         for (std::size_t i = 1; i < args.size(); ++i)
         {
             std::cout << '[' << args[i] << "]: " << Util::anonymizeUrl(args[i], AnonymizationSalt) << std::endl;
+        }
+    }
+    else if (args[0] == "migrateconfig")
+    {
+        std::cout << "Migrating old configuration from " << OldConfigFile << " to " << ConfigFile << "." << std::endl;
+        if (!Write)
+            std::cout << "This is a dry run, no changes are written to file." << std::endl;
+        std::cout << std::endl;
+        const std::string OldConfigMigrated = OldConfigFile + ".migrated";
+        Poco::File AlreadyMigrated(OldConfigMigrated);
+        if (AlreadyMigrated.exists())
+        {
+            std::cout << "Migration already performed, file " + OldConfigMigrated + " exists. Aborting." << std::endl;
+        }
+        else
+        {
+            const int Result = MigrateConfig(OldConfigFile, ConfigFile, Write);
+            if (Result == 0)
+            {
+                std::cout << "Successful migration." << std::endl;
+                if (Write)
+                {
+                    Poco::File ConfigToRename(OldConfigFile);
+                    ConfigToRename.renameTo(OldConfigMigrated);
+                }
+            }
+            else
+                std::cout << "Migration of old configuration failed." << std::endl;
+        }
+    }
+    else if (args[0] == "generate-proof-key")
+    {
+        std::string proofKeyPath =
+#if ENABLE_DEBUG
+            DEBUG_ABSSRCDIR
+#else
+            COOLWSD_CONFIGDIR
+#endif
+            "/proof_key";
+
+#if !ENABLE_DEBUG
+        struct passwd* pwd;
+        pwd = getpwnam(COOL_USER_ID);
+        if (pwd == NULL)
+        {
+            std::cerr << "User '" COOL_USER_ID
+                         "' does not exist. Please reinstall coolwsd package, or in case of manual "
+                         "installation from source, create the '" COOL_USER_ID "' user manually."
+                      << std::endl;
+            return EX_NOUSER;
+        }
+#endif
+
+        Poco::File proofKeyFile(proofKeyPath);
+        if (!proofKeyFile.exists())
+        {
+            Poco::Crypto::RSAKey proofKey =
+                Poco::Crypto::RSAKey(Poco::Crypto::RSAKey::KeyLength::KL_2048,
+                                     Poco::Crypto::RSAKey::Exponent::EXP_LARGE);
+            proofKey.save(proofKeyPath + ".pub", proofKeyPath, "" /*no password*/);
+#if !ENABLE_DEBUG
+            chmod(proofKeyPath.c_str(), S_IRUSR | S_IWUSR);
+            const int ChResult = chown(proofKeyPath.c_str(), pwd->pw_uid, -1);
+            if (ChResult != 0)
+                std::cerr << "Changing owner of " + proofKeyPath + " failed." << std::endl;
+#endif
+        }
+        else
+        {
+            std::cerr << proofKeyPath << " exists already. New proof key was not generated."
+                      << std::endl;
         }
     }
     else

@@ -20,7 +20,7 @@ L.Control.ContextMenu = L.Control.extend({
 			 * in following list is just for reference and ease of locating uno command
 			 * from context menu structure.
 			 */
-			general: ['Cut', 'Copy', 'Paste', 'Delete',
+			general: ['Cut', 'Copy', 'Paste', 'PasteSpecial', 'Delete',
 					  'FormatPaintbrush', 'ResetAttributes',
 					  'NumberingStart', 'ContinueNumbering', 'IncrementLevel', 'DecrementLevel',
 					  'OpenHyperlinkOnCursor', 'EditHyperlink', 'CopyHyperlinkLocation', 'RemoveHyperlink',
@@ -39,7 +39,8 @@ L.Control.ContextMenu = L.Control.extend({
 					  'FormatStockGain', 'InsertDataLabel' , 'DeleteDataLabel', 'ResetDataPoint',
 					  'InsertTrendline', 'InsertMeanValue', 'InsertXErrorBars' , 'InsertYErrorBars', 'ResetAllDataPoints' , 'DeleteAxis',
 					  'InsertAxisTitle', 'InsertMinorGrid', 'InsertMajorGrid' , 'InsertAxis', 'DeleteMajorGrid' , 'DeleteMinorGrid',
-					  'SpellCheckIgnoreAll', 'LanguageStatus', 'SpellCheckApplySuggestion',
+					  'SpellCheckIgnoreAll', 'LanguageStatus', 'SpellCheckApplySuggestion', 'PageDialog',
+					  'CompressGraphic', 'GraphicDialog', 'InsertCaptionDialog',
 					  'NextTrackedChange', 'PreviousTrackedChange', 'RejectTrackedChange', 'AcceptTrackedChange'],
 
 			text: ['TableInsertMenu',
@@ -49,11 +50,14 @@ L.Control.ContextMenu = L.Control.extend({
 				   'MergeCells', 'SetOptimalColumnWidth', 'SetOptimalRowHeight',
 				   'UpdateCurIndex','RemoveTableOf',
 				   'ReplyComment', 'DeleteComment', 'DeleteAuthor', 'DeleteAllNotes',
-				   'SpellingAndGrammarDialog', 'FontDialog', 'FontDialogForParagraph',
+				   'SpellingAndGrammarDialog', 'FontDialog', 'FontDialogForParagraph', 'TableDialog',
 				   'SpellCheckIgnore'],
 
-			spreadsheet: ['MergeCells', 'SplitCell', 'RecalcPivotTable', 'DataDataPilotRun', 'DeletePivotTable',
-				      'FormatCellDialog', 'DeleteNote', 'SetAnchorToCell', 'SetAnchorToCellResize'],
+			spreadsheet: ['MergeCells', 'SplitCell', 'InsertCell', 'DeleteCell',
+				      'RecalcPivotTable', 'DataDataPilotRun', 'DeletePivotTable',
+				      'FormatCellDialog', 'DeleteNote', 'SetAnchorToCell', 'SetAnchorToCellResize',
+				      'FormatSparklineMenu', 'InsertSparkline', 'DeleteSparkline', 'DeleteSparklineGroup',
+				      'EditSparklineGroup', 'EditSparkline', 'GroupSparklines', 'UngroupSparklines'],
 
 			presentation: ['SetDefault'],
 			drawing: []
@@ -70,6 +74,7 @@ L.Control.ContextMenu = L.Control.extend({
 		// lines as in the arrays above.
 		mobileBlackList: [
 			// general
+			'PasteSpecial',
 			'TransformDialog', 'FormatLine', 'FormatArea',
 			'InsertTitles', 'InsertRemoveAxes',
 			'DiagramType', 'DataRanges',
@@ -78,10 +83,12 @@ L.Control.ContextMenu = L.Control.extend({
 			'InsertTrendline', 'InsertXErrorBars' , 'InsertYErrorBars', 'FormatChartArea',
 			'FormatMeanValue', 'DiagramData', 'FormatLegend', 'FormatTrendline',
 			'FormatTrendlineEquation', 'FormatStockLoss', 'FormatStockGain', 'LanguageStatus',
+			'PageDialog',
 			// text
 			'SpellingAndGrammarDialog', 'FontDialog', 'FontDialogForParagraph',
 			// spreadsheet
-			'FormatCellDialog', 'DataDataPilotRun'
+			'FormatCellDialog', 'DataDataPilotRun',
+			'GroupSparklines', 'UngroupSparklines'
 		]
 	},
 
@@ -116,7 +123,7 @@ L.Control.ContextMenu = L.Control.extend({
 
 	_onContextMenu: function(obj) {
 		var map = this._map;
-		if (!map.isPermissionEdit()) {
+		if (!map.isEditMode()) {
 			return;
 		}
 
@@ -194,6 +201,15 @@ L.Control.ContextMenu = L.Control.extend({
 				continue;
 			}
 
+			// reduce Paste Special submenu
+			if (item.type === 'menu' && item.text.replace('~', '') === 'Paste Special'
+				&& item.menu && item.menu.length) {
+				item.text = _('Paste Special');
+				item.command = '.uno:PasteSpecial';
+				item.type = item.menu[0].type;
+				item.menu = undefined;
+			}
+
 			if (item.type === 'separator') {
 				if (isLastItemText) {
 					contextMenu['sep' + sepIdx++] = this.options.SEPARATOR;
@@ -228,6 +244,9 @@ L.Control.ContextMenu = L.Control.extend({
 				if (window.mode.isMobile() && this.options.mobileBlackList.indexOf(commandName) !== -1)
 					continue;
 
+				if (commandName == 'None' && !item.text)
+					continue;
+
 				if (hasParam || commandName === 'None' || commandName === 'FontDialogForParagraph' || commandName === 'Delete') {
 					itemName = window.removeAccessKey(item.text);
 					itemName = itemName.replace(' ', '\u00a0');
@@ -255,10 +274,6 @@ L.Control.ContextMenu = L.Control.extend({
 				isLastItemText = true;
 			} else if (item.type === 'menu') {
 				itemName = item.text;
-				if (itemName.replace('~', '') === 'Paste Special') {
-					itemName = _('Paste Special');
-					continue; // Kill paste special for now.
-				}
 				var submenu = this._createContextMenuStructure(item);
 				// ignore submenus with all items disabled
 				if (Object.keys(submenu).length === 0) {
@@ -290,7 +305,6 @@ L.control.contextMenu = function (options) {
 
 // Using 'click' and <a href='#' is vital for copy/paste security context.
 L.installContextMenu = function(options) {
-	options.itemClickEvent = 'click';
 	var rewrite = function(items) {
 		if (items === undefined)
 			return;
@@ -300,7 +314,7 @@ L.installContextMenu = function(options) {
 			if (items[key] === undefined)
 				continue;
 			if (!items[key].isHtmlName) {
-				// console.log('re-write name ' + items[key].name);
+				// window.app.console.log('re-write name ' + items[key].name);
 				items[key].name = '<a href="#" class="context-menu-link">' + items[key].name + '</a>';
 				items[key].isHtmlName = true;
 			}
@@ -308,5 +322,18 @@ L.installContextMenu = function(options) {
 		}
 	};
 	rewrite(options.items);
+
+	if (document.documentElement.dir === 'rtl') {
+		options.positionSubmenu = function($menu) {
+			if (typeof $menu === 'undefined') {
+				return;
+			}
+
+			$menu.css('right', 'auto');
+			$.contextMenu.defaults.positionSubmenu.call(this, $menu);
+			$menu.css('right', $menu.css('left'));
+		};
+	}
+
 	$.contextMenu(options);
 };

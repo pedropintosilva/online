@@ -64,12 +64,13 @@ public:
 #if !MOBILEAPP
         const int rc = ::listen(getFD(), backlog);
 #else
+        (void) backlog;
         const int rc = fakeSocketListen(getFD());
 #endif
         if (rc)
-            LOG_SYS('#' << getFD() << " Failed to listen");
+            LOG_SYS("Failed to listen");
         else
-            LOG_TRC('#' << getFD() << " Listening");
+            LOG_TRC("Listening");
         return rc == 0;
     }
 
@@ -99,7 +100,7 @@ public:
                 throw std::runtime_error(msg + std::strerror(errno) + ')');
             }
 
-            LOG_DBG("Accepted client #" << clientSocket->getFD());
+            LOG_TRC("Accepted client #" << clientSocket->getFD());
             _clientPoller.insertNewSocket(clientSocket);
         }
     }
@@ -134,9 +135,15 @@ public:
     virtual bool bind(Type, int) override { assert(false); return false; }
     virtual std::shared_ptr<Socket> accept() override;
     std::string bind();
+#ifndef HAVE_ABSTRACT_UNIX_SOCKETS
+    bool link(std::string to);
+#endif
 
 private:
     std::string _name;
+#ifndef HAVE_ABSTRACT_UNIX_SOCKETS
+    std::string _linkName;
+#endif
 };
 
 #endif

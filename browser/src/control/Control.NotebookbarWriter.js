@@ -14,7 +14,7 @@ L.Control.NotebookbarWriter = L.Control.Notebookbar.extend({
 				'name': 'File',
 			},
 			{
-				'text': _('~Home'),
+				'text': _('Hom~e'),
 				'id': this.HOME_TAB_ID,
 				'name': 'Home',
 				'context': 'default|Text|DrawText'
@@ -40,9 +40,14 @@ L.Control.NotebookbarWriter = L.Control.Notebookbar.extend({
 				'name': 'Review'
 			},
 			{
-				'text': _('Format'),
+				'text': _('F~ormat'),
 				'id': '-3',
 				'name': 'Format',
+			},
+			{
+				'text': _('For~m'),
+				'id': 'Form',
+				'name': 'Form',
 			},
 			{
 				'text': _('~Table'),
@@ -51,10 +56,15 @@ L.Control.NotebookbarWriter = L.Control.Notebookbar.extend({
 				'context': 'Table'
 			},
 			{
-				'text': _('~Draw'),
+				'text': _('Dra~w'),
 				'id': '-9',
 				'name': 'Draw',
 				'context': 'Draw|DrawLine|3DObject|MultiObject|Graphic|DrawFontwork'
+			},
+			{
+				'text': _('~View'),
+				'id': 'View',
+				'name': 'View',
 			},
 			{
 				'text': _('~Help'),
@@ -74,43 +84,88 @@ L.Control.NotebookbarWriter = L.Control.Notebookbar.extend({
 				this.getReferencesTab(),
 				this.getReviewTab(),
 				this.getFormatTab(),
+				this.getFormTab(),
 				this.getTableTab(),
 				this.getDrawTab(),
+				this.getViewTab(),
 				this.getHelpTab()
-			], selectedId);
+			 ], selectedId);
 	},
 
 	getFileTab: function() {
-		var hasSigning = L.DomUtil.get('document-signing-bar') !== null;
 		var hasRevisionHistory = L.Params.revHistoryEnabled;
 		var hasPrint = !this._map['wopi'].HidePrintOption;
+		var hasRepair = !this._map['wopi'].HideRepairOption;
 		var hasSaveAs = !this._map['wopi'].UserCanNotWriteRelative;
 		var hasShare = this._map['wopi'].EnableShare;
+		var hideDownload = this._map['wopi'].HideExportOption;
+		var hasGroupedDownloadAs = !!window.groupDownloadAsForNb;
+		var hasGroupedSaveAs = window.uiDefaults && window.uiDefaults.saveAsMode === 'group';
+		var hasRunMacro = !(window.enableMacrosExecution  === 'false');
+		var hasSave = !this._map['wopi'].HideSaveOption;
+		var content = [];
 
-		var content = [
-			hasSaveAs ?
-				{
+		var addRepairToDownloads = hasRepair && !hideDownload;
+		var addRepairToColumn = hasRepair && (hideDownload || hasGroupedDownloadAs);
+
+		if (hasSave) {
+			content.push({
+				'type': 'toolbox',
+				'children': [
+					{
+						'id': 'file-save',
+						'type': 'bigtoolitem',
+						'text': _('Save'),
+						'command': '.uno:Save'
+					}
+				]
+			});
+		}
+
+		if (hasSaveAs) {
+			if (hasGroupedSaveAs) {
+				content.push({
+					'id': 'saveas',
+					'type': 'bigmenubartoolitem',
+					'text': _('Save As'),
+				});
+			} else {
+				content.push({
 					'id': 'file-saveas',
 					'type': 'bigtoolitem',
 					'text': _UNO('.uno:SaveAs', 'text'),
 					'command': '.uno:SaveAs'
-				} : {},
+				});
+			}
+		}
+
+		if (hasSaveAs) {
+			content.push({
+				'id': 'exportas',
+				'type': 'bigmenubartoolitem',
+				'text': _('Export As'),
+			});
+		}
+
+		content = content.concat([
 			{
 				'type': 'container',
 				'children': [
 					hasShare ?
 						{
-							'id': 'shareas',
-							'type': 'menubartoolitem',
+							'id': 'ShareAs',
+							'type': 'customtoolitem',
 							'text': _('Share'),
-							'command': '.uno:shareas'
+							'command': 'shareas',
+							'inlineLabel': true
 						} : {},
 					hasRevisionHistory ?
 						{
-							'id': 'rev-history',
-							'type': 'menubartoolitem',
+							'id': 'Rev-History',
+							'type': 'customtoolitem',
 							'text': _('See history'),
-							'command': '.uno:rev-history'
+							'command': 'rev-history',
+							'inlineLabel': true
 						} : {},
 				],
 				'vertical': 'true'
@@ -122,80 +177,132 @@ L.Control.NotebookbarWriter = L.Control.Notebookbar.extend({
 					'text': _UNO('.uno:Print', 'text'),
 					'command': '.uno:Print'
 				} : {},
-			{
-				'type': 'container',
-				'children': [
-					{
-						'id': 'downloadas-odt',
-						'type': 'menubartoolitem',
-						'text': _('ODF Text Document (.odt)'),
-						'command': ''
-					},
-					{
-						'id': 'downloadas-rtf',
-						'type': 'menubartoolitem',
-						'text': _('Rich Text (.rtf)'),
-						'command': ''
-					},
-				],
-				'vertical': 'true'
-			},
-			{
-				'type': 'container',
-				'children': [
-					{
-						'id': 'downloadas-doc',
-						'type': 'menubartoolitem',
-						'text': _('Word 2003 Document (.doc)'),
-						'command': ''
-					},
-					{
-						'id': 'downloadas-docx',
-						'type': 'menubartoolitem',
-						'text': _('Word Document (.docx)'),
-						'command': ''
-					},
-				],
-				'vertical': 'true'
-			},
-			{
-				'type': 'container',
-				'children': [
-					{
-						'id': 'downloadas-pdf',
-						'type': 'menubartoolitem',
-						'text': _('PDF Document (.pdf)'),
-						'command': ''
-					},
-					{
-						'id': 'downloadas-epub',
-						'type': 'menubartoolitem',
-						'text': _('EPUB Document (.epub)'),
-						'command': ''
-					},
-				],
-				'vertical': 'true'
-			},
-			{
+			hasRunMacro ?
+				{
+					'type': 'toolbox',
+					'children': [
+						{
+							'id': 'runmacro',
+							'type': 'bigtoolitem',
+							'text': _UNO('.uno:RunMacro', 'text'),
+							'command': '.uno:RunMacro'
+						}
+					]
+				} : {}
+		]);
+
+		if (hasGroupedDownloadAs && !hideDownload) {
+			content.push({
+				'id': 'downloadas',
+				'type': 'bigmenubartoolitem',
+				'text': _('Download')
+			});
+		} else if (!hideDownload) {
+			content = content.concat([
+				{
+					'type': 'container',
+					'children': [
+						{
+							'id': 'downloadas-odt',
+							'type': 'menubartoolitem',
+							'text': _('ODF Text Document (.odt)'),
+							'command': ''
+						},
+						{
+							'id': 'downloadas-rtf',
+							'type': 'menubartoolitem',
+							'text': _('Rich Text (.rtf)'),
+							'command': ''
+						},
+					],
+					'vertical': 'true'
+				},
+				{
+					'type': 'container',
+					'children': [
+						{
+							'id': 'downloadas-doc',
+							'type': 'menubartoolitem',
+							'text': _('Word 2003 Document (.doc)'),
+							'command': ''
+						},
+						{
+							'id': 'downloadas-docx',
+							'type': 'menubartoolitem',
+							'text': _('Word Document (.docx)'),
+							'command': ''
+						},
+					],
+					'vertical': 'true'
+				},
+				{
+					'type': 'container',
+					'children': [
+						{
+							'id': !window.ThisIsAMobileApp ? 'exportdirectpdf' : 'downloadas-direct-pdf',
+							'type': 'customtoolitem',
+							'text': _('PDF Document (.pdf)'),
+							'command': !window.ThisIsAMobileApp ? 'exportdirectpdf' : 'downloadas-direct-pdf',
+							'inlineLabel': true
+						},
+						{
+							'id': !window.ThisIsAMobileApp ? 'exportpdf' : 'downloadas-pdf',
+							'type': 'customtoolitem',
+							'text': _('PDF Document (.pdf) - Expert'),
+							'command': !window.ThisIsAMobileApp ? 'exportpdf' : 'downloadas-pdf',
+							'inlineLabel': true
+						},
+					],
+					'vertical': 'true'
+				},
+				{
+					'type': 'container',
+					'children': [
+						{
+							'id': !window.ThisIsAMobileApp ? 'exportepub' : 'downloadas-epub',
+							'type': 'customtoolitem',
+							'text': _('EPUB Document (.epub)'),
+							'command': !window.ThisIsAMobileApp ? 'exportepub' : 'downloadas-epub',
+							'inlineLabel': true
+						},
+						addRepairToDownloads? {
+							'id': 'repair',
+							'type': 'menubartoolitem',
+							'text': _('Repair'),
+							'command': _('Repair')
+						} : {}
+					],
+					'vertical': 'true'
+				}
+			]);
+		}
+
+		if (addRepairToColumn) {
+			content.push({
 				'type': 'container',
 				'children': [
 					{
 						'id': 'repair',
-						'type': 'menubartoolitem',
+						'type': 'bigmenubartoolitem',
 						'text': _('Repair'),
 						'command': _('Repair')
-					},
-					hasSigning ?
-						{
-							'id': 'signdocument',
-							'type': 'menubartoolitem',
-							'text': _('Sign document'),
-							'command': ''
-						} : {},
+					}
 				],
 				'vertical': 'true'
-			}
-		];
+			});
+		}
+
+		content.push({
+			'type': 'container',
+			'children': [
+				{
+					'id': 'properties',
+					'type': 'bigtoolitem',
+					'text': _('Properties'),
+					'command': '.uno:SetDocumentProperties'
+				}
+			]
+		});
 
 		return this.getTabPage('File', content);
 	},
@@ -203,11 +310,26 @@ L.Control.NotebookbarWriter = L.Control.Notebookbar.extend({
 	getHelpTab: function() {
 		var hasLatestUpdates = window.enableWelcomeMessage;
 		var hasFeedback = this._map.feedback;
+		var hasAccessibilitySupport = window.enableAccessibility;
+		var hasAccessibilityCheck = this._map.getDocType() === 'text';
+		var hasAbout = L.DomUtil.get('about-dialog') !== null;
 
 		var content = [
 			{
 				'type': 'container',
+				'id': 'Help-container',
 				'children': [
+					{
+						'type': 'toolbox',
+						'children': [
+							{
+								'id': 'forum',
+								'type': 'bigtoolitem',
+								'text': _('Forum'),
+								'command': '.uno:ForumHelp'
+							}
+						]
+					},
 					{
 						'type': 'toolbox',
 						'children': [
@@ -230,6 +352,18 @@ L.Control.NotebookbarWriter = L.Control.Notebookbar.extend({
 							}
 						]
 					},
+					hasAccessibilitySupport ?
+						{
+							'id':'togglea11ystate',
+							'type': 'bigmenubartoolitem',
+							'text': _('Accessibility Support')
+						} : {},
+					hasAccessibilityCheck ?
+						{
+							'type': 'bigtoolitem',
+							'text': _UNO('.uno:AccessibilityCheck', 'text'),
+							'command': '.uno:AccessibilityCheck'
+						} : {},
 					{
 						'type': 'toolbox',
 						'children': [
@@ -246,7 +380,7 @@ L.Control.NotebookbarWriter = L.Control.Notebookbar.extend({
 							'type': 'toolbox',
 							'children': [
 								{
-									'id': 'latest-updates',
+									'id': 'latestupdates',
 									'type': 'bigtoolitem',
 									'text': _('Latest Updates'),
 									'command': '.uno:LatestUpdates'
@@ -265,17 +399,18 @@ L.Control.NotebookbarWriter = L.Control.Notebookbar.extend({
 								}
 							]
 						} : {},
-					{
-						'type': 'toolbox',
-						'children': [
-							{
-								'id': 'about',
-								'type': 'bigtoolitem',
-								'text': _('About'),
-								'command': '.uno:About'
-							}
-						]
-					}
+					hasAbout ?
+						{
+							'type': 'toolbox',
+							'children': [
+								{
+									'id': 'about',
+									'type': 'bigtoolitem',
+									'text': _('About'),
+									'command': '.uno:About'
+								}
+							]
+						} : {}
 				]
 			}
 		];
@@ -285,6 +420,23 @@ L.Control.NotebookbarWriter = L.Control.Notebookbar.extend({
 
 	getHomeTab: function() {
 		var content = [
+			{
+				'id': 'home-undo-redo',
+				'type': 'container',
+				'children': [
+					{
+						'type': 'toolitem',
+						'text': _UNO('.uno:Undo'),
+						'command': '.uno:Undo'
+					},
+					{
+						'type': 'toolitem',
+						'text': _UNO('.uno:Redo'),
+						'command': '.uno:Redo'
+					},
+				],
+				'vertical': 'true'
+			},
 			{
 				'type': 'bigtoolitem',
 				'text': _UNO('.uno:Paste'),
@@ -409,7 +561,7 @@ L.Control.NotebookbarWriter = L.Control.Notebookbar.extend({
 									},
 									{
 										'type': 'toolitem',
-										'text': _UNO('.uno:CharSpacing', 'text'),
+										'text': _UNO('.uno:Spacing'),
 										'command': '.uno:CharSpacing'
 									},
 									{
@@ -526,18 +678,7 @@ L.Control.NotebookbarWriter = L.Control.Notebookbar.extend({
 			{
 				'id': 'stylesview',
 				'type': 'iconview',
-				'entries': [
-					{
-						'text': _('Default Style'),
-						'selected': 'true'
-					},
-					{
-						'text': _('Text Body'),
-					},
-					{
-						'text': _('Title'),
-					}
-				],
+				'entries': [],
 				'vertical': 'false'
 			},
 			{
@@ -567,9 +708,10 @@ L.Control.NotebookbarWriter = L.Control.Notebookbar.extend({
 								'command': '.uno:InsertPagebreak'
 							},
 							{
-								'type': 'toolitem',
+								'id': 'CharmapControl',
+								'type': 'customtoolitem',
 								'text': _UNO('.uno:CharmapControl'),
-								'command': '.uno:CharmapControl'
+								'command': 'charmapcontrol'
 							},
 							{
 								'type': 'toolitem',
@@ -649,6 +791,16 @@ L.Control.NotebookbarWriter = L.Control.Notebookbar.extend({
 				'type': 'bigtoolitem',
 				'text': _UNO('.uno:TransformDialog'),
 				'command': '.uno:TransformDialog'
+			},
+			{
+				'type': 'bigtoolitem',
+				'text': _UNO('.uno:ChapterNumberingDialog', 'text'),
+				'command': '.uno:ChapterNumberingDialog'
+			},
+			{
+				'type': 'bigtoolitem',
+				'text': _UNO('.uno:ThemeDialog'),
+				'command': '.uno:ThemeDialog'
 			}
 		];
 
@@ -656,11 +808,137 @@ L.Control.NotebookbarWriter = L.Control.Notebookbar.extend({
 	},
 
 	getInsertTab: function() {
+		var isODF = L.LOUtil.isFileODF(this._map);
 		var content = [
 			{
 				'type': 'bigtoolitem',
 				'text': _UNO('.uno:InsertPagebreak', 'text'),
 				'command': '.uno:InsertPagebreak'
+			},
+			{
+				'type': 'bigtoolitem',
+				'text': _UNO('.uno:InsertTable', 'text'),
+				'command': '.uno:InsertTable'
+			},
+			{
+				'type': 'bigtoolitem',
+				'text': _UNO('.uno:InsertGraphic'),
+				'command': '.uno:InsertGraphic'
+			},
+			{
+				'type': 'container',
+				'children': [
+					{
+						'type': 'toolbox',
+						'children': [
+							{
+								'type': 'toolitem',
+								'text': _('Shapes'),
+								'command': '.uno:BasicShapes'
+							}
+						]
+					},
+					{
+						'type': 'toolbox',
+						'children': [
+							{
+								'type': 'toolitem',
+								'text': _UNO('.uno:InsertObjectChart'),
+								'command': '.uno:InsertObjectChart'
+							}
+						]
+					}
+				],
+				'vertical': 'true'
+			},
+			(this._map['wopi'].EnableRemoteLinkPicker) ? {
+				'type': 'container',
+				'children': [
+					{
+						'type': 'toolbox',
+						'children': [
+							{
+								'id': 'HyperlinkDialog',
+								'type': 'customtoolitem',
+								'text': _UNO('.uno:HyperlinkDialog'),
+								'command': 'hyperlinkdialog'
+							}
+						]
+					},
+					{
+						'type': 'toolbox',
+						'children': [
+							{
+								'type': 'customtoolitem',
+								'text': _('Smart Picker'),
+								'command': 'remotelink'
+							}
+						]
+					}
+				],
+				'vertical': 'true'
+			} : {
+				'id': 'HyperlinkDialog',
+				'type': 'bigcustomtoolitem',
+				'text': _UNO('.uno:HyperlinkDialog'),
+				'command': 'hyperlinkdialog'
+			},
+			{
+				'type': 'bigtoolitem',
+				'text': _UNO('.uno:InsertAnnotation', 'text'),
+				'command': '.uno:InsertAnnotation'
+			},
+			{
+				'type': 'container',
+				'children': [
+					{
+						'type': 'toolbox',
+						'children': [
+							{
+								'type': 'toolitem',
+								'text': _UNO('.uno:InsertPageHeader', 'text'),
+								'command': '.uno:InsertPageHeader'
+							}
+						]
+					},
+					{
+						'type': 'toolbox',
+						'children': [
+							{
+								'type': 'toolitem',
+								'text': _UNO('.uno:InsertPageFooter', 'text'),
+								'command': '.uno:InsertPageFooter'
+							}
+						]
+					}
+				],
+				'vertical': 'true'
+			},
+			{
+				'type': 'container',
+				'children': [
+					{
+						'type': 'toolbox',
+						'children': [
+							{
+								'type': 'toolitem',
+								'text': _UNO('.uno:PageNumberWizard', 'text'),
+								'command': '.uno:PageNumberWizard'
+							}
+						]
+					},
+					{
+						'type': 'toolbox',
+						'children': [
+							{
+								'type': 'toolitem',
+								'text': _UNO('.uno:InsertFieldCtrl', 'text'),
+								'command': '.uno:InsertFieldCtrl'
+							}
+						]
+					}
+				],
+				'vertical': 'true'
 			},
 			{
 				'type': 'container',
@@ -690,99 +968,6 @@ L.Control.NotebookbarWriter = L.Control.Notebookbar.extend({
 			},
 			{
 				'type': 'bigtoolitem',
-				'text': _UNO('.uno:InsertGraphic'),
-				'command': '.uno:InsertGraphic'
-			},
-			{
-				'type': 'container',
-				'children': [
-					{
-						'type': 'toolbox',
-						'children': [
-							{
-								'type': 'toolitem',
-								'text': _UNO('.uno:InsertTable', 'text'),
-								'command': '.uno:InsertTable'
-							}
-						]
-					},
-					{
-						'type': 'toolbox',
-						'children': [
-							{
-								'type': 'toolitem',
-								'text': _UNO('.uno:InsertObjectChart'),
-								'command': '.uno:InsertObjectChart'
-							}
-						]
-					}
-				],
-				'vertical': 'true'
-			},
-			{
-				'type': 'bigtoolitem',
-				'text': _UNO('.uno:HyperlinkDialog'),
-				'command': '.uno:HyperlinkDialog'
-			},
-			{
-				'type': 'container',
-				'children': [
-					{
-						'type': 'toolbox',
-						'children': [
-							{
-								'type': 'toolitem',
-								'text': _UNO('.uno:InsertBookmark', 'text'),
-								'command': '.uno:InsertBookmark'
-							}
-						]
-					},
-					{
-						'type': 'toolbox',
-						'children': [
-							{
-								'type': 'toolitem',
-								'text': _UNO('.uno:InsertReferenceField', 'text'),
-								'command': '.uno:InsertReferenceField'
-							}
-						]
-					}
-				],
-				'vertical': 'true'
-			},
-			{
-				'type': 'bigtoolitem',
-				'text': _UNO('.uno:InsertFieldCtrl', 'text'),
-				'command': '.uno:InsertFieldCtrl'
-			},
-			{
-				'type': 'container',
-				'children': [
-					{
-						'type': 'toolbox',
-						'children': [
-							{
-								'type': 'toolitem',
-								'text': _UNO('.uno:InsertPageHeader', 'text'),
-								'command': '.uno:InsertPageHeader'
-							}
-						]
-					},
-					{
-						'type': 'toolbox',
-						'children': [
-							{
-								'type': 'toolitem',
-								'text': _UNO('.uno:InsertPageFooter', 'text'),
-								'command': '.uno:InsertPageFooter'
-							}
-						]
-					}
-				],
-				'vertical': 'true'
-			},
-			{
-				'type': 'bigtoolitem',
 				'text': _UNO('.uno:DrawText'),
 				'command': '.uno:DrawText'
 			},
@@ -794,8 +979,8 @@ L.Control.NotebookbarWriter = L.Control.Notebookbar.extend({
 						'children': [
 							{
 								'type': 'toolitem',
-								'text': _UNO('.uno:BasicShapes'),
-								'command': '.uno:BasicShapes'
+								'text': _UNO('.uno:VerticalText', 'text'),
+								'command': '.uno:VerticalText'
 							}
 						]
 					},
@@ -813,30 +998,11 @@ L.Control.NotebookbarWriter = L.Control.Notebookbar.extend({
 				'vertical': 'true'
 			},
 			{
-				'type': 'container',
-				'children': [
-					{
-						'type': 'toolbox',
-						'children': [
-							{
-								'type': 'toolitem',
-								'text': _UNO('.uno:FontworkGalleryFloater'),
-								'command': '.uno:FontworkGalleryFloater'
-							}
-						]
-					},
-					{
-						'type': 'toolbox',
-						'children': [
-							{
-								'type': 'toolitem',
-								'text': _UNO('.uno:VerticalText', 'text'),
-								'command': '.uno:VerticalText'
-							}
-						]
-					}
-				],
-				'vertical': 'true'
+				'type': 'bigtoolitem',
+				'text': _UNO('.uno:FontworkGalleryFloater'),
+				'command': '.uno:FontworkGalleryFloater',
+				// Fontwork export/import not supported in other formats.
+				'visible': isODF ? 'true' : 'false',
 			},
 			{
 				'id': 'FormattingMarkMenu:FormattingMarkMenu',
@@ -851,9 +1017,10 @@ L.Control.NotebookbarWriter = L.Control.Notebookbar.extend({
 						'type': 'toolbox',
 						'children': [
 							{
-								'type': 'toolitem',
+								'id': 'CharmapControl',
+								'type': 'customtoolitem',
 								'text': _UNO('.uno:CharmapControl'),
-								'command': '.uno:CharmapControl'
+								'command': 'charmapcontrol'
 							}
 						]
 					},
@@ -862,17 +1029,169 @@ L.Control.NotebookbarWriter = L.Control.Notebookbar.extend({
 						'children': [
 							{
 								'type': 'toolitem',
-								'text': _UNO('.uno:InsertAnnotation', 'text'),
-								'command': '.uno:InsertAnnotation'
+								'text': _UNO('.uno:InsertObjectStarMath', 'text'),
+								'command': '.uno:InsertObjectStarMath'
 							}
 						]
 					}
 				],
 				'vertical': 'true'
-			}
+			},
 		];
 
 		return this.getTabPage('Insert', content);
+	},
+
+	getFormTab: function() {
+		var content = [
+			{
+				'type': 'bigtoolitem',
+				'text':  _('Rich Text'),
+				'command': '.uno:InsertContentControl'
+			},
+			{
+				'type': 'bigtoolitem',
+				'text': _('Checkbox'),
+				'command': '.uno:InsertCheckboxContentControl'
+			},
+			{
+				'type': 'bigtoolitem',
+				'text':  _('Dropdown'),
+				'command': '.uno:InsertDropdownContentControl'
+			},
+			{
+				'type': 'bigtoolitem',
+				'text': _('Picture'),
+				'command': '.uno:InsertPictureContentControl'
+			},
+			{
+				'type': 'bigtoolitem',
+				'text': _('Date'),
+				'command': '.uno:InsertDateContentControl'
+			},
+			{
+				'type': 'bigtoolitem',
+				'text': _('Properties'),
+				'command': '.uno:ContentControlProperties'
+			}
+		];
+
+		return this.getTabPage('Form', content);
+	},
+
+	getViewTab: function() {
+		var isTablet = window.mode.isTablet();
+		var content = [
+			isTablet ?
+				{
+					'id': 'closemobile',
+					'type': 'bigcustomtoolitem',
+					'text': _('Read mode'),
+					'command': 'closetablet',
+				} : {},
+			{
+				'type': 'bigtoolitem',
+				'text': _UNO('.uno:ControlCodes', 'text'),
+				'command': '.uno:ControlCodes'
+			},
+			{
+				'id': 'fullscreen',
+				'type': 'bigtoolitem',
+				'text': _UNO('.uno:FullScreen'),
+				'command': '.uno:FullScreen'
+			},
+			{
+				'id': 'zoomreset',
+				'type': 'menubartoolitem',
+				'text': _('Reset zoom'),
+				'command': _('Reset zoom')
+			},
+			{
+				'type': 'container',
+				'children': [
+					{
+						'type': 'toolbox',
+						'children': [
+							{
+								'id': 'zoomout',
+								'type': 'menubartoolitem',
+								'text': _UNO('.uno:ZoomMinus'),
+								'command': '.uno:ZoomMinus'
+							}
+						]
+					},
+					{
+						'type': 'toolbox',
+						'children': [
+							{
+								'id': 'zoomin',
+								'type': 'menubartoolitem',
+								'text': _UNO('.uno:ZoomPlus'),
+								'command': '.uno:ZoomPlus'
+							}
+						]
+					}
+				],
+				'vertical': 'true'
+			},
+			{
+				'id': 'toggleuimode',
+				'type': 'bigmenubartoolitem',
+				'text': _('Compact view'),
+				'command': _('Toggle UI Mode')
+			},
+			{
+				'type': 'container',
+				'children': [
+					{
+						'type': 'toolbox',
+						'children': [
+							{
+								'id': 'showruler',
+								'type': 'menubartoolitem',
+								'text': _('Ruler'),
+								'command': _('Show Ruler')
+							}
+						]
+					},
+					{
+						'type': 'toolbox',
+						'children': [
+							{
+								'id': 'showstatusbar',
+								'type': 'menubartoolitem',
+								'text': _('Status Bar'),
+								'command': _('Show Status Bar')
+							}
+						]
+					}
+				],
+				'vertical': 'true'
+			},
+			{
+				'id': 'collapsenotebookbar',
+				'type': 'bigmenubartoolitem',
+				'text': _('Collapse Tabs'),
+				'command': _('Collapse Notebook Bar')
+			},
+			{
+				'id':'toggledarktheme',
+				'type': 'bigcustomtoolitem',
+				'text': _('Dark Mode')
+			},
+			{
+				'type': 'bigtoolitem',
+				'text': _UNO('.uno:Sidebar'),
+				'command': '.uno:SidebarDeck.PropertyDeck'
+			},
+			{
+				'type': 'bigtoolitem',
+				'text': _UNO('.uno:Navigator'),
+				'command': '.uno:Navigator'
+			},
+		];
+
+		return this.getTabPage('View', content);
 	},
 
 	getLayoutTab: function() {
@@ -881,6 +1200,11 @@ L.Control.NotebookbarWriter = L.Control.Notebookbar.extend({
 				'type': 'bigtoolitem',
 				'text': _UNO('.uno:PageDialog'),
 				'command': '.uno:PageDialog'
+			},
+			{
+				'type': 'bigtoolitem',
+				'text': _UNO('.uno:FormatColumns', 'text'),
+				'command': '.uno:FormatColumns'
 			},
 			{
 				'type': 'container',
@@ -902,37 +1226,6 @@ L.Control.NotebookbarWriter = L.Control.Notebookbar.extend({
 								'type': 'toolitem',
 								'text': _UNO('.uno:InsertBreak', 'text'),
 								'command': '.uno:InsertBreak'
-							}
-						]
-					}
-				],
-				'vertical': 'true'
-			},
-			{
-				'type': 'bigtoolitem',
-				'text': _UNO('.uno:TitlePageDialog', 'text'),
-				'command': '.uno:TitlePageDialog'
-			},
-			{
-				'type': 'container',
-				'children': [
-					{
-						'type': 'toolbox',
-						'children': [
-							{
-								'type': 'toolitem',
-								'text': _UNO('.uno:FormatColumns', 'text'),
-								'command': '.uno:FormatColumns'
-							}
-						]
-					},
-					{
-						'type': 'toolbox',
-						'children': [
-							{
-								'type': 'toolitem',
-								'text': _UNO('.uno:Watermark', 'text'),
-								'command': '.uno:Watermark'
 							}
 						]
 					}
@@ -966,21 +1259,15 @@ L.Control.NotebookbarWriter = L.Control.Notebookbar.extend({
 				'vertical': 'true'
 			},
 			{
-				'type': 'bigtoolitem',
-				'text': _UNO('.uno:ControlCodes', 'text'),
-				'command': '.uno:ControlCodes'
-			},
-			{
 				'type': 'container',
 				'children': [
 					{
 						'type': 'toolbox',
 						'children': [
 							{
-								'id': 'fullscreen',
-								'type': 'menubartoolitem',
-								'text': _UNO('.uno:FullScreen'),
-								'command': '.uno:FullScreen'
+								'type': 'toolitem',
+								'text': _UNO('.uno:TitlePageDialog', 'text'),
+								'command': '.uno:TitlePageDialog'
 							}
 						]
 					},
@@ -988,38 +1275,9 @@ L.Control.NotebookbarWriter = L.Control.Notebookbar.extend({
 						'type': 'toolbox',
 						'children': [
 							{
-								'id': 'zoomreset',
-								'type': 'menubartoolitem',
-								'text': _('Reset zoom'),
-								'command': _('Reset zoom')
-							}
-						]
-					}
-				],
-				'vertical': 'true'
-			},
-			{
-				'type': 'container',
-				'children': [
-					{
-						'type': 'toolbox',
-						'children': [
-							{
-								'id': 'zoomout',
-								'type': 'menubartoolitem',
-								'text': _UNO('.uno:ZoomMinus'),
-								'command': '.uno:ZoomMinus'
-							}
-						]
-					},
-					{
-						'type': 'toolbox',
-						'children': [
-							{
-								'id': 'zoomin',
-								'type': 'menubartoolitem',
-								'text': _UNO('.uno:ZoomPlus'),
-								'command': '.uno:ZoomPlus'
+								'type': 'toolitem',
+								'text': _UNO('.uno:Watermark', 'text'),
+								'command': '.uno:Watermark'
 							}
 						]
 					}
@@ -1028,36 +1286,8 @@ L.Control.NotebookbarWriter = L.Control.Notebookbar.extend({
 			},
 			{
 				'type': 'bigtoolitem',
-				'text': _UNO('.uno:Sidebar'),
-				'command': '.uno:Sidebar'
-			},
-			{
-				'type': 'container',
-				'children': [
-					{
-						'type': 'toolbox',
-						'children': [
-							{
-								'id': 'showruler',
-								'type': 'menubartoolitem',
-								'text': _('Show Ruler'),
-								'command': _('Show Ruler')
-							}
-						]
-					},
-					{
-						'type': 'toolbox',
-						'children': [
-							{
-								'id': 'showstatusbar',
-								'type': 'menubartoolitem',
-								'text': _('Show Status Bar'),
-								'command': _('Show Status Bar')
-							}
-						]
-					}
-				],
-				'vertical': 'true'
+				'text': _UNO('.uno:SelectAll'),
+				'command': '.uno:SelectAll'
 			},
 			{
 				'type': 'container',
@@ -1222,7 +1452,7 @@ L.Control.NotebookbarWriter = L.Control.Notebookbar.extend({
 		var content = [
 			{
 				'type': 'bigtoolitem',
-				'text': _UNO('.uno:InsertMultiIndex', 'text'),
+				'text': _UNO('.uno:IndexesMenu', 'text'),
 				'command': '.uno:InsertMultiIndex'
 			},
 			{
@@ -1243,7 +1473,7 @@ L.Control.NotebookbarWriter = L.Control.Notebookbar.extend({
 						'children': [
 							{
 								'type': 'toolitem',
-								'text': _UNO('.uno:UpdateCurIndex', 'text'),
+								'text': _('Update Index'),
 								'command': '.uno:UpdateCurIndex'
 							}
 						]
@@ -1283,11 +1513,6 @@ L.Control.NotebookbarWriter = L.Control.Notebookbar.extend({
 				'vertical': 'true'
 			},
 			{
-				'type': 'bigtoolitem',
-				'text': _UNO('.uno:InsertReferenceField', 'text'),
-				'command': '.uno:InsertReferenceField'
-			},
-			{
 				'type': 'container',
 				'children': [
 					{
@@ -1305,14 +1530,89 @@ L.Control.NotebookbarWriter = L.Control.Notebookbar.extend({
 						'children': [
 							{
 								'type': 'toolitem',
-								'text': _UNO('.uno:InsertAuthoritiesEntry', 'text'),
-								'command': '.uno:InsertAuthoritiesEntry'
+								'text': _UNO('.uno:InsertReferenceField', 'text'),
+								'command': '.uno:InsertReferenceField'
 							}
 						]
 					}
 				],
 				'vertical': 'true'
-			},
+			}
+		];
+		if (this._map.zotero) {
+			content.push(
+				{
+					'id': 'zoteroaddeditbibliography',
+					'type': 'bigmenubartoolitem',
+					'text': _('Add Bibliography'),
+					'command': 'zoteroeditbibliography'
+				},
+				{
+					'type': 'container',
+					'children': [
+						{
+							'type': 'toolbox',
+							'children': [
+								{
+									'id': 'zoteroAddEditCitation',
+									'type': 'customtoolitem',
+									'text': _('Add Citation'),
+									'command': 'zoteroaddeditcitation'
+								}
+							]
+						},
+						{
+							'type': 'toolbox',
+							'children': [
+								{
+									'id': 'zoteroaddnote',
+									'type': 'customtoolitem',
+									'text': _('Add Citation Note'),
+									'command': 'zoteroaddnote'
+								}
+							]
+						}
+					],
+					'vertical': 'true'
+				},
+				{
+					'type': 'container',
+					'children': [
+						{
+							'type': 'toolbox',
+							'children': [
+								{
+									'id': 'zoterorefresh',
+									'type': 'customtoolitem',
+									'text': _('Refresh Citations'),
+									'command': 'zoterorefresh'
+								}
+							]
+						},
+						{
+							'type': 'toolbox',
+							'children': [
+								{
+									'id': 'zoterounlink',
+									'type': 'customtoolitem',
+									'text': _('Unlink Citations'),
+									'command': 'zoterounlink'
+								}
+							]
+						}
+					],
+					'vertical': 'true'
+				},
+				{
+					'id': 'zoteroSetDocPrefs',
+					'type': 'bigcustomtoolitem',
+					'text': _('Citation Preferences'),
+					'command': 'zoterosetdocprefs'
+				}
+			);
+		}
+
+		content.push(
 			{
 				'type': 'bigtoolitem',
 				'text': _UNO('.uno:InsertFieldCtrl', 'text'),
@@ -1359,12 +1659,12 @@ L.Control.NotebookbarWriter = L.Control.Notebookbar.extend({
 				'text': _UNO('.uno:UpdateAll', 'text'),
 				'command': '.uno:UpdateAll'
 			}
-		];
+		);
 
 		return this.getTabPage('References', content);
 	},
 
-	getReviewTab: function() {
+	 getReviewTab: function() {
 		var content = [
 			{
 				'type': 'bigtoolitem',
@@ -1376,6 +1676,18 @@ L.Control.NotebookbarWriter = L.Control.Notebookbar.extend({
 				'text': _UNO('.uno:ThesaurusDialog'),
 				'command': '.uno:ThesaurusDialog'
 			},
+			{
+				'id': 'LanguageMenu',
+				'type': 'bigtoolitem',
+				'text': _UNO('.uno:LanguageMenu'),
+				'command': '.uno:LanguageMenu'
+			},
+			window.deeplEnabled ?
+				{
+					'type': 'bigtoolitem',
+					'text': _UNO('.uno:Translate', 'text'),
+					'command': '.uno:Translate'
+				}: {},
 			{
 				'type': 'container',
 				'children': [
@@ -1408,9 +1720,9 @@ L.Control.NotebookbarWriter = L.Control.Notebookbar.extend({
 				'command': '.uno:InsertAnnotation'
 			},
 			{
-				'type': 'bigtoolitem',
+				'type': 'bigcustomtoolitem',
 				'text': _UNO('.uno:ShowResolvedAnnotations', 'text'),
-				'command': '.uno:ShowResolvedAnnotations'
+				'command': 'showresolvedannotations'
 			},
 			{
 				'type': 'container',
@@ -1554,6 +1866,11 @@ L.Control.NotebookbarWriter = L.Control.Notebookbar.extend({
 				'type': 'bigtoolitem',
 				'text': _UNO('.uno:AcceptTrackedChanges', 'text'),
 				'command': '.uno:AcceptTrackedChanges'
+			},
+			{
+				'type': 'bigtoolitem',
+				'text': _UNO('.uno:AccessibilityCheck', 'text'),
+				'command': '.uno:AccessibilityCheck'
 			}
 		];
 
@@ -1638,6 +1955,32 @@ L.Control.NotebookbarWriter = L.Control.Notebookbar.extend({
 								'type': 'toolitem',
 								'text': _UNO('.uno:SplitTable', 'text'),
 								'command': '.uno:SplitTable'
+							}
+						]
+					}
+				],
+				'vertical': 'true'
+			},
+			{
+				'type': 'container',
+				'children': [
+					{
+						'type': 'toolbox',
+						'children': [
+							{
+								'type': 'toolitem',
+								'text': _UNO('.uno:Protect', 'text'),
+								'command': '.uno:Protect'
+							}
+						]
+					},
+					{
+						'type': 'toolbox',
+						'children': [
+							{
+								'type': 'toolitem',
+								'text': _UNO('.uno:UnsetCellsReadOnly', 'text'),
+								'command': '.uno:UnsetCellsReadOnly'
 							}
 						]
 					}
@@ -1793,6 +2136,7 @@ L.Control.NotebookbarWriter = L.Control.Notebookbar.extend({
 	},
 
 	getDrawTab: function() {
+		var isODF = L.LOUtil.isFileODF(this._map);
 		var content = [
 			{
 				'type': 'bigtoolitem',
@@ -2023,7 +2367,7 @@ L.Control.NotebookbarWriter = L.Control.Notebookbar.extend({
 						'children': [
 							{
 								'type': 'toolitem',
-								'text': _UNO('.uno:BasicShapes'),
+								'text': _('Shapes'),
 								'command': '.uno:BasicShapes'
 							}
 						]
@@ -2050,7 +2394,9 @@ L.Control.NotebookbarWriter = L.Control.Notebookbar.extend({
 							{
 								'type': 'toolitem',
 								'text': _UNO('.uno:FontworkGalleryFloater'),
-								'command': '.uno:FontworkGalleryFloater'
+								'command': '.uno:FontworkGalleryFloater',
+								// Fontwork export/import not supported in other formats.
+								'visible': isODF ? 'true' : 'false',
 							}
 						]
 					},
@@ -2115,6 +2461,26 @@ L.Control.NotebookbarWriter = L.Control.Notebookbar.extend({
 		};
 	},
 
+	// filter out empty children options so that the HTML isn't cluttered
+	// and individual items missaligned
+	cleanOpts: function(children) {
+		var that = this;
+
+		return children.map(function(c) {
+			if (!c.type) { return null; }
+
+			var opts = Object.assign(c, {});
+
+			if (c.children && c.children.length) {
+				opts.children = that.cleanOpts(c.children);
+			}
+
+			return opts;
+		}).filter(function(c) {
+			return c !== null;
+		});
+	},
+
 	getTabPage: function(tabName, content) {
 		return {
 			'id': '',
@@ -2123,17 +2489,17 @@ L.Control.NotebookbarWriter = L.Control.Notebookbar.extend({
 			'enabled': 'true',
 			'children': [
 				{
-					'id': tabName + ' Tab',
+					'id': tabName + '-Tab',
 					'type': 'container',
 					'text': '',
 					'enabled': 'true',
 					'children': [
 						{
-							'id': tabName,
+							'id': tabName + '-container',
 							'type': 'container',
 							'text': '',
 							'enabled': 'true',
-							'children': content
+							'children': this.cleanOpts(content)
 						}
 					]
 				}

@@ -80,8 +80,8 @@ public:
                                    std::shared_ptr<StreamSocket>& socket) override
     {
         Poco::URI uriReq(request.getURI());
-        LOG_TST("Fake wopi host handling HTTP " << request.getMethod()
-                                                << " request: " << uriReq.toString());
+        LOG_TST("FakeWOPIHost: Handling HTTP " << request.getMethod()
+                                               << " request: " << uriReq.toString());
 
         constexpr auto DefaultUrlFilename = "empty.odt";
         static const Poco::RegularExpression regContent("/wopi/files/[0-9]/contents");
@@ -93,40 +93,19 @@ public:
             // CheckFileInfo
             if (regInfo.match(uriReq.getPath()))
             {
-                LOG_TST(
-                    "Fake wopi host request, handling WOPI::CheckFileInfo: " << uriReq.getPath());
+                LOG_TST("FakeWOPIHost: Handling WOPI::CheckFileInfo: " << uriReq.getPath());
 
-                Poco::JSON::Object::Ptr fileInfo = new Poco::JSON::Object();
+                Poco::JSON::Object::Ptr fileInfo = getDefaultCheckFileInfoPayload(uriReq);
                 fileInfo->set("BaseFileName", DefaultUrlFilename);
                 fileInfo->set("FileUrl", getFileUrl());
-                fileInfo->set("Size", getFileContent().size());
-                fileInfo->set("Version", "1.0");
-                fileInfo->set("OwnerId", "test");
-                fileInfo->set("UserId", "test");
-                fileInfo->set("UserFriendlyName", "test");
-                fileInfo->set("UserCanWrite", "true");
-                fileInfo->set("PostMessageOrigin", "localhost");
-                fileInfo->set("LastModifiedTime",
-                              Util::getIso8601FracformatTime(getFileLastModifiedTime()));
-                fileInfo->set("EnableOwnerTermination", "true");
 
                 std::ostringstream jsonStream;
                 fileInfo->stringify(jsonStream);
-                std::string responseString = jsonStream.str();
 
-                const std::string mimeType = "application/json; charset=utf-8";
-
-                std::ostringstream oss;
-                oss << "HTTP/1.1 200 OK\r\n"
-                    << "Last-Modified: " << Util::getHttpTime(getFileLastModifiedTime()) << "\r\n"
-                    << "User-Agent: " WOPI_AGENT_STRING "\r\n"
-                    << "Content-Length: " << responseString.size() << "\r\n"
-                    << "Content-Type: " << mimeType << "\r\n"
-                    << "\r\n"
-                    << responseString;
-
-                socket->send(oss.str());
-                socket->shutdown();
+                http::Response httpResponse(http::StatusCode::OK);
+                httpResponse.set("Last-Modified", Util::getHttpTime(getFileLastModifiedTime()));
+                httpResponse.setBody(jsonStream.str(), "application/json; charset=utf-8");
+                socket->sendAndShutdown(httpResponse);
 
                 return true;
             }
@@ -134,7 +113,7 @@ public:
             if (uriReq.getPath() == FileUrlFilename)
             {
                 const std::string filename = std::string(TDOC) + FileUrlFilename;
-                LOG_TST("Fake wopi host request, WOPI::GetFile sending FileUrl: " << filename);
+                LOG_TST("FakeWOPIHost: Request, WOPI::GetFile sending FileUrl: " << filename);
                 HttpHelper::sendFileAndShutdown(socket, filename, "");
                 return true;
             }
@@ -142,12 +121,10 @@ public:
             if (uriReq.getPath() == InvalidFilename)
             {
                 const std::string filename = std::string(TDOC) + InvalidFilename;
-                LOG_TST("Fake wopi host request, WOPI::GetFile returning 404 for: " << filename);
+                LOG_TST("FakeWOPIHost: Request, WOPI::GetFile returning 404 for: " << filename);
 
-                socket->send("HTTP/1.1 404 Not Found\r\n"
-                             "User-Agent: " WOPI_AGENT_STRING "\r\n"
-                             "\r\n");
-                socket->shutdown();
+                http::Response httpResponse(http::StatusCode::NotFound);
+                socket->sendAndShutdown(httpResponse);
 
                 return true;
             }
@@ -163,14 +140,14 @@ public:
                 }
 
                 const std::string filename = std::string(TDOC) + '/' + DefaultUrlFilename;
-                LOG_TST("Fake wopi host request, WOPI::GetFile sending Default: " << filename);
+                LOG_TST("FakeWOPIHost: Request, WOPI::GetFile sending Default: " << filename);
                 HttpHelper::sendFileAndShutdown(socket, filename, "");
                 return true;
             }
         }
         else if (request.getMethod() == "POST")
         {
-            LOG_TST("Fake wopi host request, handling PutFile: " << uriReq.getPath());
+            LOG_TST("FakeWOPIHost: Handling PutFile: " << uriReq.getPath());
 
             LOK_ASSERT_MESSAGE("Expected to be in Phase::WaitPutFile",
                                _phase == Phase::WaitPutFile);
@@ -181,15 +158,11 @@ public:
             std::streamsize size = request.getContentLength();
             LOK_ASSERT(size > 0);
 
-            std::ostringstream oss;
-            oss << "HTTP/1.1 200 OK\r\n"
-                << "User-Agent: " << WOPI_AGENT_STRING << "\r\n"
-                << "\r\n"
-                << "{\"LastModifiedTime\": \"" << Util::getHttpTime(getFileLastModifiedTime())
-                << "\" }";
-
-            socket->send(oss.str());
-            socket->shutdown();
+            http::Response httpResponse(http::StatusCode::OK);
+            httpResponse.setBody("{\"LastModifiedTime\": \"" +
+                                     Util::getHttpTime(getFileLastModifiedTime()) + "\" }",
+                                 "application/json; charset=utf-8");
+            socket->sendAndShutdown(httpResponse);
 
             LOG_TST("Closing document after PutFile");
             WSD_CMD("closedocument");
@@ -233,7 +206,6 @@ public:
         WSD_CMD("key type=input char=97 key=0");
         WSD_CMD("key type=up char=0 key=512");
 
-        SocketPoll::wakeupWorld();
         return true;
     }
 
@@ -248,8 +220,6 @@ public:
 
         WSD_CMD("save dontTerminateEdit=0 dontSaveIfUnmodified=0 "
                 "extendedData=CustomFlag%3DCustom%20Value%3BAnotherFlag%3DAnotherValue");
-
-        SocketPoll::wakeupWorld();
 
         return true;
     }

@@ -2,10 +2,11 @@
 
 var helper = require('../../common/helper');
 describe.skip('Repair Document', function() {
-	var testFileName = 'repair_doc.odp';
+	var origTestFileName = 'repair_doc.odp';
+	var testFileName;
 
 	beforeEach(function() {
-		helper.beforeAll(testFileName, 'impress', undefined, true);
+		testFileName = helper.beforeAll(origTestFileName, 'impress', undefined, true);
 	});
 
 	afterEach(function() {
@@ -14,51 +15,47 @@ describe.skip('Repair Document', function() {
 
 	function repairDoc(frameId1, frameId2) {
 		cy.wait(1000);
+		cy.cSetActiveFrame(frameId1);
+		cy.cGet('.leaflet-layer').click('center', {force:true});
+		cy.cGet('g.leaflet-control-buttons-disabled svg').dblclick({force:true});
 
-		cy.customGet('.leaflet-layer', frameId1).click('center', {force:true});
-		cy.customGet('g.leaflet-control-buttons-disabled svg', frameId1).dblclick({force:true});
+		helper.typeIntoDocument('Hello');
+		helper.typeIntoDocument('{esc}');
 
-		helper.typeIntoDocument('Hello', frameId1);
-		helper.typeIntoDocument('{esc}', frameId1);
-
-		cy.customGet('.leaflet-layer', frameId1).click('center', {force:true});
-		cy.customGet('g.leaflet-control-buttons-disabled svg', frameId1).dblclick({force:true});
-		helper.typeIntoDocument('{ctrl}{a}', frameId2);
-		helper.typeIntoDocument('Hello World', frameId1);
+		cy.cGet('.leaflet-layer').click('center', {force:true});
+		cy.cGet('g.leaflet-control-buttons-disabled svg').dblclick({force:true});
+		cy.cSetActiveFrame(frameId2);
+		helper.typeIntoDocument('{ctrl}{a}');
+		cy.cSetActiveFrame(frameId1);
+		helper.typeIntoDocument('Hello World');
 
 		//to exit from editing mode from frameId1
-		helper.typeIntoDocument('{esc}', frameId1);
+		helper.typeIntoDocument('{esc}');
 
-		cy.customGet('#menu-editmenu', frameId2).click()
-			.customGet('#menu-repair', frameId2).click();
-		cy.customGet('.leaflet-popup-content table', frameId2).should('exist');
+		cy.cSetActiveFrame(frameId2);
+		cy.cGet('#menu-editmenu').click().cGet('#menu-repair').click();
 
-		cy.iframe(frameId2).contains('.leaflet-popup-content table tbody tr','Undo').eq(0).click();
+		cy.cGet('#DocumentRepairDialog').should('exist');
+		cy.cGet('#versions').should('exist');
 
-		cy.customGet('.leaflet-popup-content > input', frameId2).click();
-
-		cy.customGet('.leaflet-layer', frameId2).click('center', {force:true});
-
-		cy.customGet('g.leaflet-control-buttons-disabled svg', frameId2).dblclick({force:true});
-
-		cy.wait(1000);
-
-		helper.typeIntoDocument('{ctrl}{a}', frameId2);
-
-		helper.expectTextForClipboard('Hello', frameId2);
+		cy.cGet('body').contains('#versions .ui-treeview-body .ui-listview-entry td','Typing: “World”').click();
+		cy.cGet('#ok.ui-pushbutton.jsdialog').should('exist');
+		cy.cGet('#ok.ui-pushbutton.jsdialog').click();
+		helper.typeIntoDocument('{ctrl}{a}');
+		helper.expectTextForClipboard('Hello');
 
 		//assert for frameId1
 		//to exit from editing mode from frameId2
-		helper.typeIntoDocument('{esc}', frameId2);
+		helper.typeIntoDocument('{esc}');
 
-		cy.customGet('.leaflet-layer', frameId1).click('center', {force:true});
-		cy.customGet('g.leaflet-control-buttons-disabled svg', frameId1).dblclick({force:true});
+		cy.cSetActiveFrame(frameId1);
+		cy.cGet('.leaflet-layer').click('center', {force:true});
+		cy.cGet('g.leaflet-control-buttons-disabled svg').dblclick({force:true});
 
 		cy.wait(1000);
 
-		helper.selectAllText(frameId1);
-
-		helper.expectTextForClipboard('Hello', frameId1);
+		helper.selectAllText();
+		helper.expectTextForClipboard('Hello');
 	}
 
 	it('Repair by user-2', function() {

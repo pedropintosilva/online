@@ -95,6 +95,22 @@ namespace FileUtil
         copy(fromPath, toPath, /*log=*/true, /*throw_on_error=*/true);
     }
 
+    /// Try to hard-link, and fallback to copying it linking fails.
+    /// Returns true iff either linking or copying succeeds.
+    inline bool linkOrCopyFile(const std::string& source, const std::string& newPath)
+    {
+        // first try a simple hard-link
+        if (link(source.c_str(), newPath.c_str()) == 0)
+            return true;
+
+        const auto onrre = errno;
+        LOG_DBG("Failed to link [" << source << "] to [" << newPath << "] ("
+                                   << Util::symbolicErrno(onrre) << ": " << std::strerror(onrre)
+                                   << "), will try to copy");
+
+        return FileUtil::copy(source, newPath, /*log=*/true, /*throw_on_error=*/false);
+    }
+
     /// Returns the system temporary directory.
     std::string getSysTempDirectoryPath();
 
@@ -102,6 +118,9 @@ namespace FileUtil
     /// with S_IRWXU (read, write, and execute by owner) permissions.
     /// If root is empty, the current system temp directory is used.
     std::string createRandomTmpDir(std::string root = std::string());
+
+    /// Create a temporary directory in the root provided
+    std::string createTmpDir(std::string dirName, std::string root = std::string());
 
     /// Make a temp copy of a file, and prepend it with a prefix.
     /// Used by tests to avoid tainting the originals.
@@ -124,6 +143,9 @@ namespace FileUtil
         return realpath(path.c_str());
     }
 
+    /// Returns file extension from the path
+    std::string extractFileExtension(const std::string& path);
+
     /// Returns true iff the two files both exist, can be read,
     /// have equal size and every byte of their contents match.
     bool compareFileContents(const std::string& rhsPath, const std::string& lhsPath);
@@ -131,11 +153,12 @@ namespace FileUtil
     /// File/Directory stat helper.
     class Stat
     {
+        int clearStat() { memset (&_sb, 0, sizeof(_sb)); return 0; }
     public:
         /// Stat the given path. Symbolic links are stat'ed when @link is true.
         Stat(const std::string& file, bool link = false)
             : _path(file)
-            , _res(link ? lstat(file.c_str(), &_sb) : stat(file.c_str(), &_sb))
+            , _res(clearStat() | (link ? lstat(file.c_str(), &_sb) : stat(file.c_str(), &_sb)))
             , _errno(errno)
         {
         }
@@ -168,9 +191,10 @@ namespace FileUtil
         }
 
         /// Returns the modified unix-time in microseconds since epoch.
-        std::size_t modifiedTimeUs() const
+        int64_t modifiedTimeUs() const
         {
-            return (modifiedTime().tv_sec * 1000 * 1000) + (modifiedTime().tv_nsec / 1000);
+            // cast to make sure the calculation happens with enough bits
+            return (static_cast<int64_t>(modifiedTime().tv_sec) * 1000 * 1000) + (modifiedTime().tv_nsec / 1000);
         }
 
         /// Returns the modified unix-time in milliseconds since epoch.
@@ -197,6 +221,18 @@ namespace FileUtil
         bool exists() const { return good() || (_errno != ENOENT && _errno != ENOTDIR); }
 
         /// Returns true if both files exist and have
+        /// the same size and same contents.
+        bool isIdenticalTo(const Stat& other) const
+        {
+            // No need to check whether they are linked or not,
+            // since if they are, the following check will match,
+            // and if they aren't, we still need to rely on the following.
+            // Finally, compare the contents, to avoid costly copying if we fail to update.
+            return (exists() && other.exists() && !isDirectory() && !other.isDirectory() &&
+                    size() == other.size() && compareFileContents(_path, other._path));
+        }
+
+        /// Returns true if both files exist and have
         /// the same size and modified timestamp.
         bool isUpToDate(const Stat& other) const
         {
@@ -204,8 +240,7 @@ namespace FileUtil
             // since if they are, the following check will match,
             // and if they aren't, we still need to rely on the following.
             // Finally, compare the contents, to avoid costly copying if we fail to update.
-            if (exists() && other.exists() && !isDirectory() && !other.isDirectory()
-                && size() == other.size() && compareFileContents(_path, other._path))
+            if (isIdenticalTo(other))
             {
                 return true;
             }

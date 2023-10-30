@@ -32,7 +32,7 @@ L.Control.DownloadProgress = L.Control.extend({
 		this._container.style.visibility = 'hidden';
 		this._ignoreEvents(this._container);
 
-		var closeButton = L.DomUtil.create('a', 'leaflet-popup-close-button', this._container);
+		var closeButton = L.DomUtil.create('a', 'leaflet-popup-close-button download-popup', this._container);
 		closeButton.href = '#close';
 		closeButton.innerHTML = '&#215;';
 		L.DomEvent.on(closeButton, 'click', this._onClose, this);
@@ -67,7 +67,7 @@ L.Control.DownloadProgress = L.Control.extend({
 	},
 
 	show: function () {
-		console.log('DownloadProgress.show');
+		window.app.console.log('DownloadProgress.show');
 		// better to init the following state variables here,
 		// since the widget could be re-used without having been destroyed
 		this._started = false;
@@ -102,8 +102,8 @@ L.Control.DownloadProgress = L.Control.extend({
 	},
 
 	setValue: function (value) {
-		this._bar.style.width = value + '%';
-		this._value.innerHTML = value + '%';
+		this._bar.style.width = Math.round(value) + '%';
+		this._value.innerHTML = Math.round(value) + '%';
 	},
 
 	_setProgressCursor: function() {
@@ -172,12 +172,12 @@ L.Control.DownloadProgress = L.Control.extend({
 		this._map._clip._doAsyncDownload(
 			'GET', that._uri, null, true,
 			function(response) {
-				console.log('clipboard async download done');
+				window.app.console.log('clipboard async download done');
 				// annoying async parse of the blob ...
 				var reader = new FileReader();
 				reader.onload = function() {
 					var text = reader.result;
-					console.log('async clipboard parse done: ' + text.substring(0, 256));
+					window.app.console.log('async clipboard parse done: ' + text.substring(0, 256));
 					var idx = text.indexOf('<!DOCTYPE HTML');
 					if (idx > 0)
 						text = text.substring(idx, text.length);

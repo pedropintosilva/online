@@ -4,11 +4,12 @@ var helper = require('../../common/helper');
 var impressHelper = require('../../common/impress_helper');
 var mobileHelper = require('../../common/mobile_helper');
 
-describe('Slide operations', function() {
-	var testFileName = 'slide_operations.odp';
+describe(['tagmobile', 'tagnextcloud', 'tagproxy'], 'Slide operations', function() {
+	var origTestFileName = 'slide_operations.odp';
+	var testFileName;
 
 	beforeEach(function() {
-		helper.beforeAll(testFileName, 'impress');
+		testFileName = helper.beforeAll(origTestFileName, 'impress');
 
 		mobileHelper.enableEditingMobile();
 	});
@@ -18,41 +19,28 @@ describe('Slide operations', function() {
 	});
 
 	it('Add slides', function() {
-		cy.get('.leaflet-control-zoom-in')
-			.click();
+		cy.cGet('.leaflet-control-zoom-in').click();
 
 		impressHelper.assertNumberOfSlidePreviews(2);
 	});
 
 	it('Remove Slides', function() {
 		//add slides
-		cy.get('.leaflet-control-zoom-in')
-			.click();
-
+		cy.cGet('.leaflet-control-zoom-in').click();
 		impressHelper.assertNumberOfSlidePreviews(2);
-
 		//remove slides
 		mobileHelper.openHamburgerMenu();
-
-		cy.get('.menu-entry-icon.slidemenu').parent()
-			.click();
-
-		cy.get('.menu-entry-icon.deletepage').parent()
-			.click();
-
-		cy.get('.vex-dialog-button-primary').click();
-
+		cy.cGet('.menu-entry-icon.slidemenu').parent().click();
+		cy.cGet('.menu-entry-icon.deletepage').parent().click();
+		cy.cGet('#deleteslide-modal-response').click();
 		impressHelper.assertNumberOfSlidePreviews(1);
 	});
 
 	it('Duplicate Slide', function() {
 		mobileHelper.openHamburgerMenu();
 
-		cy.get('.menu-entry-icon.slidemenu').parent()
-			.click();
-
-		cy.get('.menu-entry-icon.duplicatepage').parent()
-			.click();
+		cy.cGet('.menu-entry-icon.slidemenu').parent().click();
+		cy.cGet('.menu-entry-icon.duplicatepage').parent().click();
 
 		impressHelper.assertNumberOfSlidePreviews(2);
 	});

@@ -7,22 +7,28 @@
 
 #pragma once
 
-#include <test/testlog.hpp>
-
 #include <atomic>
 #include <cassert>
 #include <chrono>
 #include <memory>
 #include <string>
+#include <vector>
 
+#include <common/StateEnum.hpp>
+#include "Util.hpp"
 #include "net/Socket.hpp"
+
+#include <test/testlog.hpp>
 
 class UnitBase;
 class UnitWSD;
 class UnitKit;
 class UnitTimeout;
 
+class ChildProcess;
 class WebSocketHandler;
+class ClientSession;
+class Message;
 
 // Forward declaration to avoid pulling the world here.
 namespace Poco
@@ -45,7 +51,9 @@ class Session;
 class StorageBase;
 
 typedef UnitBase *(CreateUnitHooksFunction)();
+typedef UnitBase**(CreateUnitHooksFunctionMulti)();
 extern "C" { UnitBase *unit_create_wsd(void); }
+extern "C" { UnitBase** unit_create_wsd_multi(void); }
 extern "C" { UnitBase *unit_create_kit(void); }
 extern "C" { typedef struct _LibreOfficeKit LibreOfficeKit; }
 
@@ -65,59 +73,61 @@ public:
     };
 
 protected:
+    /// The options used for the current TestSuite.
+    class TestOptions
+    {
+    public:
+        TestOptions()
+            : _keepgoing(false)
+        {
+        }
+
+        void setFilter(const std::string& filter) { _filter = filter; }
+        const std::string& getFilter() const { return _filter; }
+
+        void setKeepgoing(bool failfase) { _keepgoing = failfase; }
+        bool getKeepgoing() const { return _keepgoing; }
+
+    private:
+        /// The test filter string. Only run tests that match.
+        std::string _filter;
+        /// Don't run subsequent tests, if any, on failure.
+        bool _keepgoing;
+    };
+
     // ---------------- Helper API ----------------
     /// After this time we invoke 'timeout' default 30 seconds
     void setTimeout(std::chrono::milliseconds timeoutMilliSeconds);
 
-    enum class TestResult
-    {
-        Failed,
-        Ok,
-        TimedOut
-    };
-
-    static const std::string testResultAsString(TestResult res)
-    {
-        switch (res)
-        {
-            case TestResult::Failed:
-                return "Failed";
-            case TestResult::Ok:
-                return "Ok";
-            case TestResult::TimedOut:
-                return "TimedOut";
-        }
-
-        assert(!"Unknown TestResult entry.");
-        return std::to_string(static_cast<int>(res));
-    }
+    STATE_ENUM(TestResult, Failed, Ok, TimedOut);
 
     /// Encourages the process to exit with this value (unless hooked)
-    void exitTest(TestResult result);
+    void exitTest(TestResult result, const std::string& reason = std::string());
 
     /// Fail the test with the given reason.
     void failTest(const std::string& reason)
     {
-        LOG_TST("FAILURE: " << getTestname() << " finished: " << reason);
-        exitTest(TestResult::Failed);
+        exitTest(TestResult::Failed, reason);
     }
 
     /// Pass the test with the given optional reason.
     void passTest(const std::string& reason = std::string())
     {
-        LOG_TST("SUCCESS: " << getTestname() << " finished: " << reason);
-        exitTest(TestResult::Ok);
+        exitTest(TestResult::Ok, reason);
     }
 
+    /// Called when a test has eneded, to clean up.
+    virtual void endTest(const std::string& reason);
+
     /// Construct a UnitBase instance with a default name.
-    explicit UnitBase(std::string name, UnitType type)
-        : _dlHandle(nullptr)
-        , _setRetValue(false)
-        , _retValue(0)
+    explicit UnitBase(const std::string& name, UnitType type)
+        : _setRetValue(false)
+        , _result(TestResult::Ok)
         , _timeoutMilliSeconds(std::chrono::seconds(30))
+        , _startTimeMilliSeconds(std::chrono::milliseconds::zero())
         , _type(type)
-        , _testname(std::move(name))
-        , _socketPoll(std::make_shared<SocketPoll>(_testname))
+        , _socketPoll(std::make_shared<SocketPoll>(name))
+        , testname(name)
     {
     }
 
@@ -127,11 +137,24 @@ public:
     /// Load unit test hook shared library from this path
     static bool init(UnitType type, const std::string& unitLibPath);
 
+    /// Uninitialize the unit-test and return the global exit code.
+    /// Returns 0 on success.
+    static int uninit();
+
     /// Do we have a unit test library hooking things & loaded
     static bool isUnitTesting();
 
     /// Tweak the return value from the process.
     virtual void returnValue(int& /* retValue */);
+
+    /// Data-loss detection. Override if expected/intentional.
+    /// Returns true if we failed, false otherwise.
+    virtual bool onDataLoss(const std::string& reason)
+    {
+        LOG_TST("onDataLoss: " << reason);
+        failTest(reason);
+        return failed();
+    }
 
     /// Input message either for WSD or Kit
     virtual bool filterSessionInput(Session *, const char */* buffer */,
@@ -141,36 +164,16 @@ public:
         return false;
     }
 
+    /// Message that LOKit sent (typically upon receipt in DocBroker).
+    /// To override, handle onFilterLOKitMessage.
+    /// Returns true to stop processing the message further.
+    bool filterLOKitMessage(const std::shared_ptr<Message>& message);
+
     /// Message that is about to be sent via the websocket.
-    /// To override, handle onFilterSendMessage or any of the onDocument...() handlers.
-    bool filterSendMessage(const char* data, const std::size_t len, const WSOpCode code,
-                           const bool flush, int& unitReturn)
-    {
-        const std::string message(data, len);
-
-        if (Util::startsWith(message, "status:"))
-        {
-            if (onDocumentLoaded(message))
-                return false;
-        }
-        else if (message == "statechanged: .uno:ModifiedStatus=true")
-        {
-            if (onDocumentModified(message))
-                return false;
-        }
-        else if (Util::startsWith(message, "statechanged:"))
-        {
-            if (onDocumentStateChanged(message))
-                return false;
-        }
-        else if (Util::startsWith(message, "error:"))
-        {
-            if (onDocumentError(message))
-                return false;
-        }
-
-        return onFilterSendMessage(data, len, code, flush, unitReturn);
-    }
+    /// To override, handle onFilterSendWebSocketMessage or any of the onDocument...() handlers.
+    /// Returns true to stop processing the message further.
+    bool filterSendWebSocketMessage(const char* data, const std::size_t len, const WSOpCode code,
+                                    const bool flush, int& unitReturn);
 
     /// Hook the disk space check
     virtual bool filterCheckDiskSpace(const std::string & /* path */,
@@ -194,7 +197,7 @@ public:
     }
 
     /// Called when the document has been loaded,
-    /// based on the "status:" message, in the context of filterSendMessage.
+    /// based on the "status:" message, in the context of filterSendWebSocketMessage.
     /// Return true to stop further handling of messages.
     virtual bool onDocumentLoaded(const std::string&) { return false; }
 
@@ -203,9 +206,17 @@ public:
     /// Return true to stop further handling of messages.
     virtual bool onDocumentModified(const std::string&) { return false; }
 
+    /// Called when the document's 'modified' status
+    /// changes to false. This happens after saving.
+    /// Return true to stop further handling of messages.
+    virtual bool onDocumentUnmodified(const std::string&) { return false; }
+
     /// Called when the document has been saved.
     /// Return true to stop further handling of messages.
-    virtual bool onDocumentSaved(const std::string&) { return false; }
+    virtual bool onDocumentSaved(const std::string&, bool, const std::string&) { return false; }
+
+    /// Called when the document has been uploaded.
+    virtual void onDocumentUploaded(bool) {}
 
     /// Called when the document issues a 'statechanged:' message.
     /// Return true to stop further handling of messages.
@@ -218,38 +229,83 @@ public:
     /// If the test times out this gets invoked, the default just exits.
     virtual void timeout();
 
+    /// True iff exitTest is called.
+    bool isFinished() const { return _setRetValue; }
+
+    /// True iff exitTest was called with anything but TestResult::Ok.
+    /// Meaningful only when isFinished() is true.
+    bool failed() const { return _result != TestResult::Ok; }
+
     std::chrono::milliseconds getTimeoutMilliSeconds() const
     {
         return _timeoutMilliSeconds;
     }
 
+    void checkTimeout(const std::chrono::milliseconds elapsedTime)
+    {
+        if (_startTimeMilliSeconds == std::chrono::milliseconds::zero())
+        {
+            // Since we can't assume we are the first test to run,
+            // we need to capture *out* start so we can correctly
+            // calculate how long we've been running.
+            _startTimeMilliSeconds = elapsedTime;
+        }
+
+        if (isUnitTesting() && !isFinished() &&
+            (elapsedTime - _startTimeMilliSeconds) > getTimeoutMilliSeconds())
+        {
+            LOG_TST("ERROR Test exceeded its time limit of "
+                    << getTimeoutMilliSeconds() << ". It's been running for " << elapsedTime);
+            timeout();
+        }
+    }
+
     static UnitBase& get()
     {
-        assert(Global);
-        return *Global;
+        assert(GlobalArray && GlobalIndex >= 0 && GlobalArray[GlobalIndex] &&
+               "There are no tests to dereference");
+        return *GlobalArray[GlobalIndex];
     }
 
     static std::string getUnitLibPath() { return std::string(UnitLibPath); }
 
-    const std::string& getTestname() const { return _testname; }
-    void setTestname(const std::string& testname) { _testname = testname; }
+    const std::string& getTestname() const { return testname; }
+    void setTestname(const std::string& name) { testname = name; }
 
     std::shared_ptr<SocketPoll> socketPoll() { return _socketPoll; }
 
 private:
-    void setHandle(void *dlHandle)
+    /// Initialize the test.
+    virtual void initialize();
+
+    /// Dynamically load the unit-test .so.
+    static UnitBase** linkAndCreateUnit(UnitType type, const std::string& unitLibPath);
+
+    /// Initialize the Test Suite options.
+    static void initTestSuiteOptions();
+
+    /// Based on COOL_TEST_OPTIONS envar, filter the tests.
+    static void filter();
+
+    /// Returns true iff there are more valid test instances to dereference.
+    static bool haveMoreTests()
     {
-        assert(_dlHandle == nullptr && "setHandle must only be called once");
-        assert(dlHandle != nullptr && "Invalid handle to set");
-        _dlHandle = dlHandle;
-        _socketPoll->startThread();
+        return GlobalArray && GlobalIndex >= 0 && GlobalArray[GlobalIndex + 1];
     }
-    static UnitBase *linkAndCreateUnit(UnitType type, const std::string& unitLibPath);
+
+    /// Self-test.
+    static void selfTest();
+
+    /// Called when a test is finished with the given result and reason.
+    virtual void onExitTest(TestResult result, const std::string& reason = std::string()) = 0;
+
+    /// Handles messages from LOKit.
+    virtual bool onFilterLOKitMessage(const std::shared_ptr<Message>& /*message*/) { return false; }
 
     /// Handles messages sent via WebSocket.
-    virtual bool onFilterSendMessage(const char* /*data*/, const std::size_t /*len*/,
-                                     const WSOpCode /* code */, const bool /* flush */,
-                                     int& /*unitReturn*/)
+    virtual bool onFilterSendWebSocketMessage(const char* /*data*/, const std::size_t /*len*/,
+                                              const WSOpCode /* code */, const bool /* flush */,
+                                              int& /*unitReturn*/)
     {
         return false;
     }
@@ -259,19 +315,30 @@ private:
     /// setup global instance for get() method
     static void rememberInstance(UnitType type, UnitBase* instance);
 
-    void *_dlHandle;
+    static void* DlHandle; //< The handle to the unit-test .so.
     static char *UnitLibPath;
+    static UnitBase** GlobalArray; //< All the tests.
+    static int GlobalIndex; //< The index of the current test.
+    static TestOptions GlobalTestOptions; //< The test options for this Test Suite.
+    static TestResult GlobalResult; //< The result of all tests. Latches at first failure.
+
     bool _setRetValue;
-    int _retValue;
+    TestResult _result;
     std::chrono::milliseconds _timeoutMilliSeconds;
-    static UnitBase *Global;
+    /// The time at which this particular test started, relative to the start of the Test Suite.
+    std::chrono::milliseconds _startTimeMilliSeconds;
     UnitType _type;
 
-    /// The name of the current test.
-    std::string _testname;
-
+    std::mutex _lock; //< Used to protect cleanup functions.
     std::shared_ptr<SocketPoll> _socketPoll; //< Poll thread for async http comm.
+
+protected:
+
+    /// The name of the current test. Accessed from logs in derived classes.
+    std::string testname;
 };
+
+struct TileData;
 
 /// Derive your WSD unit test / hooks from me.
 class UnitWSD : public UnitBase
@@ -279,13 +346,15 @@ class UnitWSD : public UnitBase
     bool _hasKitHooks;
 
 public:
-    UnitWSD(std::string testname = std::string());
+    UnitWSD(const std::string& testname);
 
     virtual ~UnitWSD();
 
     static UnitWSD& get();
 
-    virtual void returnValue(int& /* retValue */);
+    /// Applies the default config.
+    /// This is needed to initialize the logging subsystem early.
+    static void defaultConfigure(Poco::Util::LayeredConfiguration& /* config */);
 
     enum class TestRequest
     {
@@ -301,7 +370,7 @@ public:
     // ---------------- WSD hooks ----------------
 
     /// Manipulate and modify the configuration before any usage.
-    virtual void configure(Poco::Util::LayeredConfiguration& /* config */);
+    virtual void configure(Poco::Util::LayeredConfiguration& /* config */) {}
 
     /// Main-loop reached, time for testing.
     /// Invoked from coolwsd's main thread.
@@ -310,7 +379,10 @@ public:
         try
         {
             // Invoke the test, expect no exceptions.
-            invokeWSDTest();
+            if (!isFinished())
+            {
+                invokeWSDTest();
+            }
         }
         catch (const Poco::Exception& ex)
         {
@@ -332,7 +404,7 @@ public:
     }
 
     /// When a new child kit process reports
-    virtual void newChild(WebSocketHandler &/* socket */) {}
+    virtual void newChild(const std::shared_ptr<ChildProcess>& /*child*/) {}
     /// Intercept createStorage
     virtual bool createStorage(const Poco::URI& /* uri */,
                                const std::string& /* jailRoot */,
@@ -349,9 +421,9 @@ public:
 
     // ---------------- TileCache hooks ----------------
     /// Called before the lookupTile call returns. Should always be called to fire events.
-    virtual void lookupTile(int part, int width, int height, int tilePosX, int tilePosY,
+    virtual void lookupTile(int part, int mode, int width, int height, int tilePosX, int tilePosY,
                             int tileWidth, int tileHeight,
-                            std::shared_ptr<std::vector<char>> &tile);
+                            std::shared_ptr<TileData> &tile);
 
     // ---------------- DocumentBroker hooks ----------------
     virtual bool filterLoad(const std::string& /* sessionId */,
@@ -380,30 +452,64 @@ public:
     /// When admin message is sent in response to a query
     virtual void onAdminQueryMessage(const std::string& /* message */) {}
 
+    // ---------------- DocBroker events ----------------
+
+    /// Called when a DocumentBroker is created (from the constructor).
+    /// Useful to detect track the beginning of a document's life cycle.
+    virtual void onDocBrokerCreate(const std::string&) {}
+
+    /// Called when the Kit process is attached to a DocBroker.
+    virtual void onDocBrokerAttachKitProcess(const std::string&, int) {}
+
+    /// Called when a new client session is added to a DocumentBroker.
+    virtual void onDocBrokerAddSession(const std::string&, const std::shared_ptr<ClientSession>&) {}
+
+    /// Called when a client session is removed to a DocumentBroker.
+    virtual void onDocBrokerRemoveSession(const std::string&, const std::shared_ptr<ClientSession>&)
+    {
+    }
+
+protected:
+    /// Called when a DocumentBroker is destroyed (from the destructor).
+    /// Useful to detect when unloading was clean and to (re)load again.
+    virtual void onDocBrokerDestroy(const std::string&) {}
+
+public:
+    /// Called when a DocumentBroker is destroyed (from the destructor).
+    /// Useful to detect when unloading was clean and to (re)load again.
+    /// Handle by overriding onDocBrokerDestroy.
+    void DocBrokerDestroy(const std::string&);
+
+    /// Called when a new view is loaded.
+    virtual void onDocBrokerViewLoaded(const std::string&, const std::shared_ptr<ClientSession>&) {}
+
     // ---------------- TileCache events ----------------
-    virtual void onTileCacheHit(int /*part*/, int /*width*/, int /*height*/,
+    virtual void onTileCacheHit(int /*part*/, int /*mode*/,
+                                int /*width*/, int /*height*/,
                                 int /*tilePosX*/, int /*tilePosY*/,
                                 int /*tileWidth*/, int /*tileHeight*/) {}
-    virtual void onTileCacheMiss(int /*part*/, int /*width*/, int /*height*/,
+    virtual void onTileCacheMiss(int /*part*/, int /*mode*/,
+                                 int /*width*/, int /*height*/,
                                  int /*tilePosX*/, int /*tilePosY*/,
                                  int /*tileWidth*/, int /*tileHeight*/) {}
-    virtual void onTileCacheSubscribe(int /*part*/, int /*width*/, int /*height*/,
+    virtual void onTileCacheSubscribe(int /*part*/, int /*mode*/,
+                                      int /*width*/, int /*height*/,
                                       int /*tilePosX*/, int /*tilePosY*/,
                                       int /*tileWidth*/, int /*tileHeight*/) {}
 private:
     /// The actual test implementation.
     virtual void invokeWSDTest() {}
+
+    void onExitTest(TestResult result, const std::string& reason = std::string()) override;
 };
 
 /// Derive your Kit unit test / hooks from me.
 class UnitKit : public UnitBase
 {
 public:
-    explicit UnitKit(std::string testname = std::string());
+    explicit UnitKit(const std::string& testname);
     virtual ~UnitKit();
     static UnitKit& get();
-
-    virtual void returnValue(int& /* retValue */);
 
     // ---------------- ForKit hooks ----------------
 
@@ -436,15 +542,40 @@ public:
     {
         return nullptr;
     }
+
+private:
+    void onExitTest(TestResult result, const std::string& reason = std::string()) override;
 };
 
 /// Derive your Tool unit test / hooks from me.
 class UnitTool : public UnitBase
 {
 public:
-    explicit UnitTool(std::string testname = std::string())
-        : UnitBase(testname, UnitType::Tool) {}
-    virtual ~UnitTool() {}
+    explicit UnitTool(const std::string& name)
+        : UnitBase(name, UnitType::Tool)
+    {
+    }
+
+private:
+    void onExitTest(TestResult, const std::string& = std::string()) override {}
 };
+
+/// Transition the test state of VAR to STATE, with a prefix message, and resume the test.
+/// This will wake up all polls and the new state may be processed in parallel.
+#define TRANSITION_STATE_MSG(VAR, STATE, MSG)                                                      \
+    do                                                                                             \
+    {                                                                                              \
+        LOG_TST(MSG << ' ' << name(VAR) << " -> " #STATE);                                         \
+        VAR = STATE;                                                                               \
+        SocketPoll::wakeupWorld();                                                                 \
+    } while (false)
+
+/// Transition the test state of VAR to STATE and resume the test.
+/// This will wake up all polls and the new state may be processed in parallel.
+#define TRANSITION_STATE(VAR, STATE) TRANSITION_STATE_MSG(VAR, STATE, "Transitioning " #VAR " from")
+
+#define LOK_ASSERT_STATE(VAR, STATE)                                                               \
+    LOK_ASSERT_MESSAGE("Expected " #VAR " to be in " #STATE " but was " + toString(VAR),           \
+                       VAR == STATE)
 
 /* vim:set shiftwidth=4 softtabstop=4 expandtab: */

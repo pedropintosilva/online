@@ -629,8 +629,8 @@ export class SheetDimension {
 		}.bind(this));
 	}
 
-	// callback with a position for each grid line in this pixel range
-	public forEachInCorePixelRange(startPix: number, endPix: number, callback: ((startPosCorePx: number) => void)): void {
+	// callback with a position and index for each grid line in this pixel range
+	public forEachInCorePixelRange(startPix: number, endPix: number, callback: ((startPosCorePx: number, index: number) => void)): void {
 		this._visibleSizes.forEachSpan(function (spanData: any) {
 			// do we overlap ?
 			var spanFirstCorePx = spanData.data.poscorepx -
@@ -642,8 +642,10 @@ export class SheetDimension {
 					((startPix - spanFirstCorePx) % spanData.data.sizecore));
 				var lastCorePx = Math.min(endPix, spanData.data.poscorepx);
 
+				var index = spanData.start + Math.floor((firstCorePx - spanFirstCorePx) / spanData.data.sizecore);
 				for (var pos = firstCorePx; pos <= lastCorePx; pos += spanData.data.sizecore) {
-					callback(pos);
+					callback(pos, index);
+					index += 1;
 				}
 			}
 		});
@@ -725,7 +727,7 @@ export class SheetDimension {
 			return groupsData;
 		}
 
-		this._outlines.forEachGroupInRange(this._viewStartIndex, this._viewEndIndex,
+		this._outlines.forEachGroupInRange(0, this._viewEndIndex,
 			function (levelIdx: number, groupIdx: number, start: number, end: number, hidden: number) {
 
 				var startElementData = this.getElementData(start);
@@ -1160,16 +1162,13 @@ class SpanList {
 			return;
 		}
 
-		var startId = this._searchByIndex(start);
-		var endId = this._searchByIndex(end);
-
-		if (startId == -1 || endId == -1) {
+		var id = this._searchByIndex(start);
+		if (id == -1)
 			return;
-		}
-
-		for (var id = startId; id <= endId; ++id) {
-			callback(this._getSpanData(id));
-		}
+		do {
+			var span = this._getSpanData(id++);
+			callback(span);
+		} while (id < this._spanlist.length && span.index <= end);
 	}
 
 	public forEachSpan(callback: ((span: SpanViewData) => void)) {

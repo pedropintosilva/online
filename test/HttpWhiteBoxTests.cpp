@@ -46,14 +46,19 @@ class HttpWhiteBoxTests : public CPPUNIT_NS::TestFixture
 
 void HttpWhiteBoxTests::testStatusLineParserValidComplete()
 {
+    constexpr auto testname = __func__;
+
     const unsigned expVersionMajor = 1;
     const unsigned expVersionMinor = 1;
     const std::string expVersion
         = "HTTP/" + std::to_string(expVersionMajor) + '.' + std::to_string(expVersionMinor);
-    const unsigned expStatusCode = 101;
+    const http::StatusCode expStatusCode = http::StatusCode::SwitchingProtocols;
     const std::string expReasonPhrase = "Something Something";
-    const std::string data
-        = expVersion + ' ' + std::to_string(expStatusCode) + ' ' + expReasonPhrase + "\r\n";
+
+    std::ostringstream oss;
+    oss << expVersion << ' ' << static_cast<unsigned>(expStatusCode) << ' ' << expReasonPhrase
+        << "\r\n";
+    const std::string data = oss.str();
 
     http::StatusLine statusLine;
 
@@ -68,14 +73,19 @@ void HttpWhiteBoxTests::testStatusLineParserValidComplete()
 
 void HttpWhiteBoxTests::testStatusLineParserValidComplete_NoReason()
 {
+    constexpr auto testname = __func__;
+
     const unsigned expVersionMajor = 1;
     const unsigned expVersionMinor = 1;
     const std::string expVersion
         = "HTTP/" + std::to_string(expVersionMajor) + '.' + std::to_string(expVersionMinor);
-    const unsigned expStatusCode = 101;
+    const http::StatusCode expStatusCode = http::StatusCode::SwitchingProtocols;
     const std::string expReasonPhrase;
-    const std::string data
-        = expVersion + ' ' + std::to_string(expStatusCode) + ' ' + expReasonPhrase + "\r\n";
+
+    std::ostringstream oss;
+    oss << expVersion << ' ' << static_cast<unsigned>(expStatusCode) << ' ' << expReasonPhrase
+        << "\r\n";
+    const std::string data = oss.str();
 
     http::StatusLine statusLine;
 
@@ -90,14 +100,19 @@ void HttpWhiteBoxTests::testStatusLineParserValidComplete_NoReason()
 
 void HttpWhiteBoxTests::testStatusLineParserValidIncomplete()
 {
+    constexpr auto testname = __func__;
+
     const unsigned expVersionMajor = 1;
     const unsigned expVersionMinor = 1;
     const std::string expVersion
         = "HTTP/" + std::to_string(expVersionMajor) + '.' + std::to_string(expVersionMinor);
-    const unsigned expStatusCode = 101;
+    const http::StatusCode expStatusCode = http::StatusCode::SwitchingProtocols;
     const std::string expReasonPhrase = "Something Something";
-    const std::string data
-        = expVersion + ' ' + std::to_string(expStatusCode) + "    " + expReasonPhrase + "\r\n";
+
+    std::ostringstream oss;
+    oss << expVersion << ' ' << static_cast<unsigned>(expStatusCode) << ' ' << expReasonPhrase
+        << "\r\n";
+    const std::string data = oss.str();
 
     http::StatusLine statusLine;
 
@@ -121,6 +136,8 @@ void HttpWhiteBoxTests::testStatusLineParserValidIncomplete()
 
 void HttpWhiteBoxTests::testStatusLineSerialize()
 {
+    constexpr auto testname = __func__;
+
     http::StatusLine statusLine(200);
     Buffer buf;
     statusLine.writeData(buf);
@@ -130,6 +147,8 @@ void HttpWhiteBoxTests::testStatusLineSerialize()
 
 void HttpWhiteBoxTests::testHeader()
 {
+    constexpr auto testname = __func__;
+
     http::Header header;
 
     const std::string data = "\r\na=\r\n\r\n";
@@ -138,6 +157,8 @@ void HttpWhiteBoxTests::testHeader()
 
 void HttpWhiteBoxTests::testRequestParserValidComplete()
 {
+    constexpr auto testname = __func__;
+
     const std::string expVerb = "GET";
     const std::string expUrl = "/path/to/data";
     const std::string expVersion = "HTTP/1.1";
@@ -156,6 +177,8 @@ void HttpWhiteBoxTests::testRequestParserValidComplete()
 
 void HttpWhiteBoxTests::testRequestParserValidIncomplete()
 {
+    constexpr auto testname = __func__;
+
     const std::string expVerb = "GET";
     const std::string expUrl = "/long/path/to/data";
     const std::string expVersion = "HTTP/1.1";

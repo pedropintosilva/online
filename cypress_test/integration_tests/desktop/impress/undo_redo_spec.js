@@ -1,20 +1,19 @@
-/* global describe it cy beforeEach require afterEach*/
+/* global describe it beforeEach require afterEach*/
 
 var helper = require('../../common/helper');
 var impressHelper = require('../../common/impress_helper');
 var desktopHelper = require('../../common/desktop_helper');
+var repairHelper = require('../../common/repair_document_helper');
 
-describe('Editing Operations', function() {
+describe(['tagdesktop'], 'Editing Operations', function() {
 	var testFileName = 'undo_redo.odp';
 
 	beforeEach(function() {
 		helper.beforeAll(testFileName, 'impress');
-
+		desktopHelper.switchUIToCompact();
 		desktopHelper.selectZoomLevel('30');
-
 		impressHelper.selectTextShapeInTheCenter();
-
-		cy.get('g.leaflet-control-buttons-disabled svg').dblclick({force:true});
+		impressHelper.selectTextOfShape(false);
 	});
 
 	afterEach(function() {
@@ -23,12 +22,10 @@ describe('Editing Operations', function() {
 
 	function undo() {
 		helper.typeIntoDocument('Hello World');
-
+		impressHelper.selectTextOfShape();
 		helper.typeIntoDocument('{ctrl}z');
-
-		helper.selectAllText();
-
-		helper.expectTextForClipboard('Hello Worl');
+		impressHelper.selectTextOfShape();
+		helper.clipboardTextShouldBeDifferentThan('Hello World');
 	}
 
 	it('Undo', function() {
@@ -38,49 +35,19 @@ describe('Editing Operations', function() {
 	it('Redo', function() {
 		undo();
 		helper.typeIntoDocument('{ctrl}y');
-
-		helper.selectAllText();
-
+		impressHelper.selectTextOfShape();
 		helper.expectTextForClipboard('Hello World');
 	});
 
 	it('Repair Document', function() {
 		helper.typeIntoDocument('Hello World');
-
-		helper.typeIntoDocument('{esc}');
-
-		cy.wait(1000);
-
-		impressHelper.selectTextShapeInTheCenter();
-
+		impressHelper.triggerNewSVGForShapeInTheCenter();
 		impressHelper.selectTextOfShape();
-
-		cy.wait(1000);
-
 		helper.typeIntoDocument('Overwrite Text');
-
-		helper.typeIntoDocument('{esc}');
-
-		cy.wait(1000);
-
-		cy.get('#menu-editmenu').click()
-			.get('#menu-repair').click();
-
-		cy.get('.leaflet-popup-content table').should('exist');
-
-		cy.contains('.leaflet-popup-content table tbody tr','Undo').eq(0)
-			.click();
-
-		cy.get('.leaflet-popup-content > input').click();
-
-		impressHelper.selectTextShapeInTheCenter();
-
+		impressHelper.triggerNewSVGForShapeInTheCenter();
+		repairHelper.rollbackPastChange('Undo');
+		impressHelper.triggerNewSVGForShapeInTheCenter();
 		impressHelper.selectTextOfShape();
-
-		cy.wait(1000);
-
-		helper.selectAllText();
-
 		helper.expectTextForClipboard('Hello World');
 	});
 });

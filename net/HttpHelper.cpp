@@ -6,6 +6,7 @@
  */
 
 #include <config.h>
+#include <config_version.h>
 
 #include "HttpHelper.hpp"
 
@@ -38,7 +39,7 @@ void sendError(int errorCode, const std::shared_ptr<StreamSocket>& socket, const
 void sendErrorAndShutdown(int errorCode, const std::shared_ptr<StreamSocket>& socket,
                           const std::string& body, const std::string& extraHeader)
 {
-    sendError(errorCode, socket, body, extraHeader);
+    sendError(errorCode, socket, body, extraHeader + "Connection: close\r\n");
     socket->shutdown();
     socket->ignoreInput();
 }
@@ -47,7 +48,7 @@ void sendUncompressedFileContent(const std::shared_ptr<StreamSocket>& socket,
                                  const std::string& path, const int bufferSize)
 {
     std::ifstream file(path, std::ios::binary);
-    std::unique_ptr<char[]> buf(new char[bufferSize]);
+    std::unique_ptr<char[]> buf = std::make_unique<char[]>(bufferSize);
     do
     {
         file.read(&buf[0], bufferSize);
@@ -69,13 +70,13 @@ void sendDeflatedFileContent(const std::shared_ptr<StreamSocket>& socket, const 
     if (fileSize > 0)
     {
         std::ifstream file(path, std::ios::binary);
-        std::unique_ptr<char[]> buf(new char[fileSize]);
+        std::unique_ptr<char[]> buf = std::make_unique<char[]>(fileSize);
         file.read(&buf[0], fileSize);
 
         static const unsigned int Level = 1;
         const long unsigned int size = file.gcount();
         long unsigned int compSize = compressBound(size);
-        std::unique_ptr<char[]> cbuf(new char[compSize]);
+        std::unique_ptr<char[]> cbuf = std::make_unique<char[]>(compSize);
         compress2((Bytef*)&cbuf[0], &compSize, (Bytef*)&buf[0], size, Level);
 
         if (size > 0)
@@ -113,6 +114,9 @@ void sendFileAndShutdown(const std::shared_ptr<StreamSocket>& socket, const std:
 
     response->setContentType(mediaType);
     response->add("X-Content-Type-Options", "nosniff");
+    //Should we add the header anyway ?
+    if (headerOnly)
+        response->add("Connection", "close");
 
     int bufferSize = std::min<std::size_t>(st.size(), Socket::MaximumSendBufferSize);
     if (static_cast<long>(st.size()) >= socket->getSendBufferSize())

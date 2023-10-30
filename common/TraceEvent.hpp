@@ -24,7 +24,7 @@
 
 // The base class for objects generating Trace Events when enabled.
 //
-// It depends on the embedding processs what is done to the Trace Events generated. In the WSD
+// It depends on the embedding process what is done to the Trace Events generated. In the WSD
 // process they are written to the Trace Event log file as generated (as buffered by the C++
 // library). In the Kit process they are buffered and then sent to the WSD process for writing to
 // the same log file. In the TraceEvent test program they are written out to stdout.
@@ -61,7 +61,7 @@ protected:
 
         std::string result = "{";
         bool first = true;
-        for (auto i : args)
+        for (const auto& i : args)
         {
             if (!first)
                 result += ',';
@@ -126,7 +126,7 @@ protected:
     const std::string _name;
 
     NamedEvent(const std::string& name)
-        : TraceEvent("")
+        : TraceEvent(std::string())
         , _name(name)
     {
     }
@@ -172,7 +172,7 @@ public:
     }
 
     ProfileZone(const char* id)
-        : ProfileZone(id, "")
+        : ProfileZone(id, std::string())
     {
     }
 

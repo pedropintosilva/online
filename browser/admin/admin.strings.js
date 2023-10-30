@@ -2,7 +2,7 @@
 /* Stringtable for Admin Console User Interface */
 var l10nstrings = {};
 
-l10nstrings.strProductName = 'Collabora Online Development Edition';
+l10nstrings.strProductName = 'Collabora Online Development Edition (unbranded)';
 l10nstrings.strAdminConsole = _('Admin console');
 l10nstrings.strSettings = _('Settings');
 l10nstrings.strOverview = _('Overview');
@@ -26,6 +26,7 @@ l10nstrings.strViewers = _('Views');
 l10nstrings.strElapsedTime = _('Elapsed time');
 l10nstrings.strIdleTime = _('Idle time');
 l10nstrings.strModified = _('Modified');
+l10nstrings.strUploaded = _('Uploaded');
 l10nstrings.strWopihost = _('WOPI host');
 l10nstrings.strKill = _('Kill');
 l10nstrings.strGraphs = _('Graphs');

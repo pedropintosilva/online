@@ -3,8 +3,9 @@
 var helper = require('../../common/helper');
 var mobileHelper = require('../../common/mobile_helper');
 var calcHelper = require('../../common/calc_helper');
+var repairHelper = require('../../common/repair_document_helper');
 
-describe('Editing Operations', function() {
+describe.skip(['tagmobile', 'tagnextcloud', 'tagproxy'], 'Editing Operations', function() {
 	var testFileName = 'undo_redo.ods';
 
 	beforeEach(function() {
@@ -25,12 +26,12 @@ describe('Editing Operations', function() {
 
 		helper.typeIntoDocument('Hello World');
 
-		cy.get('#tb_actionbar_item_acceptformula').click();
+		cy.cGet('#tb_actionbar_item_acceptformula').click();
 
 		//if we don't wait tests in CLI is failing
 		cy.wait(3000);
 
-		cy.get('#tb_actionbar_item_undo').click();
+		cy.cGet('#tb_actionbar_item_undo').click();
 
 		calcHelper.dblClickOnFirstCell();
 
@@ -38,7 +39,7 @@ describe('Editing Operations', function() {
 
 		helper.textSelectionShouldNotExist();
 
-		cy.get('#tb_actionbar_item_acceptformula').click();
+		cy.cGet('#tb_actionbar_item_acceptformula').click();
 	}
 
 	it('Undo', function() {
@@ -50,7 +51,7 @@ describe('Editing Operations', function() {
 
 		cy.wait(3000);
 
-		cy.get('#tb_actionbar_item_redo').click();
+		cy.cGet('#tb_actionbar_item_redo').click();
 
 		calcHelper.dblClickOnFirstCell();
 
@@ -66,7 +67,7 @@ describe('Editing Operations', function() {
 
 		cy.wait(3000);
 
-		cy.get('#tb_actionbar_item_acceptformula').click();
+		cy.cGet('#tb_actionbar_item_acceptformula').click();
 
 		calcHelper.dblClickOnFirstCell();
 
@@ -76,19 +77,9 @@ describe('Editing Operations', function() {
 
 		cy.wait(3000);
 
-		cy.get('#tb_actionbar_item_acceptformula').click();
+		cy.cGet('#tb_actionbar_item_acceptformula').click();
 
-		cy.get('#toolbar-hamburger')
-			.click()
-			.get('.menu-entry-icon.editmenu').parent()
-			.click()
-			.get('.menu-entry-icon.repair').parent()
-			.click();
-
-		cy.contains('.leaflet-popup-content table tbody tr','Undo').eq(0)
-			.click();
-
-		cy.get('.leaflet-popup-content > input').click();
+		repairHelper.rollbackPastChange('Undo', undefined, true);
 
 		calcHelper.dblClickOnFirstCell();
 

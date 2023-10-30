@@ -3,7 +3,7 @@
  * L.Socket contains methods for the communication with the server
  */
 
-/* global app _ vex $ errorMessages Uint8Array brandProductName brandProductFAQURL */
+/* global app _ $ errorMessages Uint8Array brandProductName */
 
 app.definitions.Socket = L.Class.extend({
 	ProtocolVersionNumber: '0.1',
@@ -26,7 +26,7 @@ app.definitions.Socket = L.Class.extend({
 	},
 
 	initialize: function (map) {
-		console.debug('socket.initialize:');
+		window.app.console.debug('socket.initialize:');
 		this._map = map;
 		this._msgQueue = [];
 		this._delayedMessages = [];
@@ -39,9 +39,7 @@ app.definitions.Socket = L.Class.extend({
 
 	connect: function(socket) {
 		var map = this._map;
-		if (map.options.permission) {
-			map.options.docParams['permission'] = map.options.permission;
-		}
+		map.options.docParams['permission'] = app.file.permission;
 		if (this.socket) {
 			this.close();
 		}
@@ -49,11 +47,12 @@ app.definitions.Socket = L.Class.extend({
 			this.socket = socket;
 		} else if (window.ThisIsAMobileApp) {
 			// We have already opened the FakeWebSocket over in global.js
+			// But do we then set this.socket at all? Is this case ever reached?
 		} else	{
 			try {
 				this.socket = window.createWebSocket(this.getWebSocketBaseURI(map));
 			} catch (e) {
-				this._map.fire('error', {msg: _('Oops, there is a problem connecting to %productName: ').replace('%productName', (typeof brandProductName !== 'undefined' ? brandProductName : 'Collabora Online Development Edition')) + e, cmd: 'socket', kind: 'failed', id: 3});
+				this._map.fire('error', {msg: _('Oops, there is a problem connecting to %productName: ').replace('%productName', (typeof brandProductName !== 'undefined' ? brandProductName : 'Collabora Online Development Edition (unbranded)')) + e, cmd: 'socket', kind: 'failed', id: 3});
 				return;
 			}
 		}
@@ -77,7 +76,7 @@ app.definitions.Socket = L.Class.extend({
 	_emptyQueue: function () {
 		if (window.queueMsg && window.queueMsg.length > 0) {
 			for (var it = 0; it < window.queueMsg.length; it++) {
-				this._onMessage({data: window.queueMsg[it], textMsg: window.queueMsg[it]});
+				this._slurpMessage({data: window.queueMsg[it], textMsg: window.queueMsg[it]});
 			}
 			window.queueMsg = [];
 		}
@@ -126,7 +125,7 @@ app.definitions.Socket = L.Class.extend({
 			return;
 		}
 
-		if (!this._map._active) {
+		if (!app.idleHandler._active) {
 			// Avoid communicating when we're inactive.
 			if (typeof msg !== 'string')
 				return;
@@ -167,12 +166,18 @@ app.definitions.Socket = L.Class.extend({
 	},
 
 	_onSocketOpen: function () {
-		console.debug('_onSocketOpen:');
-		this._map._serverRecycling = false;
-		this._map._documentIdle = false;
+		window.app.console.debug('_onSocketOpen:');
+		app.idleHandler._serverRecycling = false;
+		app.idleHandler._documentIdle = false;
 
 		// Always send the protocol version number.
 		// TODO: Move the version number somewhere sensible.
+
+		// Note that there is code also in global.socket.onopen() in global.js to send the
+		// exact same 'coolclient' message and a slightly different 'load' message. At least
+		// in a "make run" scenario it is that code that sends the 'coolclient' and 'load'
+		// messages. Not this code. But at least currently in the "WASM app" case, it is
+		// this code that gets invoked. Oh well.
 
 		// Also send information about our performance timer epoch
 		var now0 = Date.now();
@@ -198,6 +203,9 @@ app.definitions.Socket = L.Class.extend({
 		if (window.deviceFormFactor) {
 			msg += ' deviceFormFactor=' + window.deviceFormFactor;
 		}
+
+		msg += ' timezone=' + Intl.DateTimeFormat().resolvedOptions().timeZone;
+
 		if (this._map.options.renderingOptions) {
 			var options = {
 				'rendering': this._map.options.renderingOptions
@@ -209,6 +217,10 @@ app.definitions.Socket = L.Class.extend({
 			if (spellOnline) {
 				msg += ' spellOnline=' + spellOnline;
 			}
+
+			var accessibilityState = window.localStorage.getItem('accessibilityState') === 'true';
+			accessibilityState = accessibilityState || L.Browser.cypressTest;
+			msg += ' accessibilityState=' + accessibilityState;
 		}
 
 		this._doSend(msg);
@@ -217,7 +229,7 @@ app.definitions.Socket = L.Class.extend({
 		}
 		this._msgQueue = [];
 
-		this._map._activate();
+		app.idleHandler._activate();
 	},
 
 	_utf8ToString: function (data) {
@@ -250,6 +262,9 @@ app.definitions.Socket = L.Class.extend({
 	},
 
 	_logSocket: function(type, msg) {
+		if (window.ThisIsTheGtkApp)
+			window.postMobileDebug(type + ' ' + msg);
+
 		var fullDebug = this._map._docLayer && this._map._docLayer._debug;
 
 		if (fullDebug)
@@ -267,9 +282,9 @@ app.definitions.Socket = L.Class.extend({
 		if (!window.bundlejsLoaded)
 			status += '[!bundlejsLoaded]';
 
-		var color = type === 'OUTGOING' ? 'color:red' : 'color:blue';
-		console.log2(+new Date() + ' %c' + type + status + '%c: ' + msg.concat(' ').replace(' ', '%c '),
-			     'background:#ddf;color:black', color, 'color:black');
+		var color = type === 'OUTGOING' ? 'color:red' : 'color:#2e67cf';
+		window.app.console.log(+new Date() + ' %c' + type + status + '%c: ' + msg.concat(' ').replace(' ', '%c '),
+			     'background:#ddf;color:black', color, 'color:');
 	},
 
 	_queueSlurpEventEmission: function() {
@@ -285,12 +300,32 @@ app.definitions.Socket = L.Class.extend({
 
 	_emitSlurpedEvents: function() {
 		var queueLength = this._slurpQueue.length;
-		var completeEventWholeFunction = this.createCompleteTraceEvent('cool._emitSlurpedEvents',
+		var completeEventWholeFunction = this.createCompleteTraceEvent('emitSlurped-' + String(queueLength),
 									       {'_slurpQueue.length' : String(queueLength)});
 		if (this._map && this._map._docLayer) {
 			this._map._docLayer.pauseDrawing();
+
+			// Queue an instant timeout early to try to measure the
+			// re-rendering delay before we get back to the main-loop.
+			if (this.traceEventRecordingToggle)
+			{
+				var that = this;
+				if (!that._renderEventTimer)
+					that._renderEventTimer = setTimeout(function() {
+						var now = performance.now();
+						var delta = now - that._renderEventTimerStart;
+						if (delta >= 2 /* ms */) // significant
+						{
+							that.sendMessage('TRACEEVENT name=browser-render' +
+									 ' ph=X ts=' + Math.round(that._renderEventTimerStart * 1000) +
+									 ' dur=' + Math.round((now - that._renderEventTimerStart) * 1000));
+							that._renderEventTimerStart = undefined;
+						}
+						that._renderEventTimer = undefined;
+					}, 0);
+			}
 		}
-		// console.log2('Slurp events ' + that._slurpQueue.length);
+		// window.app.console.log('Slurp events ' + that._slurpQueue.length);
 		var complete = true;
 		try {
 			for (var i = 0; i < queueLength; ++i) {
@@ -305,8 +340,7 @@ app.definitions.Socket = L.Class.extend({
 						textMsg = evt.textMsg.replace(/\s+/g, '.');
 					}
 
-					var completeEventOneMessage = this.createCompleteTraceEvent('cool._emitOneSlurpedEvent',
-												    { message: textMsg });
+					var completeEventOneMessage = this.createCompleteTraceEventFromEvent(textMsg);
 					try {
 						// it is - are you ?
 						this._onMessage(evt);
@@ -315,7 +349,7 @@ app.definitions.Socket = L.Class.extend({
 					{
 						// unpleasant - but stops this one problem
 						// event stopping an unknown number of others.
-						console.log2('Exception ' + e + ' emitting event ' + evt.data);
+						window.app.console.error('Exception ' + e + ' emitting event ' + evt.data);
 					}
 					finally {
 						if (completeEventOneMessage)
@@ -344,6 +378,8 @@ app.definitions.Socket = L.Class.extend({
 			}
 			// Let other layers / overlays catch up.
 			this._map.fire('messagesdone');
+
+			this._renderEventTimerStart = performance.now();
 		}
 	},
 
@@ -379,9 +415,9 @@ app.definitions.Socket = L.Class.extend({
 	},
 
 	// convert to string of bytes without blowing the stack if data is large.
-	_strFromUint8: function(data) {
+	_strFromUint8: function(prefix, data) {
 		var i, chunk = 4096;
-		var strBytes = '';
+		var strBytes = prefix;
 		for (i = 0; i < data.length; i += chunk)
 			strBytes += String.fromCharCode.apply(null, data.slice(i, i + chunk));
 		strBytes += String.fromCharCode.apply(null, data.slice(i));
@@ -390,42 +426,62 @@ app.definitions.Socket = L.Class.extend({
 
 	_extractImage: function(e) {
 		var img;
-		if (window.ThisIsTheiOSApp) {
-			// In the iOS app, the native code sends us the PNG tile already as a data: URL after the newline
-			var newlineIndex = e.textMsg.indexOf('\n');
-			if (newlineIndex > 0) {
-				img = e.textMsg.substring(newlineIndex+1);
-				e.textMsg = e.textMsg.substring(0, newlineIndex);
-			}
-		}
-		else
-		{
-			var data = e.imgBytes.subarray(e.imgIndex);
-			console.assert(data.length == 0 || data[0] != 68 /* D */, 'Socket: got a delta image, not supported !');
-			img = 'data:image/png;base64,' + window.btoa(this._strFromUint8(data));
-			if (L.Browser.cypressTest && localStorage.getItem('image_validation_test')) {
-				if (!window.imgDatas)
-					window.imgDatas = [];
-				window.imgDatas.push(img);
-			}
+		var data = e.imgBytes.subarray(e.imgIndex);
+		var prefix = '';
+		// FIXME: so we prepend the PNG pre-byte here having removed it in TileCache::appendBlob
+		if (data[0] != 0x89)
+			prefix = String.fromCharCode(0x89);
+		img = 'data:image/png;base64,' + window.btoa(this._strFromUint8(prefix,data));
+		if (L.Browser.cypressTest && localStorage.getItem('image_validation_test')) {
+			if (!window.imgDatas)
+				window.imgDatas = [];
+			window.imgDatas.push(img);
 		}
 		return img;
 	},
 
 	_extractTextImg: function (e) {
 
-		if (typeof (e.data) === 'string')
+		if ((window.ThisIsTheiOSApp || window.ThisIsTheEmscriptenApp) && typeof (e.data) === 'string') {
+			// Another fix for issue #5843 limit splitting on the first newline
+			// to only certain message types on iOS. Also, fix mangled UTF-8
+			// text on iOS in jsdialogs when using languages like Greek and
+			// Japanese by only setting the image bytes for only the same set
+			// of message types.
+			if (window.ThisIsTheEmscriptenApp ||
+					e.data.startsWith('tile:') ||
+					e.data.startsWith('tilecombine:') ||
+					e.data.startsWith('delta:') ||
+					e.data.startsWith('renderfont:') ||
+					e.data.startsWith('rendersearchlist:') ||
+					e.data.startsWith('windowpaint:')) {
+				var index;
+				index = e.data.indexOf('\n');
+				if (index < 0)
+					index = e.data.length;
+				e.imgBytes = new Uint8Array(e.data.length);
+				for (var i = 0; i < e.data.length; i++) {
+					e.imgBytes[i] = e.data.charCodeAt(i);
+				}
+				e.imgIndex = index + 1;
+				e.textMsg = e.data.substring(0, index);
+			} else {
+				e.textMsg = e.data;
+			}
+		} else if (typeof (e.data) === 'string') {
 			e.textMsg = e.data;
-		else if (typeof (e.data) === 'object')
+		} else if (typeof (e.data) === 'object') {
 			this._extractCopyObject(e);
-
+		}
 		e.isComplete = function () {
 			if (this.image)
 				return !!this.imageIsComplete;
 			return true;
 		};
 
-		if (!e.textMsg.startsWith('tile:') &&
+		var isTile = e.textMsg.startsWith('tile:');
+		var isDelta = e.textMsg.startsWith('delta:');
+		if (!isTile && !isDelta &&
 		    !e.textMsg.startsWith('renderfont:') &&
 		    !e.textMsg.startsWith('windowpaint:'))
 			return;
@@ -433,8 +489,28 @@ app.definitions.Socket = L.Class.extend({
 		if (e.textMsg.indexOf(' nopng') !== -1)
 			return;
 
-		var that = this;
+		// pass deltas through quickly.
+		if (e.imgBytes && (isTile || isDelta) && e.imgBytes[e.imgIndex] != 80 /* P(ng) */)
+		{
+			// window.app.console.log('Passed through delta object');
+			e.image = { rawData: e.imgBytes.subarray(e.imgIndex),
+				    isKeyframe: isTile };
+			e.imageIsComplete = true;
+			return;
+		}
+
+		// window.app.console.log('PNG preview');
+
+		// lazy-loaded PNG slide previews
 		var img = this._extractImage(e);
+		if (isTile) {
+			e.image = { src: img };
+			e.imageIsComplete = true;
+			return;
+		}
+
+		// PNG dialog bits
+		var that = this;
 		e.image = new Image();
 		e.image.onload = function() {
 			e.imageIsComplete = true;
@@ -443,13 +519,13 @@ app.definitions.Socket = L.Class.extend({
 				e.image.completeTraceEvent.finish();
 		};
 		e.image.onerror = function(err) {
-			console.log('Failed to load image ' + img + ' fun ' + err);
+			window.app.console.log('Failed to load image ' + img + ' fun ' + err);
 			e.imageIsComplete = true;
 			that._queueSlurpEventEmission();
 			if (e.image.completeTraceEvent)
 				e.image.completeTraceEvent.abort();
 		};
-		e.image.completeTraceEvent = this.createCompleteTraceEvent('cool._extractTextImg');
+		e.image.completeTraceEvent = this.createAsyncTraceEvent('loadTile');
 		e.image.src = img;
 	},
 
@@ -475,7 +551,7 @@ app.definitions.Socket = L.Class.extend({
 				oldId = this.WSDServer.Id;
 				oldVersion = this.WSDServer.Version;
 
-				console.assert(this._map.options.wopiSrc === window.wopiSrc,
+				window.app.console.assert(this._map.options.wopiSrc === window.wopiSrc,
 					'wopiSrc mismatch!: ' + this._map.options.wopiSrc + ' != ' + window.wopiSrc);
 				// If another file is opened, we will not refresh the page.
 				if (this._map.options.previousWopiSrc && this._map.options.wopiSrc) {
@@ -486,7 +562,7 @@ app.definitions.Socket = L.Class.extend({
 
 			this.WSDServer = JSON.parse(textMsg.substring(textMsg.indexOf('{')));
 
-			if (oldId && oldVersion && sameFile) {
+			if (oldId && oldVersion && sameFile && !window.migrating) {
 				if (this.WSDServer.Id !== oldId || this.WSDServer.Version !== oldVersion) {
 					var reloadMessage = _('Server is now reachable. We have to refresh the page now.');
 					if (window.mode.isMobile())
@@ -500,12 +576,13 @@ app.definitions.Socket = L.Class.extend({
 					setTimeout(reloadFunc, 5000);
 				}
 			}
+			window.migrating = false;
 
 			$('#coolwsd-version-label').text(_('COOLWSD version:'));
 			var h = this.WSDServer.Hash;
 			if (parseInt(h,16).toString(16) === h.toLowerCase().replace(/^0+/, '')) {
 				h = '<a href="javascript:void(window.open(\'https://github.com/CollaboraOnline/online/commits/' + h + '\'));">' + h + '</a>';
-				$('#coolwsd-version').html(this.WSDServer.Version + ' <span>git hash:&nbsp;' + h + '</span>');
+				$('#coolwsd-version').html(this.WSDServer.Version + ' <span>git hash:&nbsp;' + h + this.WSDServer.Options + '</span>');
 			}
 			else {
 				$('#coolwsd-version').text(this.WSDServer.Version);
@@ -552,32 +629,30 @@ app.definitions.Socket = L.Class.extend({
 			var perm = textMsg.substring('perm:'.length).trim();
 
 			// Never make the permission more permissive than it originally was.
-			if (this._map.options.permission == 'edit')
-			{
-				this._map.options.permission = perm;
-			}
+			if (app.file.permission == 'edit')
+				app.file.permission = perm;
 
-			if (this._map._docLayer) {
-				this._map.setPermission(this._map.options.permission);
-			}
+			if (this._map._docLayer)
+				this._map.setPermission(app.file.permission);
 
-			app.file.readOnly = this._map.options.permission === 'readonly';
+			app.file.disableSidebar = perm !== 'edit';
+			app.file.readOnly = app.file.permission === 'readonly';
 			return;
 		}
 		else if (textMsg.startsWith('filemode:')) {
 			var json = JSON.parse(textMsg.substring('filemode:'.length).trim());
 
 			// Never make the permission more permissive than it originally was.
-			if (this._map.options.permission == 'edit' && json.readOnly)
+			if (app.file.permission == 'edit' && json.readOnly)
 			{
-				this._map.options.permission = 'readonly';
+				app.file.permission = 'readonly';
 			}
 
 			if (this._map._docLayer) {
-				this._map.setPermission(this._map.options.permission);
+				this._map.setPermission(app.file.permission);
 			}
 
-			app.file.readOnly = this._map.options.permission === 'readonly';
+			app.file.readOnly = app.file.permission === 'readonly';
 			app.file.editComment = json.editComment; // Allowed even in readonly mode.
 		}
 		else if (textMsg.startsWith('lockfailed:')) {
@@ -592,7 +667,7 @@ app.definitions.Socket = L.Class.extend({
 		}
 		else if (textMsg.startsWith('loadstorage: ')) {
 			if (textMsg.substring(textMsg.indexOf(':') + 2) === 'failed') {
-				console.debug('Loading document from a storage failed');
+				window.app.console.debug('Loading document from a storage failed');
 				this._map.fire('postMessage', {
 					msgId: 'App_LoadingStatus',
 					args: {
@@ -609,16 +684,12 @@ app.definitions.Socket = L.Class.extend({
 		else if (textMsg.startsWith('commandresult: ')) {
 			var commandresult = JSON.parse(textMsg.substring(textMsg.indexOf('{')));
 			if (commandresult['command'] === 'savetostorage' || commandresult['command'] === 'save') {
-				if (commandresult['success']) {
-					// Close any open confirmation dialogs
-					vex.closeAll();
-				}
-
 				var postMessageObj = {
 					success: commandresult['success'],
 					result: commandresult['result'],
 					errorMsg: commandresult['errorMsg']
 				};
+
 				this._map.fire('postMessage', {msgId: 'Action_Save_Resp', args: postMessageObj});
 			} else if (commandresult['command'] === 'load') {
 				postMessageObj = {
@@ -627,6 +698,35 @@ app.definitions.Socket = L.Class.extend({
 					errorMsg: commandresult['errorMsg']
 				};
 				this._map.fire('postMessage', {msgId: 'Action_Load_Resp', args: postMessageObj});
+			}
+			return;
+		}
+		else if (textMsg.startsWith('migrate:') && window.indirectSocket) {
+			var migrate = JSON.parse(textMsg.substring(textMsg.indexOf('{')));
+			console.log(migrate);
+			var afterSave = migrate.afterSave;
+			if (!afterSave) {
+				window.migrating = true;
+				this._map.uiManager.closeAll();
+				if (this._map.isEditMode()) {
+					this._map.setPermission('view');
+					this._map.uiManager.showSnackbar(_('Document is getting migrated...'));
+				}
+				if (migrate.saved) {
+					window.routeToken = migrate.routeToken;
+					this.connect();
+					this._map.uiManager.closeAll();
+				}
+				return;
+			}
+			// even after save attempt, if document is unsaved reset the file permission
+			if (migrate.saved) {
+				window.routeToken = migrate.routeToken;
+				this.connect();
+				this._map.uiManager.closeAll();
+			} else {
+				this._map.setPermission(app.file.permission);
+				window.migrating = false;
 			}
 			return;
 		}
@@ -646,7 +746,8 @@ app.definitions.Socket = L.Class.extend({
 				} else {
 					msg = _('Idle document - please tap to reload and resume editing');
 				}
-				this._map._documentIdle = true;
+				app.idleHandler._documentIdle = true;
+				this._map._docLayer._documentInfo = undefined;
 				postMsgData['Reason'] = 'DocumentIdle';
 				if (textMsg === 'oom')
 					postMsgData['Reason'] = 'OOM';
@@ -661,8 +762,8 @@ app.definitions.Socket = L.Class.extend({
 			}
 			else if (textMsg === 'recycling') {
 				msg = _('Server is down, restarting automatically. Please wait.');
-				this._map._active = false;
-				this._map._serverRecycling = true;
+				app.idleHandler._active = false;
+				app.idleHandler._serverRecycling = true;
 
 				// Prevent reconnecting the world at the same time.
 				var min = 5000;
@@ -670,20 +771,19 @@ app.definitions.Socket = L.Class.extend({
 				var timeoutMs = Math.floor(Math.random() * (max - min) + min);
 
 				var socket = this;
-				map = this._map;
-				clearTimeout(vex.timer);
-				vex.timer = setInterval(function() {
+				var map = this._map;
+				clearTimeout(this.timer);
+				this.timer = setInterval(function() {
 					if (socket.connected()) {
 						// We're connected: cancel timer and dialog.
-						clearTimeout(vex.timer);
-						vex.closeAll();
+						clearTimeout(this.timer);
 						return;
 					}
 
 					try {
 						map.loadDocument(map);
 					} catch (error) {
-						console.warn('Cannot load document.');
+						window.app.console.warn('Cannot load document.');
 					}
 				}, timeoutMs);
 			}
@@ -713,57 +813,29 @@ app.definitions.Socket = L.Class.extend({
 				this.close();
 
 				// Reload the document
-				this._map._active = false;
+				app.idleHandler._active = false;
 				map = this._map;
-				clearTimeout(vex.timer);
-				vex.timer = setInterval(function() {
+				clearTimeout(this.timer);
+				this.timer = setInterval(function() {
 					try {
 						// Activate and cancel timer and dialogs.
-						map._activate();
+						app.idleHandler._activate();
 					} catch (error) {
-						console.warn('Cannot activate map');
+						window.app.console.warn('Cannot activate map');
 					}
 				}, 3000);
 			}
 
 			// Close any open dialogs first.
-			vex.closeAll();
+			this._map.uiManager.closeAll();
 
 			var message = '';
 			if (!this._map['wopi'].DisableInactiveMessages) {
 				message = msg;
 			}
 
-			var dialogOptions = {
-				message: message,
-				contentClassName: 'cool-user-idle'
-			};
-
-			var restartConnectionFn;
 			if (textMsg === 'idle' || textMsg === 'oom') {
-				var map = this._map;
-				restartConnectionFn = function() {
-					if (map._documentIdle)
-					{
-						console.debug('idleness: reactivating');
-						map._documentIdle = false;
-						map._docLayer._setCursorVisible();
-						// force reinitialization of calcInputBar(formulabar)
-						if (map.dialog._calcInputBar)
-							map.dialog._calcInputBar.id = null;
-						return map._activate();
-					}
-					return false;
-				};
-				dialogOptions.afterClose = restartConnectionFn;
-
-				var dialogOpened = vex.dialog.open(dialogOptions);
-				this._map._textInput.hideCursor();
-				dialogOpened.contentEl.onclick = restartConnectionFn;
-				$('.vex-overlay').addClass('cool-user-idle-overlay');
-
-				if (message === '')
-					$('.cool-user-idle').css('display', 'none');
+				app.idleHandler._dim(message);
 			}
 
 			if (postMsgData['Reason']) {
@@ -778,7 +850,7 @@ app.definitions.Socket = L.Class.extend({
 			return;
 		}
 		else if (textMsg.startsWith('error:')
-			&& (command.errorCmd === 'storage' || command.errorCmd === 'saveas')) {
+			&& (command.errorCmd === 'storage' || command.errorCmd === 'saveas') || command.errorCmd === 'downloadas')  {
 
 			if (command.errorCmd === 'saveas') {
 				this._map.fire('postMessage', {
@@ -795,6 +867,9 @@ app.definitions.Socket = L.Class.extend({
 			if (command.errorKind === 'savediskfull') {
 				storageError = errorMessages.storage.savediskfull;
 			}
+			else if (command.errorKind === 'savetoolarge') {
+				storageError = errorMessages.storage.savetoolarge;
+			}
 			else if (command.errorKind === 'savefailed') {
 				storageError = errorMessages.storage.savefailed;
 			}
@@ -803,6 +878,9 @@ app.definitions.Socket = L.Class.extend({
 			}
 			else if (command.errorKind === 'saveunauthorized') {
 				storageError = errorMessages.storage.saveunauthorized;
+			}
+			else if (command.errorKind === 'saveasfailed') {
+				storageError = errorMessages.storage.saveasfailed;
 			}
 			else if (command.errorKind === 'loadfailed') {
 				storageError = errorMessages.storage.loadfailed;
@@ -813,56 +891,10 @@ app.definitions.Socket = L.Class.extend({
 			}
 			else if (command.errorKind === 'documentconflict')
 			{
-				var that = this;
-				storageError = errorMessages.storage.documentconflict;
-
-				vex.closeAll();
-
-				var dialogButtons = [
-					$.extend({}, vex.dialog.buttons.YES, { text: _('Discard'),
-						click: function() {
-							this.value = 'discard';
-							this.close();
-						}}),
-					$.extend({}, vex.dialog.buttons.YES, { text: _('Overwrite'),
-						click: function() {
-							this.value = 'overwrite';
-							this.close();
-						}})
-				];
-
-				if (!that._map['wopi'].UserCanNotWriteRelative) {
-					dialogButtons.push($.extend({}, vex.dialog.buttons.YES, { text: _('Save to new file'),
-						click: function() {
-							this.value = 'saveas';
-							this.close();
-						}}));
-				}
-
-				vex.dialog.open({
-					message: _('Document has been changed in storage. What would you like to do with your unsaved changes?'),
-					escapeButtonCloses: false,
-					overlayClosesOnClick: false,
-					buttons: dialogButtons,
-					callback: function(value) {
-						if (value === 'discard') {
-							// They want to refresh the page and load document again for all
-							that.sendMessage('closedocument');
-						} else if (value === 'overwrite') {
-							// They want to overwrite
-							that.sendMessage('savetostorage force=1');
-						} else if (value === 'saveas') {
-							var filename = that._map['wopi'].BaseFileName;
-							if (filename) {
-								filename = L.LOUtil.generateNewFileName(filename, '_new');
-								that._map.saveAs(filename);
-							}
-						}
-					},
-					afterOpen: function() {
-						this.contentEl.style.width = '600px';
-					}
-				});
+				if (this._map.isReadOnlyMode())
+					return;
+				else
+					this._showDocumentConflictPopUp();
 
 				return;
 			}
@@ -926,57 +958,38 @@ app.definitions.Socket = L.Class.extend({
 				this._map.fire('error', {msg: errorMessages.docloadtimeout});
 			} else if (errorKind.startsWith('docunloading')) {
 				// The document is unloading. Have to wait a bit.
-				this._map._active = false;
+				app.idleHandler._active = false;
 
-				clearTimeout(vex.timer);
+				clearTimeout(this.timer);
 				if (this.ReconnectCount++ >= 10) {
 					this._map.fire('error', {msg: errorMessages.docunloadinggiveup});
 					return; // Give up.
 				}
 
-				map = this._map;
-				vex.timer = setInterval(function() {
+				this.timer = setInterval(function() {
 					try {
 						// Activate and cancel timer and dialogs.
-						map._activate();
+						app.idleHandler._activate();
 					} catch (error) {
-						console.warn('Cannot activate map');
+						window.app.console.warn('Cannot activate map');
 					}
 				// .5, 2, 4.5, 8, 12.5, 18, 24.5, 32, 40.5 seconds
 				}, 500 * this.ReconnectCount * this.ReconnectCount); // Quadratic back-off.
 
 				if (this.ReconnectCount > 1) {
-					this._map.fire('error', {msg: errorMessages.docunloadingretry});
+					this._map.showBusy(errorMessages.docunloadingretry, false);
 				}
 			}
 
 			if (passwordNeeded) {
-				// Ask the user for password
-				vex.dialog.open({
-					message: msg,
-					input: '<input name="password" type="password" required />',
-					buttons: [
-						$.extend({}, vex.dialog.buttons.YES, { text: _('OK') }),
-						$.extend({}, vex.dialog.buttons.NO, { text: _('Cancel') })
-					],
-					callback: L.bind(function(data) {
-						if (data) {
-							this._map._docPassword = data.password;
-							if (window.ThisIsAMobileApp) {
-								window.postMobileMessage('loadwithpassword password=' + data.password);
-							}
-							this._map.loadDocument();
-						} else if (passwordType === 'to-modify') {
-							this._map._docPassword = '';
-							this._map.loadDocument();
-						} else {
-							this._map.fire('postMessage', {msgId: 'UI_Cancel_Password'});
-							this._map.hideBusy();
-						}
-					}, this)
-				});
+				this._askForDocumentPassword(passwordType, msg);
 				return;
 			}
+		}
+		else if (textMsg.startsWith('error:') && command.errorCmd === 'dialogevent' && command.errorKind === 'cantchangepass') {
+			var msg = _('Only the document owner can change the password.');
+			this._map.uiManager.showInfoModal('cool_alert', '', msg, '', _('OK'));
+			return;
 		}
 		else if (textMsg.startsWith('error:') && !this._map._docLayer) {
 			textMsg = textMsg.substring(6);
@@ -990,8 +1003,28 @@ app.definitions.Socket = L.Class.extend({
 				textMsg = errorMessages.serviceunavailable;
 			}
 			this._map._fatal = true;
-			this._map._active = false; // Practically disconnected.
+			app.idleHandler._active = false; // Practically disconnected.
 			this._map.fire('error', {msg: textMsg});
+		}
+		else if (textMsg.startsWith('fontsmissing:')) {
+			var fontsMissingObj = JSON.parse(textMsg.substring(textMsg.indexOf('{')));
+			var msg = ' ';
+			for (var i = 0; i < fontsMissingObj.fontsmissing.length; ++i) {
+				if (i > 0)
+					msg += ', ';
+				msg += fontsMissingObj.fontsmissing[i];
+			}
+
+			if (this._map.welcome && !this._map.welcome.isGuest() && this._map.welcome.shouldWelcome() && window.autoShowWelcome)
+			{
+				setTimeout(function() {
+					this._map.uiManager.showInfoModal('fontsmissing', _('Missing Fonts'), msg, null, _('Close'));
+				}.bind(this), 20000);
+			}
+			else
+			{
+				this._map.uiManager.showInfoModal('fontsmissing', _('Missing Fonts'), msg, null, _('Close'));
+			}
 		}
 		else if (textMsg.startsWith('info:') && command.errorCmd === 'socket') {
 			if (command.errorKind === 'limitreached' && !this.WasShownLimitDialog) {
@@ -1000,13 +1033,11 @@ app.definitions.Socket = L.Class.extend({
 				textMsg = textMsg.replace(/{docs}/g, command.params[0]);
 				textMsg = textMsg.replace(/{connections}/g, command.params[1]);
 				textMsg = textMsg.replace(/{productname}/g, (typeof brandProductName !== 'undefined' ?
-					brandProductName : 'Collabora Online Development Edition'));
-				var brandFAQURL = (typeof brandProductFAQURL !== 'undefined') ?
-					brandProductFAQURL : 'https://collaboraonline.github.io/post/faq/';
+					brandProductName : 'Collabora Online Development Edition (unbranded)'));
 				this._map.fire('infobar',
 					{
 						msg: textMsg,
-						action: brandFAQURL,
+						action: L.Util.getProduct(),
 						actionLabel: errorMessages.infoandsupport
 					});
 			}
@@ -1022,17 +1053,19 @@ app.definitions.Socket = L.Class.extend({
 		else if (textMsg.startsWith('saveas:') || textMsg.startsWith('renamefile:')) {
 			this._renameOrSaveAsCallback(textMsg, command);
 		}
+		else if (textMsg.startsWith('exportas:')) {
+			this._exportAsCallback(command);
+		}
 		else if (textMsg.startsWith('warn:')) {
 			var len = 'warn: '.length;
 			textMsg = textMsg.substring(len);
 			if (textMsg.startsWith('saveas:')) {
 				var userName = command.username ? command.username : _('Someone');
-				vex.dialog.confirm({
-					message: userName +  _(' saved this document as ') + command.filename + _('. Do you want to join?'),
-					callback: L.bind(function (val) {
-						if (val) this._renameOrSaveAsCallback(textMsg, command);
-					}, this)
-				});
+				var message = _('%userName saved this document as %fileName. Do you want to join?').replace('%userName', userName).replace('%fileName', command.filename);
+
+				this._map.uiManager.showConfirmModal('save-as-warning', '', message, _('OK'), function() {
+					this._renameOrSaveAsCallback(textMsg, command);
+				}.bind(this));
 			}
 		}
 		else if (textMsg.startsWith('statusindicator:')) {
@@ -1041,8 +1074,7 @@ app.definitions.Socket = L.Class.extend({
 			if (textMsg.startsWith('statusindicator: ready')) {
 				// We're connected: cancel timer and dialog.
 				this.ReconnectCount = 0;
-				clearTimeout(vex.timer);
-				vex.closeAll();
+				clearTimeout(this.timer);
 			}
 		}
 		else if (window.ThisIsAMobileApp && textMsg.startsWith('mobile:')) {
@@ -1065,10 +1097,10 @@ app.definitions.Socket = L.Class.extend({
 			this._map.fire('unblockUI');
 			return;
 		}
-		else if (textMsg.startsWith('freemium: ')) {
-			// Handle freemium related messages
-			var freemiumInfo = JSON.parse(textMsg.substring(textMsg.indexOf('{')));
-			this._map._setFreemiumProps(freemiumInfo);
+		else if (textMsg.startsWith('featurelock: ')) {
+			// Handle feature locking related messages
+			var lockInfo = JSON.parse(textMsg.substring(textMsg.indexOf('{')));
+			this._map._setLockProps(lockInfo);
 			return;
 		}
 		else if (textMsg.startsWith('restrictedCommands: ')) {
@@ -1079,11 +1111,18 @@ app.definitions.Socket = L.Class.extend({
 		}
 		else if (textMsg.startsWith('blockedcommand: ')) {
 			var blockedInfo = app.socket.parseServerCmd(textMsg.substring(16));
-			if (blockedInfo.errorKind === 'freemiumdeny')
-				this._map.openSubscriptionPopup(blockedInfo.errorCmd);
+			if (blockedInfo.errorKind === 'restricted')
+				window.app.console.log('Restricted command "' + blockedInfo.errorCmd + '" was blocked');
+			else if (blockedInfo.errorKind === 'locked')
+				this._map.openUnlockPopup(blockedInfo.errorCmd);
 			return;
 		}
-		else if (!textMsg.startsWith('tile:') && !textMsg.startsWith('renderfont:') && !textMsg.startsWith('windowpaint:')) {
+		else if (textMsg.startsWith('updateroutetoken') && window.indirectSocket) {
+			window.routeToken = textMsg.split(' ')[1];
+			window.app.console.log('updated routeToken: ' + window.routeToken);
+		}
+		else if (!textMsg.startsWith('tile:') && !textMsg.startsWith('delta:') &&
+			 !textMsg.startsWith('renderfont:') && !textMsg.startsWith('windowpaint:')) {
 
 			if (imgBytes !== undefined) {
 				try {
@@ -1095,7 +1134,8 @@ app.definitions.Socket = L.Class.extend({
 				}
 			}
 
-			// Decode UTF-8 in case it is binary frame
+			// Decode UTF-8 in case it is binary frame. Disable this block
+			// in the iOS app as the image data is not URL encoded.
 			if (typeof e.data === 'object') {
 				// FIXME: Not sure what this code is supposed to do. Doesn't
 				// decodeURIComponent() exactly reverse what window.escape() (which
@@ -1108,6 +1148,7 @@ app.definitions.Socket = L.Class.extend({
 
 		if (textMsg.startsWith('status:')) {
 			this._onStatusMsg(textMsg, command);
+			return;
 		}
 
 		// These can arrive very early during the startup, and never again.
@@ -1148,6 +1189,64 @@ app.definitions.Socket = L.Class.extend({
 		}
 	},
 
+	_exportAsCallback: function(command) {
+		this._map.hideBusy();
+		this._map.uiManager.showInfoModal('exported-success', _('Exported to storage'), _('Successfully exported: ') + decodeURIComponent(command.filename), '', _('OK'));
+	},
+
+	_askForDocumentPassword: function(passwordType, msg) {
+		this._map.uiManager.showInputModal('password-popup', '', msg, '', _('OK'), function(data) {
+			if (data) {
+				this._map._docPassword = data;
+				if (window.ThisIsAMobileApp) {
+					window.postMobileMessage('loadwithpassword password=' + data);
+				}
+				this._map.loadDocument();
+			} else if (passwordType === 'to-modify') {
+				this._map._docPassword = '';
+				this._map.loadDocument();
+			} else {
+				this._map.fire('postMessage', {msgId: 'UI_Cancel_Password'});
+				this._map.hideBusy();
+			}
+		}.bind(this), true /* password input */);
+	},
+
+	_showDocumentConflictPopUp: function() {
+		var buttonList = [];
+		var callbackList = [];
+
+		buttonList.push({ id: 'cancel-conflict-popup', text: _('Cancel') });
+		callbackList.push({ id: 'cancel-conflict-popup', func_: null });
+
+		buttonList.push({ id: 'discard-button', text: _('Discard') });
+		buttonList.push({ id: 'overwrite-button', text: _('Overwrite') });
+
+		callbackList.push({id: 'discard-button', func_: function() {
+			this.sendMessage('closedocument');
+		}.bind(this) });
+
+		callbackList.push({id: 'overwrite-button', func_: function() {
+			this.sendMessage('savetostorage force=1'); }.bind(this)
+		});
+
+		if (!this._map['wopi'].UserCanNotWriteRelative) {
+			buttonList.push({ id: 'save-to-new-file', text: _('Save to new file') });
+			callbackList.push({ id: 'save-to-new-file', func_: function() {
+				var filename = this._map['wopi'].BaseFileName;
+				if (filename) {
+					filename = L.LOUtil.generateNewFileName(filename, '_new');
+					this._map.saveAs(filename);
+				}
+			}.bind(this)});
+		}
+
+		var title = _('Document has been changed');
+		var message = _('Document has been changed in storage. What would you like to do with your unsaved changes?');
+
+		this._map.uiManager.showModalWithCustomButtons('document-conflict-popup', title, message, false, buttonList, callbackList);
+	},
+
 	_renameOrSaveAsCallback: function(textMsg, command) {
 		this._map.hideBusy();
 		if (command !== undefined && command.url !== undefined && command.url !== '') {
@@ -1184,7 +1283,7 @@ app.definitions.Socket = L.Class.extend({
 				// if this is save-as, we need to load the document with edit permission
 				// otherwise the user has to close the doc then re-open it again
 				// in order to be able to edit.
-				this._map.options.permission = 'edit';
+				app.file.permission = 'edit';
 				this.close();
 				this._map.loadDocument();
 				this._map.sendInitUNOCommands();
@@ -1208,7 +1307,7 @@ app.definitions.Socket = L.Class.extend({
 			textMsg.startsWith('statechanged:') ||
 			textMsg.startsWith('invalidatecursor:') ||
 			textMsg.startsWith('viewinfo:')) {
-			//console.log('_tryToDelayMessage: textMsg: ' + textMsg);
+			//window.app.console.log('_tryToDelayMessage: textMsg: ' + textMsg);
 			var message = {msg: textMsg};
 			this._delayedMessages.push(message);
 			delayed  = true;
@@ -1245,7 +1344,7 @@ app.definitions.Socket = L.Class.extend({
 				} catch (e) {
 					// unpleasant - but stops this one problem
 					// event stopping an unknown number of others.
-					console.log2('Exception ' + e + ' emitting event ' + messages[k]);
+					window.app.console.log('Exception ' + e + ' emitting event ' + messages[k]);
 				}
 			}
 		}
@@ -1264,6 +1363,9 @@ app.definitions.Socket = L.Class.extend({
 		}
 
 		if (!this._map._docLayer) {
+			// initialize and append text input before doc layer
+			this._map.initTextInput(command.type);
+
 			// first status message, we need to create the document layer
 			var tileWidthTwips = this._map.options.tileWidthTwips;
 			var tileHeightTwips = this._map.options.tileHeightTwips;
@@ -1276,7 +1378,6 @@ app.definitions.Socket = L.Class.extend({
 			var docLayer = null;
 			if (command.type === 'text') {
 				docLayer = new L.WriterTileLayer('', {
-					permission: this._map.options.permission,
 					tileWidthTwips: tileWidthTwips / app.dpiScale,
 					tileHeightTwips: tileHeightTwips / app.dpiScale,
 					docType: command.type
@@ -1284,7 +1385,6 @@ app.definitions.Socket = L.Class.extend({
 			}
 			else if (command.type === 'spreadsheet') {
 				docLayer = new L.CalcTileLayer('', {
-					permission: this._map.options.permission,
 					tileWidthTwips: tileWidthTwips / app.dpiScale,
 					tileHeightTwips: tileHeightTwips / app.dpiScale,
 					docType: command.type
@@ -1292,7 +1392,6 @@ app.definitions.Socket = L.Class.extend({
 			}
 			else if (command.type === 'presentation' || command.type === 'drawing') {
 				docLayer = new L.ImpressTileLayer('', {
-					permission: this._map.options.permission,
 					tileWidthTwips: tileWidthTwips / app.dpiScale,
 					tileHeightTwips: tileHeightTwips / app.dpiScale,
 					docType: command.type
@@ -1310,8 +1409,9 @@ app.definitions.Socket = L.Class.extend({
 			this._map._docLayer._requestNewTiles();
 			this._map.fire('statusindicator', {statusType: 'reconnected'});
 			this._map._isNotebookbarLoadedOnCore = false;
-			this._map.fire('changeuimode', {mode: window.userInterfaceMode, force: true});
-			this._map.setPermission(this._map.options.permission);
+			var uiMode = this._map.uiManager.getCurrentMode();
+			this._map.fire('changeuimode', {mode: uiMode, force: true});
+			this._map.setPermission(app.file.permission);
 		}
 
 		this._map.fire('docloaded', {status: true});
@@ -1320,11 +1420,22 @@ app.definitions.Socket = L.Class.extend({
 		}
 	},
 
+	// show labels instead of editable fields in message boxes
+	_preProcessMessageDialog: function(msgData) {
+		for (var i in msgData.children) {
+			var child = msgData.children[i];
+			if (child.type === 'multilineedit')
+				child.type = 'fixedtext';
+			else if (child.children)
+				this._preProcessMessageDialog(child);
+		}
+	},
+
 	_onJSDialog: function(textMsg, callback) {
 		var msgData = JSON.parse(textMsg.substring('jsdialog:'.length + 1));
 
 		if (msgData.children && !L.Util.isArray(msgData.children)) {
-			console.warn('_onJSDialogMsg: The children\'s data should be created of array type');
+			window.app.console.warn('_onJSDialogMsg: The children\'s data should be created of array type');
 			return;
 		}
 
@@ -1353,14 +1464,22 @@ app.definitions.Socket = L.Class.extend({
 			}
 		}
 
+		if (msgData.type === 'messagebox')
+			this._preProcessMessageDialog(msgData);
+
 		// re/create
 		if (window.mode.isMobile()) {
 			if (msgData.type == 'borderwindow')
 				return;
-			if (msgData.enabled || msgData.type === 'modalpopup' || msgData.type === 'snackbar') {
+			if (msgData.jsontype === 'formulabar') {
+				this._map.fire('formulabar', {data: msgData});
+				return;
+			}
+			if (msgData.enabled || msgData.jsontype === 'dialog' ||
+				msgData.type === 'modalpopup' || msgData.type === 'snackbar') {
 				this._map.fire('mobilewizard', {data: msgData, callback: callback});
 			} else {
-				this._map.fire('closemobilewizard');
+				console.warn('jsdialog: unhandled mobile message');
 			}
 		} else if (msgData.jsontype === 'autofilter') {
 			this._map.fire('autofilterdropdown', msgData);
@@ -1368,6 +1487,8 @@ app.definitions.Socket = L.Class.extend({
 			this._map.fire('jsdialog', {data: msgData, callback: callback});
 		} else if (msgData.jsontype === 'sidebar') {
 			this._map.fire('sidebar', {data: msgData});
+		} else if (msgData.jsontype === 'formulabar') {
+			this._map.fire('formulabar', {data: msgData});
 		} else if (msgData.jsontype === 'notebookbar') {
 			if (msgData.children) {
 				for (var i = 0; i < msgData.children.length; i++) {
@@ -1398,16 +1519,19 @@ app.definitions.Socket = L.Class.extend({
 	},
 
 	_onSocketError: function () {
-		console.debug('_onSocketError:');
+		window.app.console.debug('_onSocketError:');
 		this._map.hideBusy();
 		// Let onclose (_onSocketClose) report errors.
 	},
 
 	_onSocketClose: function () {
-		console.debug('_onSocketClose:');
-		var isActive = this._map._active;
+		window.app.console.debug('_onSocketClose:');
+		if (this.ReconnectCount > 0)
+			return;
+
+		var isActive = app.idleHandler._active;
 		this._map.hideBusy();
-		this._map._active = false;
+		app.idleHandler._active = false;
 
 		if (this._map._docLayer) {
 			this._map._docLayer.removeAllViews();
@@ -1434,13 +1558,17 @@ app.definitions.Socket = L.Class.extend({
 		setTimeout(function () {
 			if (!that._reconnecting) {
 				that._reconnecting = true;
-				if (!that._map._documentIdle)
+				if (!app.idleHandler._documentIdle)
 					that._map.showBusy(_('Reconnecting...'), false);
-				that._map._activate();
+				app.idleHandler._activate();
 			}
 		}, 1 /* ms */);
 
-		if (!this._map['wopi'].DisableInactiveMessages)
+		if (this._map.isEditMode()) {
+			this._map.setPermission('view');
+		}
+
+		if (!this._map['wopi'].DisableInactiveMessages && app.sectionContainer && !app.sectionContainer.testing)
 			this._map.uiManager.showSnackbar(_('The server has been disconnected.'));
 	},
 
@@ -1477,6 +1605,9 @@ app.definitions.Socket = L.Class.extend({
 			}
 			else if (tokens[i].substring(0, 6) === 'parts=') {
 				command.parts = parseInt(tokens[i].substring(6));
+			}
+			else if (tokens[i].substring(0, 5) === 'mode=') {
+				command.mode = parseInt(tokens[i].substring(5));
 			}
 			else if (tokens[i].substring(0, 8) === 'current=') {
 				command.selectedPart = parseInt(tokens[i].substring(8));
@@ -1534,9 +1665,6 @@ app.definitions.Socket = L.Class.extend({
 			else if (tokens[i].substring(0, 7) === 'params=') {
 				command.params = tokens[i].substring(7).split(',');
 			}
-			else if (tokens[i].substring(0, 9) === 'renderid=') {
-				command.renderid = tokens[i].substring(9);
-			}
 			else if (tokens[i].substring(0, 12) === 'rendercount=') {
 				command.rendercount = parseInt(tokens[i].substring(12));
 			}
@@ -1569,14 +1697,19 @@ app.definitions.Socket = L.Class.extend({
 					command.selectedParts.push(parseInt(item));
 				});
 			}
+			else if (tokens[i].startsWith('rtlparts=')) {
+				var rtlParts = tokens[i].substring(9).split(',');
+				command.rtlParts = [];
+				rtlParts.forEach(function (item) {
+					command.rtlParts.push(parseInt(item));
+				});
+			}
 			else if (tokens[i].startsWith('hash=')) {
 				command.hash = tokens[i].substring('hash='.length);
 			}
 			else if (tokens[i] === 'nopng') {
 				command.nopng = true;
 			}
-			else if (tokens[i].startsWith('masterpagecount='))
-				command.masterPageCount = parseInt(tokens[i].substring(16));
 			else if (tokens[i].substring(0, 9) === 'username=') {
 				command.username = tokens[i].substring(9);
 			}
@@ -1587,6 +1720,12 @@ app.definitions.Socket = L.Class.extend({
 					return [parseInt(element[0]), parseInt(element[1]), parseInt(element[2]), parseInt(element[3])];
 				});
 			}
+			else if (tokens[i].startsWith('lastcolumn=')) {
+				command.lastcolumn = parseInt(tokens[i].substring(11));
+			}
+			else if (tokens[i].startsWith('lastrow=')) {
+				command.lastrow = parseInt(tokens[i].substring(8));
+			}
 		}
 		if (command.tileWidth && command.tileHeight && this._map._docLayer) {
 			var defaultZoom = this._map.options.zoom;
@@ -1596,6 +1735,22 @@ app.definitions.Socket = L.Class.extend({
 			command.zoom = Math.round(defaultZoom - Math.log(scale) / Math.log(1.2));
 		}
 		return command;
+	},
+
+	setTraceEventLogging: function (enabled) {
+		this.traceEventRecordingToggle = enabled;
+		this.sendMessage('traceeventrecording ' + (this.traceEventRecordingToggle ? 'start' : 'stop'));
+
+		// Just as a test, uncomment this to toggle SAL_WARN and
+		// SAL_INFO selection between two states: 1) the default
+		// as directed by the SAL_LOG environment variable, and
+		// 2) all warnings on plus SAL_INFO for sc.
+		//
+		// (Note that coolwsd sets the SAL_LOG environment variable
+		// to "-WARN-INFO", i.e. the default is that nothing is
+		// logged from core.)
+
+		// app.socket.sendMessage('sallogoverride ' + (app.socket.traceEventRecordingToggle ? '+WARN+INFO.sc' : 'default'));
 	},
 
 	traceEventRecordingToggle: false,
@@ -1613,28 +1768,38 @@ app.definitions.Socket = L.Class.extend({
 
 	asyncTraceEventCounter: 0,
 
+	// simulate a threads per live async event to help the chrome renderer
+	asyncTracePseudoThread: 1,
+
 	createAsyncTraceEvent: function (name, args) {
 		if (!this.traceEventRecordingToggle)
 			return null;
 
 		var result = {};
 		result.id = this.asyncTraceEventCounter++;
+		result.tid = this.asyncTracePseudoThread++;
 		result.active = true;
 		result.args = args;
 
 		if (this.traceEventRecordingToggle)
-			this.sendMessage('TRACEEVENT name=' + name + ' ph=S ts=' + Math.round(performance.now() * 1000) + ' id=' + result.id
-					 + this._stringifyArgs(args));
+			this.sendMessage('TRACEEVENT name=' + name +
+					 ' ph=S ts=' + Math.round(performance.now() * 1000) +
+					 ' id=' + result.id + ' tid=' + result.tid +
+					 this._stringifyArgs(args));
 
 		var that = this;
 		result.finish = function () {
+			that.asyncTracePseudoThread--;
 			if (this.active) {
-				that.sendMessage('TRACEEVENT name=' + name + ' ph=F ts=' + Math.round(performance.now() * 1000) + ' id=' + this.id
-						 + that._stringifyArgs(this.args));
+				that.sendMessage('TRACEEVENT name=' + name +
+						 ' ph=F ts=' + Math.round(performance.now() * 1000) +
+						 ' id=' + this.id + ' tid=' + this.tid +
+						 that._stringifyArgs(this.args));
 				this.active = false;
 			}
 		};
 		result.abort = function () {
+			that.asyncTracePseudoThread--;
 			this.active = false;
 		};
 		return result;
@@ -1652,7 +1817,9 @@ app.definitions.Socket = L.Class.extend({
 		result.finish = function () {
 			if (this.active) {
 				var now = performance.now();
-				that.sendMessage('TRACEEVENT name=' + name + ' ph=X ts=' + Math.round(now * 1000) + ' dur=' + Math.round((now - this.begin) * 1000)
+				that.sendMessage('TRACEEVENT name=' + name +
+						 ' ph=X ts=' + Math.round(this.begin * 1000) +
+						 ' dur=' + Math.round((now - this.begin) * 1000)
 						 + that._stringifyArgs(args));
 				this.active = false;
 			}
@@ -1661,6 +1828,26 @@ app.definitions.Socket = L.Class.extend({
 			this.active = false;
 		};
 		return result;
+	},
+
+	// something we can grok quickly in the trace viewer
+	createCompleteTraceEventFromEvent: function(textMsg) {
+		if (!this.traceEventRecordingToggle)
+			return null;
+
+		var pretty;
+		if (!textMsg)
+			pretty = 'blob';
+		else {
+			var idx = textMsg.indexOf(':');
+			if (idx > 0)
+				pretty = textMsg.substring(0,idx);
+			else if (textMsg.length < 25)
+				pretty = textMsg;
+			else
+				pretty = textMsg.substring(0, 25);
+		}
+		return this.createCompleteTraceEvent(pretty, { message: textMsg });
 	},
 
 	threadLocalLoggingLevelToggle: false

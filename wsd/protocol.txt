@@ -78,17 +78,10 @@ TRACEEVENT name=<name> ph=<letter> ts=<timestamp> <more parameters>... [ args=<J
     between the beginning of the thing being timed and the time when
     the 'X' message was emitted, also in microseconds.
 
-canceltiles
-
-    All outstanding tile messages from the client to the server are
-    dropped and will not be handled, except tile messages with an id
-    parameter. There is no guarantee of exactly which tile: messages
-    might still be sent back to the client.
-
-tileprocessed tile=<tileid>
+tileprocessed tile=<tileid1,tileid2,...>
 
     Previously sent tile (server -> client) arrived and processed by the client.
-    Tileid has the next structure : <selected part>:<tile x coord>:<tile y coord>:<tile width in twips>:<tile height in twips>
+    Each tileid has the next structure : <selected part>:<tile x coord>:<tile y coord>:<tile width in twips>:<tile height in twips>
 
 downloadas name=<fileName> id=<id> format=<document format> options=<SkipImages, etc>
 
@@ -136,7 +129,7 @@ load <pathname>
 
     Deprecated.
 
-load [part=<partNumber>] url=<url> [timestamp=<time>] [lang=<locale>] [deviceFormFactor=<device type>] [options=<options>]
+load [part=<partNumber>] url=<url> [timestamp=<time>] [lang=<locale>] [deviceFormFactor=<device type>] [timezone=<timezone>] [options=<options>]
 
     part is an optional parameter. <partNumber> is a number.
 
@@ -148,6 +141,8 @@ load [part=<partNumber>] url=<url> [timestamp=<time>] [lang=<locale>] [deviceFor
 
     deviceFormFactor specifies the form factor of the device the client is running on
     it can be one of the following: 'desktop', 'tablet', 'mobile'
+
+    timestamp is in tzfile(5) format. For example: Pacific/Auckland.
 
     options are the whole rest of the line, not URL-encoded, and must be valid JSON.
 
@@ -246,6 +241,9 @@ tilecombine <parameters>
     comma-separated lists, and the number of elements in each must be
     same.
 
+    if oldwid=0 this forces returning from the previous keyframe
+    for this tile - suitable for force-refreshing the data.
+
 dialog <command>
 
     <command> is unique identifier for the dialog that needs to be painted.
@@ -305,17 +303,13 @@ versionrestore <action>
 
     Version restore related messages.
 
-    <action> can take following values:
-    - prerestore: The storage is about restore the document to an earlier
+    <action> can take the following values:
+    - prerestore: The storage is about to restore the document to an earlier
     revision.
 
 asksignaturestatus
 
     Requests a signing status of the document.
-
-signdocument
-
-    Sign the current document with the input certificate and private key.
 
 rendershapeselection mimetype=<mimeType>
 
@@ -350,6 +344,22 @@ loggingleveloverride <default|max|verbose|terse|none|fatal|critical|error|warnin
     "logging.least_verbose_level_settable_from_client" configuration
     setting).
 
+paintwindow <id> rectangle=<x>,<y>,<width>,<height> dpiscale=<scale>
+
+    Requests painting the area of a window.
+
+    <id> is the window's int ID.
+
+    <x>,<y>,<width>,<height> is the area of the dialog to be rendered.
+
+    <scale> is a scaling factor, e.g. 1 for non-HiDPI.
+
+contentcontrolevent <JSON>
+    *Properties:
+    type - date,drop-down
+    selected:
+        - for drop-down: zero based index of item that is selected
+        - for date: date which is selected by date picker
 
 server -> client
 ================
@@ -456,13 +466,15 @@ getchildid: id=<id>
 
     Returns the child id
 
-invalidatetiles: part=<partNumber> x=<x> y=<y> width=<width> height=<height>
+invalidatetiles: part=<partNumber> x=<x> y=<y> width=<width> height=<height> wid=<wid>
 
     All parameters are numbers. Tells the client to invalidate any
     cached tiles for the document area specified (in twips), at any
     zoom level.
 
-invalidatetiles: EMPTY
+invalidatetiles: EMPTY, <partNumber>, <mode>, wid=<wid>
+
+    Tells the client to invalidate all cached tiles.
 
 pong rendercount=<num>
 
@@ -502,19 +514,25 @@ complexselection:
     Complex selections with embedded objects and large text selections need special export handling.
     This response signifies that the payload is large and/or complex and needs to be retrieved via the clipboard API.
 
-tile: part=<partNumber> width=<width> height=<height> tileposx=<xpos> tileposy=<ypos> tilewidth=<tileWidth> tileheight=<tileHeight> [timestamp=<time>] [renderid=<id>] [wid=<wireId>]
+tile: part=<partNumber> width=<width> height=<height> tileposx=<xpos> tileposy=<ypos> tilewidth=<tileWidth> tileheight=<tileHeight> [timestamp=<time>] [wid=<wireId>]
 <binaryPngImage>
 
     The parameters from the corresponding 'tile' command.
 
-    In a debug build, the renderid is either a unique identifier,
-    different for each actual call to LibreOfficeKit to render a tile,
-    or the string 'cached' if the tile was found in the cache. WireId
-    is a unique reference to a hashed tile on the server, and can
-    be included by the client in the next 'tile' message requesting
-    the same tile.
+    WireId is a monotonically incrementing, unique reference to a
+    state of the document on the server, and can be included by
+    the client in the next 'tile' message requesting the same tile.
+
+    the tile message has at least one keyframe, followed by any
+    number of concatentated compressed deltas.
+
+delta: part=<partNumber> width=<width> height=<height> tileposx=<xpos> tileposy=<ypos> tilewidth=<tileWidth> tileheight=<tileHeight> [timestamp=<time>] [wid=<wireId>]
+
+    A delta command is like a tile: command but the payload is purely
+    an incremental patch on top of a previous tile.
 
 commandresult: <payload>
+
     This is used to acknowledge the commands from the client.
     <payload> is { command: <command name>, success: 'true' }
 
@@ -606,6 +624,8 @@ wopi: <JSON>
      + HidePrintOption: (boolean): If Collabora Online should hide print options
      + HideExportOption: (boolean): If Collabora Online should hide the export options
        this implies 'Download as' options in file menu
+     + HideRepairOption: (boolean): If Collabora Online should hide the Repair
+       undo functionality
 
 versionrestore: <action>
 
@@ -643,6 +663,30 @@ mobile: <event>
     Available only in the mobile (Android and iOS) apps.  When you send
     'mobile: eventname', the socket code will fire a 'eventname' event on the
     map.
+
+windowpaint: id=<id> width=<width> height=<height> rectangle=<x>,<y>,<width>,<height> hash=<hash> nopng
+
+    Sent to the client when the server rendered the bitmap of a dialog.
+
+    <id> is the window's int ID.
+
+    <width> is the pixel width of the returned bitmap.
+
+    <height> is the pixel height of the returned bitmap.
+
+    <x>,<y>,<width>,<height> is the rendered area of the dialog
+
+    <hash> is the hash key of this bitmap in the pixmap cache
+
+    nopng appears when the the bitmap was already in the cache, so no PNG
+    encoding happened.
+
+contentcontrol: <JSON>
+    *Properties
+        - action - show, hide, change-picture
+        - rectangles - rectangle coordinates (x-coordinate, y-coordinate, width, height)
+        - date - boolean to indicate date content control
+        - items - array of items for dropdown
 
 
 child -> parent
@@ -857,6 +901,10 @@ kill <pid>
      <pid> process id of the document to kill. All sessions of document would be
      killed. There is no way yet to kill individual sessions.
 
+wopiSrcMap
+
+    get map of wopiSrc<->routeToken
+
 admin -> client
 ===============
 
@@ -864,17 +912,18 @@ Commands marked with [*] are notifications that are delivered only if client is
 subscribed to these commands using `subscribe` (see client->admin
 section). Others are just response messages to some client command.
 
-[*] adddoc <pid> <filename> <viewid> <memory consumed>
+[*] adddoc <pid> <filename> <sessionid> <username> <userid> <memory consumed> <wopiHost> <isViewReadOnly> <wopiSrc>
 
     <pid> process id hosting the document
     <filename> URL encoded name of the file
-    <viewid> string identifying the view of this document
+    <sessionid> string identifying the view of this document
     <memory consumed> RSS of <pid> in kilobytes
+    <wopihost> storage host on which document exist
 
-[*] rmdoc <pid> <viewid>
+[*] rmdoc <pid> <sessionid>
 
     <pid> process id hosting the document
-    <viewid> view which was closed
+    <sessionid> view which was closed
 
 [*] mem_stats <memory consumed>
 
@@ -891,6 +940,25 @@ section). Others are just response messages to some client command.
 
     <pid> process id hosting the document
     reset the idle time counter for the document
+
+[*] updateroutetoken <JSON string>
+
+    <JSON string> contains the map of serverId as key and routeToken as value
+
+[*] routing_rmdoc <wopiSrc>
+
+    <wopiSrc> of the document that is getting removed, fired when all the views gets expired
+
+    note: This might get additional parameters in future
+
+[*] wopiSrcMap <JSON string>
+
+    wopiSrcMap:
+    {
+        "routeToken": "abcpqr"
+        "wopiSrc" : ["wopiSrc1", "wopiSrc2"]
+    }
+    <JSON string> contains the map wopiSrc<->routeToken
 
 InvalidAuthToken
 

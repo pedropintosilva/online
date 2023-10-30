@@ -3,17 +3,98 @@
 	----------------------------------*/
 	--cool-font: 'Segoe UI', Tahoma, Arial, Helvetica, sans-serif;
 	/*investigate what are the drawback in consisntly use --cool-fonts
-	for vex, jquery-ui and perhaps mobile*/
+	for jquery-ui and perhaps mobile*/
 	--mobile-font: Trebuchet MS,Tahoma,Verdana,Arial,sans-serif;
-	--vex-font: Trebuchet MS,Tahoma,Verdana,Arial,sans-serif;
 	--jquery-ui-font: Trebuchet MS,Tahoma,Verdana,Arial,sans-serif;
 
 	--docs-font: 'Open Sans', 'Helvetica Neue', Helvetica, Arial, sans-serif;
 	--docs--pre-font: 'Consolas', 'Menlo', 'Lucida Console', 'Courier New', monospace;
 
 	/* Shared color for cell and selection border */
-	--cell-cursor-selection-border-color: #0074e8;
+	--cell-cursor-selection-border-color: var(--color-primary);
+
+	--btn-size: 24px;
+	--btn-size-s: 16px;
+	--border-radius: 4px; /* buttons, widgets */
+	--border-radius-large: 10px; /* dialog */
+
+	--default-font-size: 12px;
+	--header-font-size: 16px;
+
+	--default-height: 24px;
+	--header-height: 38px;
+
+	/* Annotations */
+	--annotation-input-size: 100px;
 }
+.focus-hidden:focus {
+	outline: none;
+}
+
+.access-key {
+	text-decoration: none;
+}
+
+.activate-underlines .access-key {
+	text-decoration: underline;
+}
+
+.accessibility-info-box {
+	width: 26px;
+	height: 16px;
+	font-size: 12px;
+	line-height: 16px;
+	text-align: center;
+	background-color: yellow;
+	color: rgb(68, 24, 24);
+	position: absolute;
+	z-index: 20;
+	border: 1px solid black;
+	display: none;
+}
+
+.activate-info-boxes .accessibility-info-box {
+	display: block;
+}
+
+.activate-info-boxes .accessibility-info-box.filtered_out {
+	display: none;
+}
+
+/* Flexbox */
+.d-flex {
+	display: flex;
+}
+.flex-column {
+	/* Initial value */
+	flex-direction: column;
+}
+.flex-row {
+	flex-direction: row;
+}
+.align-items-center {
+	align-items: center;
+}
+.justify-items-center {
+	justify-items: center;
+}
+.align-content-center {
+	align-content: center;
+}
+.justify-content-center {
+	justify-content: center;
+}
+
+/* Space */
+.m-v-0 {
+	margin-block: 0;
+}
+
+/* Border */
+.border-0 {
+	border: 0 !important;
+}
+
 /* clip technique: hide visually but keep it available to screen readers */
 .visuallyhidden {
 	border: 0;
@@ -30,7 +111,7 @@
 	position: fixed;
 }
 #document-container {
-	background: #DFDFDF;
+	background-color: var(--color-main-background);
 	position: relative;
 	margin: 0;
 	padding: 0;
@@ -38,6 +119,17 @@
 	flex: 1;
 	display: block;
 	height: 100%;
+}
+
+.auto-color-button {
+	width: 100% !important;
+	padding: 0;
+	margin: auto !important;
+}
+
+.color-palette-selector {
+	width: 100% !important;
+	margin-top: 8px !important;
 }
 
 #toolbar-wrapper.readonly {
@@ -77,8 +169,8 @@
 .table-column-resize-marker {
 	margin-left: 0px;
 	margin-top: 0px;
-	width: 24px;
-	height: 24px;
+	width: var(--btn-size);
+	height: var(--btn-size);
 	background-image: url('images/table-column-resize-marker.svg');
 	background-size: 100% 100%;
 	background-repeat: no-repeat;
@@ -88,8 +180,8 @@
 .table-column-resize-marker:hover {
 	margin-left: 0px;
 	margin-top: 0px;
-	width: 24px;
-	height: 24px;
+	width: var(--btn-size);
+	height: var(--btn-size);
 	background-image: url('images/table-column-resize-marker-hover.svg');
 	background-size: 100% 100%;
 	background-repeat: no-repeat;
@@ -99,8 +191,8 @@
 .table-row-resize-marker {
 	margin-left: 0px;
 	margin-top: 0px;
-	width: 24px;
-	height: 24px;
+	width: var(--btn-size);
+	height: var(--btn-size);
 	background-image: url('images/table-row-resize-marker.svg');
 	background-size: 100% 100%;
 	background-repeat: no-repeat;
@@ -110,8 +202,8 @@
 .table-row-resize-marker:hover {
 	margin-left: 0px;
 	margin-top: 0px;
-	width: 24px;
-	height: 24px;
+	width: var(--btn-size);
+	height: var(--btn-size);
 	background-image: url('images/table-row-resize-marker-hover.svg');
 	background-size: 100% 100%;
 	background-repeat: no-repeat;
@@ -120,8 +212,8 @@
 
 .table-select-marker {
 	margin: 0px;
-	width: 24px;
-	height: 24px;
+	width: var(--btn-size);
+	height: var(--btn-size);
 	background: url('images/table-row-or-column-select-marker.svg') no-repeat center center /12px;
 	cursor: pointer;
 }
@@ -149,14 +241,14 @@
 }
 
 .table-select-marker:hover::before {
-	border-color: #1C99E0;
+	border-color: var(--color-primary);
 }
 
 .table-move-marker {
 	margin-left: 0px;
 	margin-top: 0px;
-	width: 24px;
-	height: 24px;
+	width: var(--btn-size);
+	height: var(--btn-size);
 	background-image: url('images/table-move-marker.svg');
 	background-size: 100% 100%;
 	background-repeat: no-repeat;
@@ -167,24 +259,23 @@ body {
 	margin: 0;
 	overflow: hidden;
 	overscroll-behavior-y: none; /* disable the pull to reload gesture */
-	background: #ffffff;
+	background: var(--color-main-background);
 	touch-action: none;
 	line-height: normal;
 }
 
 #presentation-controls-wrapper {
-	background: #dfdfdf;
+	background: var(--color-main-background);
 	position: relative;
-	border-top: 1px solid var(--gray-color);
+	border-top: 1px solid var(--color-border);
 	display: none;
 }
 
 #sidebar-dock-wrapper {
 	display: none;
-	background: #fff;
+	background: var(--color-background-lighter);
 	position: relative;
-	border-top: 1px solid var(--gray-color);
-	border-left: 1px solid var(--gray-color);
+	border-inline-start: 1px solid var(--color-border);
 	overflow: hidden;
 	z-index: 990;
 }
@@ -200,15 +291,34 @@ nav.spreadsheet-color-indicator ~ #sidebar-dock-wrapper {
 	overflow-x: hidden;
 	overflow-y: auto;
 	z-index: 1200;
+	scrollbar-width: thin;
+	scrollbar-color: var(--color-border) transparent;
+}
+
+#sidebar-panel::-webkit-scrollbar {
+	width: 8px;
+}
+
+#sidebar-panel::-webkit-scrollbar-thumb {
+	background-color: var(--color-border);
 }
 
 #toolbar-wrapper {
 	table-layout: fixed;
-	border-collapse: collapse;
+	border-collapse: separate;
+	border-spacing: 0;
 	width: 100%;
 	border-top: none;
 	z-index: 11 !important;
-	border-bottom: 1px solid var(--gray-color);
+	border-bottom: 1px solid var(--color-border);
+	background-color: var(--color-background-lighter);
+}
+#toolbar-wrapper:not(.mobile) {
+	padding: 3px 0;
+}
+/* Remove bottom padding in calc as it affects formulabar*/
+#toolbar-wrapper.spreadsheet:not(.mobile) {
+	padding-block-end: 0;
 }
 
 #toolbar-logo {
@@ -220,13 +330,18 @@ nav.spreadsheet-color-indicator ~ #sidebar-dock-wrapper {
 	width: 0;
 }
 
+/* Hide back btn except on mobile phones */
+#toolbar-mobile-back {
+	width: 0;
+}
+
 #mobile-edit-button {
 	position: absolute;
 	width: 56px;
 	height: 56px;
 	right: 16px;
 	bottom: 16px;
-	background-color: #0b87e7;
+	background-color: var(--color-primary);
 	border-radius: 50%;
 	box-shadow: 0 4px 8px 0 rgba(0, 0, 0, 0.2), 0 6px 20px 0 rgba(0, 0, 0, 0.19);
 	z-index: 1001;
@@ -240,10 +355,10 @@ nav.spreadsheet-color-indicator ~ #sidebar-dock-wrapper {
 
 #mobile-edit-button-image {
 	position: relative;
-	left: 16px;
+	margin-inline-start: 16px;
 	top: 16px;
-	width: 24px;
-	height: 24px;
+	width: var(--btn-size);
+	height: var(--btn-size);
 	background: url('images/baseline-edit-24px.svg') no-repeat center !important;
 	transform: rotate(0deg);
 	transition: transform 0.5s;
@@ -257,8 +372,26 @@ nav.spreadsheet-color-indicator ~ #sidebar-dock-wrapper {
 
 .cool-font {
 	font-family: var(--cool-font) !important;
-	font-size: 12px !important;
+	font-size: var(--default-font-size) !important;
 	font-weight: normal !important;
+	padding: 3px 5px 3px 3px;
+	color: var(--color-main-text);
+}
+
+#search-input {
+	width: 200px;
+	height: 22px;
+	background: var(--color-background-lighter);
+}
+#search-input:focus {
+	background-color: var(--color-background);
+	border-color: var(--color-primary) !important;
+}
+#search-input:hover {
+	border: 1px solid var(--color-border-darker) !important;
+}
+#search-input::placeholder {
+	color: var(--color-main-text);
 }
 
 .cool-character {
@@ -271,15 +404,11 @@ nav.spreadsheet-color-indicator ~ #sidebar-dock-wrapper {
 	width: 20px;
 }
 
-.annotation-button {
-	margin-right: 10px;
-}
-
 .annotation-marker {
 	margin-left: 0px;
 	margin-top: 0px;
-	width: 24px;
-	height: 24px;
+	width: var(--btn-size);
+	height: var(--btn-size);
 	background-image: url('images/note.svg');
 	background-size: 100% 100%;
 	background-repeat: no-repeat;
@@ -298,8 +427,8 @@ nav.spreadsheet-color-indicator ~ #sidebar-dock-wrapper {
 }
 
 .cool-context-down {
-	border: 1px solid #aaaaaa;
-	background-color: #dddddd;
+	border: 1px solid var(--color-border-dark);
+	background-color: var(--color-background-dark);
 }
 
 .cool-mobile-input {
@@ -313,23 +442,40 @@ nav.spreadsheet-color-indicator ~ #sidebar-dock-wrapper {
 .context-menu-icon::before {
 	font-family: var(--cool-font) !important;
 	content: '\2713';
-	color: #000 !important;
+	color: var(--color-main-text) !important;
 }
 .context-menu-icon-lo-checkmark:before {
 	content: '\2713';
 }
 
 .context-menu-hover {
-	background-color: #0b87e7 !important;
-	color: #fff !important;
+	background-color: var(--color-background-darker) !important;
+	color: var(--color-text-darker) !important;
 }
 
 .context-menu-hover > span > a {
-	color: #fff;
+	color: var(--color-text-darker);
 }
 
 .context-menu-submenu.context-menu-hover:after {
-	border-color: transparent transparent transparent #fff;
+	border-color: transparent transparent transparent var(--color-background-lighter);
+}
+
+/* With RTL write direction the arrow of the context menu's submenu should be flipped */
+
+[dir='rtl'] .context-menu-submenu:after {
+	right: unset;
+	left: .5em;
+	border-color: transparent #2f2f2f transparent transparent;
+	border-width: .25em .25em .25em 0;
+}
+
+[dir='rtl'] .context-menu-submenu.context-menu-hover:after {
+	border-color: transparent var(--color-background-lighter) transparent transparent;
+}
+
+.mobile-wizard-content .cool-annotation {
+	max-width: none;
 }
 
 .cool-annotation {
@@ -340,15 +486,24 @@ nav.spreadsheet-color-indicator ~ #sidebar-dock-wrapper {
 	-webkit-user-select: text;
 	-ms-user-select: text;
 	z-index: 10;
+	max-width: 250px;
+}
+
+.cool-annotation > .modalpopup {
+	max-height: initial !important;
 }
 
 .cool-annotation:not(annotation-active) .cool-annotation-collapsed{
 	position: absolute;
 	left: 24px;
 }
-.cool-annotation.annotation-active .cool-annotation-collapsed{
+.cool-annotation.annotation-active:not(.rtl) .cool-annotation-collapsed{
 	position: absolute;
 	left: 0 !important;
+}
+.cool-annotation.annotation-active.rtl .cool-annotation-collapsed{
+	position: absolute;
+	left: 48px !important;
 }
 
 #document-container > .cool-annotation:hover .cool-annotation-collapsed{
@@ -359,75 +514,78 @@ nav.spreadsheet-color-indicator ~ #sidebar-dock-wrapper {
 .cool-annotation-content-wrapper, .cool-annotation-redline-content-wrapper {
 	padding: 8px;
 	font-family: var(--cool-font) !important;
-	font-size: 13px;
+	font-size: var(--default-font-size);
 	text-align: left;
-	background-color: #EFEFEF; /* Fallback color for IE11. */
-	background-color: var(--gray-light-bg-color);
-	box-shadow: 0px 3px 6px rgba(0,0,0,0.2);
-	color: #222;
+	background-color: var(--color-background-lighter);
+	box-shadow: 0 0 3px var(--color-box-shadow);
+	color: var(--color-main-text);
 	border: none;
-	border-radius: 2px;
-	width: 240px;
+	border-radius: var(--border-radius);
+	width: auto;
+}
+
+.cool-annotation:not(.annotation-active) .cool-annotation-content-wrapper:hover,
+.cool-annotation:not(.annotation-active) .cool-annotation-redline-content-wrapper:hover {
+	background-color: var(--color-background-dark);
+	color: var(--color-text-dark);
 }
 
 .annotation-active.modify-annotation-container .cool-annotation-content-wrapper,
-.annotation-active.reply-annotation-container .cool-annotation-content-wrapper {
-	min-width: 240px;
+.annotation-active.reply-annotation-container .cool-annotation-content-wrapper,
+.cool-annotation-collapsed.modalpopup {
 	width: auto;
 }
 
 .cool-annotation-content {
 	margin: 3px;
 	line-height: 1.4;
+	max-height: var(--annotation-input-size);
+	overflow: auto;
 }
 
 .cool-annotation-reply-count-collapsed {
-	background-color: var(--gray-light-txt--color);
-	color: white;
+	text-align: center;
+	margin: 0;
+	padding: 0;
+	background-color: var(--color-primary);
+	color: var(--color-primary-text);
 	font-weight: bold;
-	font-size: 10pt;
+	font-family: var(--cool-font);
+	font-size: 20px;
+	border: 1px solid var(--color-primary);
 	border-radius: 50%;
 	z-index: 10;
-	position: absolute;
-	width: 20px;
-	height: 20px;
-	left: 24px;
-	top: -6px;
+	position: relative;
+	width: var(--btn-size);
+	height: var(--btn-size);
+	left: -6px;
+	top: -15px;
 }
 
 #main-document-content {
 	z-index: 0;
 }
 
-nav.text-color-indicator ~ #main-document-content .cool-annotation-reply-count-collapsed {
-	background: rgb(var(--blue1-txt-primary-color));
-}
-nav.spreadsheet-color-indicator ~ #main-document-content .cool-annotation-reply-count-collapsed {
-	background: rgb(var(--green0-txt-primary-color));
-}
-nav.presentation-color-indicator ~ #main-document-content .cool-annotation-reply-count-collapsed {
-	background: rgb(var(--orange1-txt-primary-color));
-}
-nav.drawing-color-indicator ~ #main-document-content .cool-annotation-reply-count-collapsed {
-	background: rgb(var(--yellow0-txt-primary-color));
-}
-
 .cool-annotation-collapsed {
-	background: white;
+	background: var(--color-background-lighter);
 	border-radius: 50%;
 	width: 36px;
 	height: 36px;
-	box-shadow: 0 0 1px 0 rgba(0,0,0,0.5), 0 0 8px 2px rgba(0,0,0,0.1);
+	box-shadow: 0 0 3px 5px var(--color-background-lighter), 0 0 1px 5px var(--color-box-shadow);
 }
 
 .annotation-active .cool-annotation-collapsed {
-	box-shadow: 0 0 3px 5px white, 0 0 1px 5px grey;
+	box-shadow: 0 0 3px 5px var(--color-background-lighter), 0 0 1px 5px var(--color-box-shadow);
 }
 
 .jsdialog-container.cool-annotation-collapsed.modalpopup {
 	border-radius: 8px !important;
-	border: 1px solid var(--gray-color) !important;
-	background: white !important;
+	border: 1px solid var(--color-border) !important;
+	background: var(--color-background-lighter) !important;
+}
+
+#mobile-wizard-popup {
+	background-color: var(--color-background-lighter) !important;
 }
 
 .jsdialog-container.cool-annotation-collapsed.modalpopup .lokdialog.ui-dialog-content {
@@ -449,9 +607,9 @@ nav.drawing-color-indicator ~ #main-document-content .cool-annotation-reply-coun
 .jsdialog-container.cool-annotation-collapsed.modalpopup .cool-annotation-content-wrapper {
 	box-shadow: none;
 	border-width: 0px 0px 1px !important;
-	border-bottom: 1px solid var(--gray-light-bg-color) !important;
+	border-bottom: 1px solid var(--color-border) !important;
 	border-radius: 0 !important;
-	background: white;
+	background: var(--color-background-lighter);
 }
 
 .jsdialog-container.cool-annotation-collapsed.modalpopup [id^='comment-container-']:last-child > .cool-annotation-content-wrapper{
@@ -481,7 +639,7 @@ nav.drawing-color-indicator ~ #main-document-content .cool-annotation-reply-coun
 }
 
 .cool-annotation-content-resolved {
-	color: green;
+	color: var(--color-success);
 }
 
 .cool-annotation-edit {
@@ -491,13 +649,18 @@ nav.drawing-color-indicator ~ #main-document-content .cool-annotation-reply-coun
 
 .cool-annotation-textarea {
 	font-family: var(--cool-font) !important;
-	font-size: 13px;
-	border: 1px solid #c8c8c8;
-	background-color: white;
+	font-size: var(--default-font-size);
+	border: 1px solid var(--color-border);
+	background-color: var(--color-background-dark);
+	color: var(--color-main-text);
 	overflow-x: hidden;
 	height: 50px;
 	width: 100%;
 	box-sizing: border-box;
+}
+
+#input-modal-input.cool-annotation-textarea {
+	height: var(--annotation-input-size);
 }
 
 .cool-div-layer {
@@ -514,6 +677,7 @@ nav.drawing-color-indicator ~ #main-document-content .cool-annotation-reply-coun
 }
 
 .cool-annotation-img {
+	box-sizing: content-box !important;
 	max-width: 32px;
 	display: inline-block;
 	border: solid 2px;
@@ -545,8 +709,8 @@ nav.drawing-color-indicator ~ #main-document-content .cool-annotation-reply-coun
 
 .user-info {
 	border-radius: 50%;
-	width: 24px;
-	height: 24px;
+	width: var(--btn-size);
+	height: var(--btn-size);
 	overflow: auto;
 	margin: auto;
 }
@@ -562,17 +726,18 @@ nav.drawing-color-indicator ~ #main-document-content .cool-annotation-reply-coun
 }
 
 .cool-annotation-menu, .cool-annotation-menu-redline, .cool-redline-accept-button, .cool-redline-reject-button {
-	margin: 0;
-	padding: 0;
-	width: 24px;
-	height: 24px;
+	margin: 0 !important;
+	padding: 0 !important;
+	min-width: initial !important;
+	width: var(--btn-size) !important;
+	height: var(--btn-size) !important;
 	vertical-align: top;
-	border: 1px solid transparent;
-	display: inline-block;
+	border: 1px solid transparent !important;
+	display: inline-block !important;
 }
 
 .cool-redline-accept-button {
-	background: url('images/lc_accepttrackedchanges.svg') no-repeat center !important;
+	background: url('images/lc_acceptchanges.svg') no-repeat center !important;
 }
 
 .cool-redline-reject-button {
@@ -584,11 +749,11 @@ nav.drawing-color-indicator ~ #main-document-content .cool-annotation-reply-coun
 }
 
 .cool-annotation-menu:hover, .cool-annotation-menu-redline:hover, .cool-redline-accept-button:hover, .cool-redline-reject-button:hover {
-	border: 1px solid darkgrey;
+	border: 1px solid var(--color-border-darker);
 }
 
 .cool-annotation-date {
-	font-size: 11px;
+	font-size: var(--default-font-size);
 }
 
 .cool-annotation-menubar {
@@ -599,6 +764,9 @@ nav.drawing-color-indicator ~ #main-document-content .cool-annotation-reply-coun
 /*Tooltips
 ----------------------------------*/
 [data-title]:hover:after {
+	padding: 7px 9px;
+	font-size: 1em;
+	line-height: 1;
 	opacity: 1;
 	transition: all 0.1s ease 0.5s;
 	visibility: visible;
@@ -616,7 +784,7 @@ nav.drawing-color-indicator ~ #main-document-content .cool-annotation-reply-coun
 	left: 100%;
 	white-space: nowrap;
 	opacity: 0;
-	border-color: #2a2a2a;
+	border-color: var(--color-border-darker);
 	visibility: hidden;
 }
 .cool-ruler-left[data-title]:after,
@@ -634,7 +802,7 @@ nav.drawing-color-indicator ~ #main-document-content .cool-annotation-reply-coun
 
 .cool-bar {
 	box-shadow: 0 1px 5px rgba(0,0,0,0.65);
-	border-radius: 4px;
+	border-radius: var(--border-radius);
 	display: inline-block;
 	margin: 3px;
 	vertical-align: middle;
@@ -642,36 +810,36 @@ nav.drawing-color-indicator ~ #main-document-content .cool-annotation-reply-coun
 
 .cool-bar a,
 .cool-bar a:hover {
-	background-color: #fff;
-	border-bottom: 1px solid #ccc;
+	background-color: var(--color-background-lighter);
+	border-bottom: 1px solid var(--color-border);
 	width: 30px;
 	height: 30px;
 	line-height: 30px;
 	display: block;
 	text-align: center;
 	text-decoration: none;
-	color: black;
+	color: var(--color-main-text);
 }
 
 .cool-bar a:hover {
-	background-color: #f4f4f4;
+	background-color: var(--color-background-darker);
 }
 
 .cool-bar a:first-child {
-	border-top-left-radius: 4px;
-	border-top-right-radius: 4px;
+	border-top-left-radius: var(--border-radius);
+	border-top-right-radius: var(--border-radius);
 }
 
 .cool-bar a:last-child {
-	border-bottom-left-radius: 4px;
-	border-bottom-right-radius: 4px;
+	border-bottom-left-radius: var(--border-radius);
+	border-bottom-right-radius: var(--border-radius);
 	border-bottom: none;
 }
 
 .cool-bar a.leaflet-disabled {
 	cursor: default;
-	background-color: #f4f4f4;
-	color: #bbb;
+	background-color: var(--color-background-lighter);
+	color: var(--color-text-lighter);
 }
 
 .cool-bar a {
@@ -693,9 +861,12 @@ nav.drawing-color-indicator ~ #main-document-content .cool-annotation-reply-coun
 	display: none;
 }
 
+.ui-dialog-title {
+	min-height: 1em;
+}
+
 .lokdialog_container.ui-dialog.ui-widget-content {
 	padding: 0px;
-	overflow: visible;
 	width: auto;
 	height: auto;
 	border: none;
@@ -703,13 +874,25 @@ nav.drawing-color-indicator ~ #main-document-content .cool-annotation-reply-coun
 	z-index: 1105;
 }
 
-.lokdialog_container.ui-dialog.ui-widget-content.jsdialog-container {
-	background: white !important;
+.lokdialog_container.ui-dialog.ui-widget-content.jsdialog-container,
+.lokdialog_container .ui-dialog-titlebar.ui-widget-header {
+	background: var(--color-main-background) !important;
 }
 
 .lokdialog.ui-dialog-content.ui-widget-content {
-	padding: 0px;
 	overflow: auto;
+	border-top-left-radius: 0px;
+	border-top-right-radius: 0px;
+	border-bottom-left-radius: var(--border-radius);
+	border-bottom-right-radius: var(--border-radius);
+}
+
+.lokdialog.ui-dialog-content [Id$='Page'] {
+	grid-column-gap: 24px;
+}
+
+.lokdialog_container:not(.jsdialog-container) .lokdialog.ui-dialog-content.ui-widget-content {
+	padding: 0px;
 }
 
 .lokdialog_canvas {
@@ -736,21 +919,21 @@ nav.drawing-color-indicator ~ #main-document-content .cool-annotation-reply-coun
 	border: 1px solid;
 	position: absolute;
 	height: 100%;
-	border-radius: 2px;
+	border-radius: var(--border-radius);
 }
 
 .form-field-button {
-	background: #FFFFFF;
+	background-color: var(--color-background-lighter);
 	position: absolute;
 	border: 1px solid;
 	height: 100%;
 	box-sizing: content-box;
 	padding: 0px;
-	border-radius: 2px;
+	border-radius: var(--border-radius);
 }
 
 .form-field-button:hover, .form-field-button:focus {
-	background: #DDDDDD;
+	background-color: var(--color-background-dark);
 	outline: 0;
 }
 
@@ -762,7 +945,7 @@ nav.drawing-color-indicator ~ #main-document-content .cool-annotation-reply-coun
 	position: absolute;
 	border: 1px solid;
 	cursor: pointer;
-	background: #ffffff;
+	background: var(--color-background-lighter);
 }
 
 .drop-down-field-list-item {
@@ -772,20 +955,48 @@ nav.drawing-color-indicator ~ #main-document-content .cool-annotation-reply-coun
 }
 
 .drop-down-field-list-item.selected {
-	background: #99CCFF;
+	background-color: var(--color-primary-lighter);
 }
 .drop-down-field-list-item:hover {
-	background: #0b87e7;
-}
-
-.word-wrap-for-vex-dialog {
-	overflow-wrap: break-word;
+	background-color: var(--color-primary);
 }
 
 .hyperlink-popup .leaflet-popup-content {
 	white-space: nowrap;
+	margin: 6px 8px;
+	font-size: 14px;
+	line-height: 1;
+	overflow: hidden;
+}
+
+#hyperlink-pop-up {
+	padding: 6px 0;
+	display: inline-block;
+	line-height: 1;
 	overflow: hidden;
 	text-overflow: ellipsis;
+	max-width: 188px;
+}
+
+.hyperlink-popup-btn {
+	display: inline-block;
+	margin-left: 12px;
+	vertical-align: baseline;
+	width: 26px;
+	height: 26px;
+}
+
+.hyperlink-popup-btn:hover {
+	background-color: var(--color-background-darker);
+	border-radius: 50%;
+}
+
+#hyperlink-text-box:not(.mobile-wizard) {
+	width: 100% !important;
+	margin-bottom: 10px;
+	resize: none;
+	height: 32px;
+	box-sizing: border-box;
 }
 
 .leaflet-canvas-container .cell-cursor-data {
@@ -809,7 +1020,7 @@ nav.drawing-color-indicator ~ #main-document-content .cool-annotation-reply-coun
 	border-style: solid; /* required for ie11 */
 	display: none; /* prevent cypress failure */
 
-	color: #e0e0e0; /* color */
+	color: var(--color-background-dark); /* color */
 	opacity: 1; /* opacity */
 	border-top-width: 3px; /* weight */
 }
@@ -825,6 +1036,10 @@ nav.drawing-color-indicator ~ #main-document-content .cool-annotation-reply-coun
 	flex-flow: row nowrap;
 	place-content: stretch flex-start;
 	align-items: stretch;
+}
+
+#about-dialog-container .spacer {
+	height: 54px;
 }
 
 #about-dialog-logos {
@@ -854,9 +1069,75 @@ nav.drawing-color-indicator ~ #main-document-content .cool-annotation-reply-coun
 }
 #about-dialog-info-container {
 	align-items: center;
-	justify-content: left;
+	justify-content: flex-start;
 	flex-grow: 1;
 }
 #about-dialog-info {
 	flex-direction: column;
+}
+
+/* ovveride some jquery css for contentcontrol datepicker */
+#datepicker .ui-state-highlight {
+	background: var(--color-background-dark) !important;
+	font-weight: bold !important;
+}
+
+#datepicker .ui-state-default {
+	background: var(--color-main-background);
+	font-weight: normal;
+	color: var(--color-main-text);
+	border: 1px solid var(--color-border-lighter);
+}
+
+#datepicker .ui-state-active {
+	border: 1px solid var(--color-border-dark);
+}
+
+#datepicker .ui-state-hover {
+	border: 1px solid var(--color-border-darker);
+	background: var(--color-background-lighter);
+}
+
+#datepicker .ui-datepicker-next span {
+	background-image: url('images/lc_nextrecord.svg');
+}
+
+#datepicker .ui-icon-circle-triangle-e {
+	background-position: 0;
+}
+
+#datepicker .ui-datepicker-prev span {
+	background-image: url('images/lc_prevrecord.svg');
+}
+
+#datepicker .ui-icon-circle-triangle-w {
+	background-position: 0;
+}
+
+#mentionPopup .lokdialog.ui-dialog-content.ui-widget-content {
+	display: flex;
+	justify-content: center;
+	align-items: center;
+	min-height: 100px;
+	min-width: 100px;
+}
+
+#hyperlink-pop-up-preview {
+	text-align: center;
+}
+
+#hyperlink-pop-up-preview img {
+	max-height: 150px;
+	max-width: 250px;
+}
+
+#hyperlink-pop-up-preview p {
+	text-overflow: ellipsis;
+	overflow: hidden;
+}
+
+.prevent-select {
+	-webkit-user-select: none;
+	-ms-user-select: none;
+	user-select: none;
 }

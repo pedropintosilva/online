@@ -30,6 +30,30 @@
         window.frames[0].postMessage(JSON.stringify(msg), '*');
       }
 
+      function sendBoldUNOCommand() {
+        post({'MessageId': 'Send_UNO_Command',
+              'Values': { 'Command': '.uno:Bold' }
+            });
+      }
+
+      function sendInsertBookMarkUNOCommand() {
+        post({'MessageId': 'Send_UNO_Command',
+              'Values': {
+                'Command': '.uno:InsertBookmark',
+                'Args': {
+                  Bookmark: {
+                    type: 'string',
+                    value: 'Test Insert BookMark'
+                  },
+                  BookmarkText: {
+                    type: 'string',
+                    value: 'Text of the Test Insert BookMark'
+                  }
+                }
+              }
+            });
+      }
+
       function insertText(text) {
         post({'MessageId': 'CallPythonScript',
               'SendTime': Date.now(),
@@ -60,6 +84,12 @@
             });
       }
 
+      function exportAsHtml() {
+        post({'MessageId': 'Action_Export',
+              'Values': { 'Format': 'html', }
+            });
+      }
+
       function hide_commands(id) {
         post({'MessageId': 'Hide_Menu_Item',
               'Values': { 'id': id, }
@@ -86,15 +116,27 @@
 
       function ShowMenubar(visible) {
         var messageId = visible ? 'Show_Menubar' : 'Hide_Menubar';
-        window.frames[0].postMessage(JSON.stringify({'MessageId': 'Host_PostmessageReady'}), '*');
-        window.frames[0].postMessage(JSON.stringify({'MessageId': messageId}), '*');
+        post({'MessageId': 'Host_PostmessageReady'});
+        post({'MessageId': messageId});
+      }
+
+      function ShowInsertButton() {
+        post({'MessageId': 'Insert_Button',
+              'Values': { 'id': 'Save', 'imgurl': 'images/lc_save.svg', 'hint': '', 'mobile': false, 'label': 'Show additional btns via Insert_Button', 'insertBefore': 'Save', 'unoCommand': '.uno:Save'}
+            });
       }
 
       function ShowNotebookbar(notebookbar) {
         var value = notebookbar ? 'notebookbar' : 'classic';
-        window.frames[0].postMessage(JSON.stringify({'MessageId': 'Host_PostmessageReady'}), '*');
-        window.frames[0].postMessage(JSON.stringify({'MessageId': 'Action_ChangeUIMode',
-            'Values': {'Mode': value}}), '*');
+        post({'MessageId': 'Host_PostmessageReady'});
+        post({'MessageId': 'Action_ChangeUIMode',
+              'Values': {'Mode': value}});
+      }
+
+      function reset_access_token(accesstoken) {
+        post({'MessageId': 'Reset_Access_Token',
+              'Values': { 'token': accesstoken, }
+            });
       }
 
       // This function is invoked when the iframe posts a message back.
@@ -108,7 +150,7 @@
         if (msg.MessageId == 'App_LoadingStatus') {
           if (msg.Values) {
             if (msg.Values.Status == 'Document_Loaded') {
-              window.frames[0].postMessage(JSON.stringify({'MessageId': 'Host_PostmessageReady'}), '*');
+              post({'MessageId': 'Host_PostmessageReady'});
             }
           }
         } else if (msg.MessageId == 'Doc_ModifiedStatus') {
@@ -126,6 +168,101 @@
               document.getElementById("ModifiedStatus").innerHTML = "Saved";
             } else {
               document.getElementById("ModifiedStatus").innerHTML = "Error during save";
+            }
+          }
+        } else if (msg.MessageId === 'UI_Mention') {
+          var dummyUserDatabase = [ {
+                                      username:'Abigail', 
+                                      profile: 'Abigail profile link'
+                                    }, 
+                                    {
+                                      username: 'Alexandra',
+                                      profile: 'Alexandra profile link'
+                                    },
+                                    {
+                                      username: 'Alison',
+                                      profile: 'Alison profile link'
+                                    },
+                                    {
+                                      username: 'Amanda',
+                                      profile: 'Amanda profile link'
+                                    },
+                                    {
+                                      username: 'Amelia',
+                                      profile: 'Amelia profile link'
+                                    },
+                                    {
+                                      username: 'Amy',
+                                      profile: 'Amy profile link'
+                                    },
+                                    {
+                                      username: 'Andrea',
+                                      profile: 'Andrea profile link'
+                                    },
+                                    {
+                                      username: 'Angela',
+                                      profile: 'Angela profile link'
+                                    },
+                                    {
+                                      username: 'Anna',
+                                      profile: 'Anna profile link'
+                                    },
+                                    {
+                                      username: 'Anne',
+                                      profile: 'Anne profile link'
+                                    },
+                                    {
+                                      username: 'Audrey',
+                                      profile: 'Audrey profile link'
+                                    },
+                                    {
+                                      username: 'Ava',
+                                      profile: 'Ava profile link'
+                                    },
+                                    {
+                                      username: 'Bella',
+                                      profile: 'Bella profile link'
+                                    },
+                                    {
+                                      username: 'Bernadette',
+                                      profile: 'Bernadette profile link'
+                                    },
+                                    {
+                                      username: 'Carol',
+                                      profile: 'Carol profile link'
+                                    },
+                                    {
+                                      username: 'Caroline',
+                                      profile: 'Caroline profile link'
+                                    },
+                                    {
+                                      username: 'Carolyn',
+                                      profile: 'Carolyn profile link'
+                                    },
+                                    {
+                                      username: 'xyz abc',
+                                      profile: 'xyz abc profile link'
+                                    } ]; 
+          if (msg.Values) {
+            var type = msg.Values.type;
+            var text = msg.Values.text;
+
+            var users = [];
+            dummyUserDatabase.forEach(element => {
+              if (element.username.includes(text))
+                users.push(element);
+            });      
+            
+            if (type === 'autocomplete')
+            {
+              setTimeout(post, 0,
+                {
+                  'MessageId': 'Action_Mention',
+                  'SendTime': Date.now(),
+                  'Values': {
+                    'list': users,
+                  }
+                });
             }
           }
         }
@@ -157,27 +294,32 @@
 
     <h3>PostMessage test harness</h3>
 
-    <h4>Run python InsertText.py script</h4>
+    <h4>Run python scripts</h4>
     <form id="insert-text-form">
-      Click <button onclick="insertText(document.forms['insert-text-form'].elements['source'].value); return false;">here</button> to insert the following text into the document:
-      <textarea name="source" value="" rows="5" cols="50"></textarea>
+      <label for="fname"><b>InsertText.py</b>: inserts text into the document</label><br>
+      <textarea name="source" value="" rows="5" cols="50">Type your text and press Insert text</textarea><br>
+      <button onclick="insertText(document.forms['insert-text-form'].elements['source'].value); return false;">Insert text</button>
     </form>
-
-    <h4>Run Capitalize.py script</h4>
+    <br>
     <form id="insert-text-form">
-      Click <button onclick="capitalize(); return false;">here</button> to capitalize selected text in the document.</br></br>
+      <label for="fname"><b>Capitalize.py</b>: capitalize selected text in the document</label><br>
+      <button onclick="capitalize(); return false;">Capitalize selected text</button></br></br>
     </form>
 
     <h4>Various other messages to post</h4>
     <form>
       <button onclick="save(); return false;">Save</button>
       <button onclick="closeDocument(); return false;">Close</button></br></br>
+      <button onclick="exportAsHtml(); return false;">Export as HTML</button></br></br>
       <button onclick="hide_commands('save'); return false;">Hide Save Commands</button>
       <button onclick="show_commands('save'); return false;">Show Save Commands</button></br>
       <button onclick="hide_commands('print'); return false;">Hide Print Commands</button>
       <button onclick="show_commands('print'); return false;">Show Print Commands</button></br></br>
       <button onclick="disable_default_uiaction('UI_Save', true); return false;">Disable default save action</button></br>
       <button onclick="disable_default_uiaction('UI_Save', false); return false;">Enable default save action</button></br></br>
+      <label for="new-access-token"><b>New Access-Token</b>: </label><br>
+      <textarea name="new-access-token" id="new-access-token" value="" rows="1" cols="30">123456789AA</textarea><br>
+      <button onclick="reset_access_token(document.getElementById('new-access-token').value); return false;">Reset Access-Token</button>
     </form>
 
     <h3>Modified Status: <span id="ModifiedStatus">Saved</span></h3>
@@ -186,9 +328,16 @@
     <form id="menubar-toggle">
       <button onclick="ShowMenubar(false); return false;">Hide Menubar</button>
       <button onclick="ShowMenubar(true); return false;">Show Menubar</button>
+      <button onclick="ShowInsertButton(); return false;" title="via Insert_Button">Insert custom button</button>
       <p>
-      <button onclick="ShowNotebookbar(false); return false;">Classic Toolbar</button>
-      <button onclick="ShowNotebookbar(true); return false;">Notebookbar</button>
+      <button onclick="ShowNotebookbar(false); return false;">Compact Toolbar</button>
+      <button onclick="ShowNotebookbar(true); return false;">Tabbed Toolbar</button>
+    </form>
+
+    <h3>Send UNO Commands</h3>
+    <form id="menubar-toggle">
+      <button onclick="sendBoldUNOCommand(); return false;">Send Bold UNO Command (and example without args)</button>
+      <button onclick="sendInsertBookMarkUNOCommand(); return false;">Send InsertBookmark UNO Command (an example with args)</button>
     </form>
 
     <h3>Document frame</h3>

@@ -4,10 +4,11 @@ var helper = require('../../common/helper');
 var calcHelper = require('../../common/calc_helper');
 
 describe.skip('Repair Document', function() {
-	var testFileName = 'repair_doc.ods';
+	var origTestFileName = 'repair_doc.ods';
+	var testFileName;
 
 	beforeEach(function() {
-		helper.beforeAll(testFileName, 'calc', undefined, true);
+		testFileName = helper.beforeAll(origTestFileName, 'calc', undefined, true);
 	});
 
 	afterEach(function() {
@@ -15,54 +16,27 @@ describe.skip('Repair Document', function() {
 	});
 
 	function repairDoc(frameId1, frameId2) {
-		cy.wait(1000);
-
-		helper.typeIntoDocument('Hello World{enter}', frameId1);
-
-		//wait for the popup to disappear
-		cy.wait(5000);
-
-		cy.customGet('.leaflet-layer', frameId2)
-			.click('center', {force:true})
-			.wait(500);
-
-		calcHelper.dblClickOnFirstCell(frameId2);
-
-		helper.clearAllText(frameId2);
-
-		helper.typeIntoDocument('Hello{enter}', frameId2);
-
-		cy.wait(1000);
-
-		cy.customGet('#menu-editmenu', frameId2).click()
-			.customGet('#menu-repair', frameId2).click();
-
-		cy.customGet('.leaflet-popup-content table', frameId2).should('exist');
-
-		cy.iframe(frameId2).contains('.leaflet-popup-content table tbody tr','Undo').eq(0)
-			.click();
-
-		cy.customGet('.leaflet-popup-content > input', frameId2)
-			.click()
-			.wait(1000);
-
-		calcHelper.dblClickOnFirstCell(frameId2);
-
-		helper.selectAllText(frameId2);
-
-		helper.expectTextForClipboard('Hello World', frameId2);
-
-		cy.customGet('.leaflet-layer', frameId1)
-			.click('center', {force:true})
-			.wait(500);
-
-		helper.typeIntoDocument('{end}{enter}', frameId1);
-
-		calcHelper.dblClickOnFirstCell(frameId1);
-
-		helper.selectAllText(frameId1);
-
-		helper.expectTextForClipboard('Hello World', frameId1);
+		cy.cSetActiveFrame(frameId1);
+		helper.typeIntoDocument('Hello World{enter}');
+		cy.cSetActiveFrame(frameId2);
+		calcHelper.selectEntireSheet();
+		calcHelper.assertDataClipboardTable(['Hello World\n']);
+		cy.cSetActiveFrame(frameId1);
+		calcHelper.selectEntireSheet();
+		calcHelper.assertDataClipboardTable(['Hello World\n']);
+		cy.cSetActiveFrame(frameId2);
+		cy.cGet('#menu-editmenu').click().cGet('#menu-repair').click();
+		cy.cGet('#DocumentRepairDialog').should('exist');
+		cy.cGet('#versions').should('exist');
+		cy.cGet('body').contains('#versions .ui-treeview-body .ui-listview-entry td','Input').click();
+		cy.cGet('#ok.ui-pushbutton.jsdialog').should('exist');
+		cy.cGet('#ok.ui-pushbutton.jsdialog').click();
+		cy.wait(500);
+		calcHelper.selectEntireSheet();
+		helper.expectTextForClipboard('');
+		cy.cSetActiveFrame(frameId1);
+		calcHelper.selectEntireSheet();
+		helper.expectTextForClipboard('');
 	}
 
 	it('Repair by user-2', function() {

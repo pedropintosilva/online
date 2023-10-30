@@ -88,7 +88,7 @@ public:
 protected:
     virtual void put_impl(const Payload& value)
     {
-        StringVector tokens = Util::tokenize(value.data(), value.size());
+        StringVector tokens = StringVector::tokenize(value.data(), value.size());
         if (tokens.equals(1, "textinput"))
         {
             const std::string newMsg = combineTextInput(tokens);
@@ -144,7 +144,7 @@ protected:
             auto& it = getQueue()[i];
 
             const std::string queuedMessage(it.data(), it.size());
-            StringVector queuedTokens = Util::tokenize(it.data(), it.size());
+            StringVector queuedTokens = StringVector::tokenize(it.data(), it.size());
 
             // If any messages of these types are present before the current ("textinput") message,
             // no combination is possible.
@@ -181,7 +181,7 @@ protected:
     }
 
     /// Search the queue for a previous removetextcontext message (which actually means "remove text
-    /// content", the word "context" is becaue of some misunderstanding lost in history) and if
+    /// content", the word "context" is because of some misunderstanding lost in history) and if
     /// found, remove it and combine its input with that in the current removetextcontext message.
     /// We check that there aren't any interesting messages inbetween that would make it wrong to
     /// merge the removetextcontext messages.
@@ -190,8 +190,8 @@ protected:
     std::string combineRemoveText(const StringVector& tokens)
     {
         std::string id;
-        int before;
-        int after;
+        int before = 0;
+        int after = 0;
         if (!COOLProtocol::getTokenString(tokens, "id", id) ||
             !COOLProtocol::getTokenInteger(tokens, "before", before) ||
             !COOLProtocol::getTokenInteger(tokens, "after", after))
@@ -203,7 +203,7 @@ protected:
             auto& it = getQueue()[i];
 
             const std::string queuedMessage(it.data(), it.size());
-            StringVector queuedTokens = Util::tokenize(it.data(), it.size());
+            StringVector queuedTokens = StringVector::tokenize(it.data(), it.size());
 
             // If any messages of these types are present before the current (removetextcontext)
             // message, no combination is possible.
@@ -216,8 +216,8 @@ protected:
                 return std::string();
 
             std::string queuedId;
-            int queuedBefore;
-            int queuedAfter;
+            int queuedBefore = 0;
+            int queuedAfter = 0;
             if (queuedTokens.equals(0, tokens, 0) &&
                 queuedTokens.equals(1, "removetextcontext") &&
                 COOLProtocol::getTokenStringFromMessage(queuedMessage, "id", queuedId) &&

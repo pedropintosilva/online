@@ -53,12 +53,7 @@
 #include <chrono>
 #include <iomanip>
 
-#ifdef IOS
-#include <Foundation/Foundation.h>
-#endif
-
 #include "Log.hpp"
-#include "SpookyV2.h"
 #include "TraceEvent.hpp"
 
 namespace Png
@@ -85,9 +80,9 @@ extern "C"
 }
 
 
-/* Unpremultiplies data and converts native endian ARGB => RGBA bytes */
+/* Unpremultiplies data and converts native endian BGRA => RGBA bytes */
 static void
-unpremultiply_data (png_structp /*png*/, png_row_infop row_info, png_bytep data)
+unpremultiply_bgra_data (png_structp /*png*/, png_row_infop row_info, png_bytep data)
 {
     unsigned int i;
 
@@ -120,6 +115,40 @@ unpremultiply_data (png_structp /*png*/, png_row_infop row_info, png_bytep data)
         }
     }
 }
+
+/* Unpremultiplies data already in RGBA order*/
+static void
+unpremultiply_rgba_data (png_structp /*png*/, png_row_infop row_info, png_bytep data)
+{
+    unsigned int i;
+
+    for (i = 0; i < row_info->rowbytes; i += 4)
+    {
+        uint8_t *b = &data[i];
+        uint32_t pix;
+        uint8_t  alpha;
+
+        std::memcpy (&pix, b, sizeof (uint32_t));
+
+        alpha = (pix & 0xff000000) >> 24;
+        if (alpha == 255)
+        {
+            std::memcpy(b, &pix, sizeof (uint32_t));
+        }
+        else if (alpha == 0)
+        {
+            b[0] = b[1] = b[2] = b[3] = 0;
+        }
+        else
+        {
+            b[0] = (((pix & 0x0000ff) >>  0) * 255 + alpha / 2) / alpha;
+            b[1] = (((pix & 0x00ff00) >>  8) * 255 + alpha / 2) / alpha;
+            b[2] = (((pix & 0xff0000) >> 16) * 255 + alpha / 2) / alpha;
+            b[3] = alpha;
+        }
+    }
+}
+
 
 /// This function uses setjmp which may clobbers non-trivial objects.
 /// So we can't use logging or create complex C++ objects in this frame.
@@ -158,10 +187,6 @@ inline bool impl_encodeSubBufferToPNG(unsigned char* pixmap, size_t startX, size
     png_set_compression_level(png_ptr, 4);
 #endif
 
-#ifdef IOS
-    auto initialSize = output.size();
-#endif
-
     png_set_IHDR(png_ptr, info_ptr, width, height, 8, PNG_COLOR_TYPE_RGB_ALPHA, PNG_INTERLACE_NONE,
                  PNG_COMPRESSION_TYPE_DEFAULT, PNG_FILTER_TYPE_DEFAULT);
 
@@ -170,9 +195,14 @@ inline bool impl_encodeSubBufferToPNG(unsigned char* pixmap, size_t startX, size
 
     png_write_info(png_ptr, info_ptr);
 
-    if (mode == LOK_TILEMODE_BGRA)
+    switch (mode)
     {
-        png_set_write_user_transform_fn (png_ptr, unpremultiply_data);
+        case LOK_TILEMODE_BGRA:
+            png_set_write_user_transform_fn (png_ptr, unpremultiply_bgra_data);
+            break;
+        case LOK_TILEMODE_RGBA:
+            png_set_write_user_transform_fn (png_ptr, unpremultiply_rgba_data);
+            break;
     }
 
     for (int y = 0; y < height; ++y)
@@ -184,16 +214,6 @@ inline bool impl_encodeSubBufferToPNG(unsigned char* pixmap, size_t startX, size
     png_write_end(png_ptr, info_ptr);
 
     png_destroy_write_struct(&png_ptr, &info_ptr);
-
-#ifdef IOS
-    auto base64 = [[NSData dataWithBytesNoCopy:output.data() + initialSize length:(output.size() - initialSize) freeWhenDone:NO] base64EncodedDataWithOptions:0];
-
-    const char dataURLStart[] = "data:image/png;base64,";
-
-    output.resize(initialSize);
-    output.insert(output.end(), dataURLStart, dataURLStart + sizeof(dataURLStart)-1);
-    output.insert(output.end(), (char*)base64.bytes, (char*)base64.bytes + base64.length);
-#endif
 
     return true;
 }
@@ -226,7 +246,7 @@ inline bool encodeSubBufferToPNG(unsigned char* pixmap, size_t startX, size_t st
         static uint64_t totalPixelBytes = 0;
         static uint64_t totalOutputBytes = 0;
 
-        totalPixelBytes += (width * height * 4);
+        totalPixelBytes += (static_cast<uint64_t>(width) * height * 4);
         totalOutputBytes += output.size();
 
         LOG_TRC("PNG compression took "
@@ -244,28 +264,6 @@ bool encodeBufferToPNG(unsigned char* pixmap, int width, int height,
                        std::vector<char>& output, LibreOfficeKitTileMode mode)
 {
     return encodeSubBufferToPNG(pixmap, 0, 0, width, height, width, height, output, mode);
-}
-
-inline
-uint64_t hashSubBuffer(unsigned char* pixmap, size_t startX, size_t startY,
-                       long width, long height, int bufferWidth, int bufferHeight)
-{
-    if (bufferWidth < width || bufferHeight < height)
-        return 0; // magic invalid hash.
-
-    // assume a consistent mode - RGBA vs. BGRA for process
-    SpookyHash hash;
-    hash.Init(1073741789, 1073741789); // Seeds can be anything.
-    for (long y = 0; y < height; ++y)
-    {
-        const size_t position = ((startY + y) * bufferWidth * 4) + (startX * 4);
-        hash.Update(pixmap + position, width * 4);
-    }
-
-    uint64_t hash1;
-    uint64_t hash2;
-    hash.Final(&hash1, &hash2);
-    return hash1;
 }
 
 static

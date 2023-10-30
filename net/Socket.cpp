@@ -7,7 +7,6 @@
 
 #include <config.h>
 
-#include "NetUtil.hpp"
 #include "Socket.hpp"
 
 #include <cstring>
@@ -25,9 +24,6 @@
 #include <sys/ucred.h>
 #endif
 
-#include <Poco/DateTime.h>
-#include <Poco/DateTimeFormat.h>
-#include <Poco/DateTimeFormatter.h>
 #include <Poco/MemoryStream.h>
 #include <Poco/Net/HTTPRequest.h>
 #include <Poco/Net/HTTPResponse.h>
@@ -44,6 +40,8 @@
 #endif
 #include "WebSocketHandler.hpp"
 #include <net/HttpRequest.hpp>
+#include <NetUtil.hpp>
+#include <Log.hpp>
 
 // Bug in pre C++17 where static constexpr must be defined. Fixed in C++17.
 constexpr std::chrono::microseconds SocketPoll::DefaultPollTimeoutMicroS;
@@ -53,9 +51,6 @@ constexpr std::chrono::microseconds WebSocketHandler::PingFrequencyMicroS;
 std::atomic<bool> SocketPoll::InhibitThreadChecks(false);
 std::atomic<bool> Socket::InhibitThreadChecks(false);
 
-#ifdef __linux__
-#define HAVE_ABSTRACT_UNIX_SOCKETS
-#endif
 #define SOCKET_ABSTRACT_UNIX_NAME "0coolwsd-"
 
 int Socket::createSocket(Socket::Type type)
@@ -73,6 +68,7 @@ int Socket::createSocket(Socket::Type type)
 
     return socket(domain, SOCK_STREAM | SOCK_NONBLOCK, 0);
 #else
+    (void) type;
     return fakeSocketSocket();
 #endif
 }
@@ -84,29 +80,13 @@ bool StreamSocket::simulateSocketError(bool read)
 {
     if ((socketErrorCount++ % 7) == 0)
     {
-        LOG_DBG("Simulating socket error during " << (read ? "read." : "write."));
+        LOG_TRC("Simulating socket error during " << (read ? "read." : "write."));
         errno = EAGAIN;
         return true;
     }
 
     return false;
 }
-
-#if !MOBILEAPP && ENABLE_SSL
-bool SslStreamSocket::simulateSocketError(bool read)
-{
-    if ((socketErrorCount++ % 7) == 0)
-    {
-        LOG_DBG("Simulating socket error during " << (read ? "read." : "write."));
-        // Note: maintain the _sslWantsTo state so we poll on
-        // the right event as that requested by the last ssl API.
-        errno = EAGAIN;
-        return true;
-    }
-
-    return false;
-}
-#endif
 #endif //ENABLE_DEBUG
 
 #if ENABLE_SSL
@@ -187,8 +167,8 @@ namespace {
     }
 }
 
-SocketPoll::SocketPoll(const std::string& threadName)
-    : _name(threadName),
+SocketPoll::SocketPoll(std::string threadName)
+    : _name(std::move(threadName)),
       _pollStartIndex(0),
       _stop(false),
       _threadStarted(0),
@@ -207,7 +187,7 @@ SocketPoll::SocketPoll(const std::string& threadName)
 #endif
         )
     {
-        throw std::runtime_error("Failed to allocate pipe for SocketPoll [" + threadName + "] waking.");
+        throw std::runtime_error("Failed to allocate pipe for SocketPoll [" + _name + "] waking.");
     }
 
     LOG_DBG("New SocketPoll [" << _name << "] owned by " << Log::to_string(_owner));
@@ -218,7 +198,7 @@ SocketPoll::SocketPoll(const std::string& threadName)
 
 SocketPoll::~SocketPoll()
 {
-    LOG_DBG("~SocketPoll [" << _name << "] destroying. Joining thread now.");
+    LOG_TRC("~SocketPoll [" << _name << "] destroying. Joining thread now.");
 
     joinThread();
 
@@ -276,8 +256,9 @@ bool SocketPoll::startThread()
         // because the owner is unlikely to recover.
         // If there is a valid use-case for restarting
         // an expired thread, we should add a way to reset it.
-        LOG_ERR("SocketPoll [" << _name
-                               << "] thread has ran and finished. Will not start it again.");
+        LOG_ASSERT_MSG(!"Expired thread",
+                       "SocketPoll [" << _name
+                                      << "] thread has ran and finished. Will not start it again");
     }
 
     return false;
@@ -287,10 +268,6 @@ void SocketPoll::joinThread()
 {
     if (isAlive())
     {
-        addCallback([this]()
-                    {
-                        removeSockets();
-                    });
         stop();
     }
 
@@ -304,6 +281,13 @@ void SocketPoll::joinThread()
             _threadStarted = 0;
         }
     }
+
+    if (_runOnClientThread)
+    {
+        removeSockets();
+    }
+
+    assert(_pollSockets.empty());
 }
 
 void SocketPoll::pollingThreadEntry()
@@ -319,8 +303,7 @@ void SocketPoll::pollingThreadEntry()
         pollingThread();
 
         // Release sockets.
-        _pollSockets.clear();
-        _newSockets.clear();
+        removeSockets();
     }
     catch (const std::exception& exc)
     {
@@ -336,7 +319,7 @@ int SocketPoll::poll(int64_t timeoutMaxMicroS)
     if (_runOnClientThread)
         checkAndReThread();
     else
-        assertCorrectThread();
+        ASSERT_CORRECT_SOCKET_THREAD(this);
 
 #if ENABLE_DEBUG
     // perturb - to rotate errors among several busy sockets.
@@ -362,13 +345,13 @@ int SocketPoll::poll(int64_t timeoutMaxMicroS)
         timeout.tv_nsec = (timeoutMaxMicroS % (1000 * 1000)) * 1000;
         rc = ::ppoll(&_pollFds[0], size + 1, &timeout, nullptr);
 #  else
-        int timeoutMaxMs = (timeoutMaxMicroS + 9999) / 1000;
+        int timeoutMaxMs = (timeoutMaxMicroS + 999) / 1000;
         LOG_TRC("Legacy Poll start, timeoutMs: " << timeoutMaxMs);
         rc = ::poll(&_pollFds[0], size + 1, std::max(timeoutMaxMs,0));
 #  endif
 #else
         LOG_TRC("SocketPoll Poll");
-        int timeoutMaxMs = (timeoutMaxMicroS + 9999) / 1000;
+        int timeoutMaxMs = (timeoutMaxMicroS + 999) / 1000;
         rc = fakeSocketPoll(&_pollFds[0], size + 1, std::max(timeoutMaxMs,0));
 #endif
     }
@@ -377,33 +360,44 @@ int SocketPoll::poll(int64_t timeoutMaxMicroS)
             timeoutMaxMicroS << "us)" << ((rc==0) ? "(timedout)" : ""));
 
     // First process the wakeup pipe (always the last entry).
+    LOG_TRC('#' << _pollFds[size].fd << ": Handling events of wakeup pipe: 0x" << std::hex
+                << _pollFds[size].revents << std::dec);
     if (_pollFds[size].revents)
     {
+        // Clear the data.
+#if !MOBILEAPP
+        int dump[32];
+        dump[0] = ::read(_wakeup[0], &dump, sizeof(dump));
+        LOG_TRC("Wakeup pipe read " << dump[0] << " bytes");
+#else
+        LOG_TRC("Wakeup pipe read");
+        int dump = fakeSocketRead(_wakeup[0], &dump, sizeof(dump));
+#endif
+
         std::vector<CallbackFn> invoke;
         {
             std::lock_guard<std::mutex> lock(_mutex);
 
-            // Clear the data.
-#if !MOBILEAPP
-            int dump = ::read(_wakeup[0], &dump, sizeof(dump));
-#else
-            LOG_TRC("Wakeup pipe read");
-            int dump = fakeSocketRead(_wakeup[0], &dump, sizeof(dump));
-#endif
-            // Copy the new sockets over and clear.
-            _pollSockets.insert(_pollSockets.end(),
-                                _newSockets.begin(), _newSockets.end());
+            if (!_newSockets.empty())
+            {
+                LOG_TRC("Inserting " << _newSockets.size() << " new sockets after the existing "
+                                     << _pollSockets.size());
 
-            // Update thread ownership.
-            for (auto &i : _newSockets)
-                i->setThreadOwner(std::this_thread::get_id());
+                // Update thread ownership.
+                for (auto& i : _newSockets)
+                    i->setThreadOwner(std::this_thread::get_id());
 
-            _newSockets.clear();
+                // Copy the new sockets over and clear.
+                _pollSockets.insert(_pollSockets.end(), _newSockets.begin(), _newSockets.end());
+
+                _newSockets.clear();
+            }
 
             // Extract list of callbacks to process
             std::swap(_newCallbacks, invoke);
         }
 
+        LOG_TRC("Invoking " << invoke.size() << " callbacks");
         for (const auto& callback : invoke)
         {
             try
@@ -428,73 +422,84 @@ int SocketPoll::poll(int64_t timeoutMaxMicroS)
         }
     }
 
-    // This should only happen when we're stopping.
-
-    // FIXME: A few dozen lines above we have potentially inserted new elements in _pollSockets, so
-    // clearly its size can now be larger than what it was when we came to this function, which got
-    // saved in the size variable.
-
     if (_pollSockets.size() != size)
-        return rc;
+    {
+        LOG_TRC("PollSocket container size has changed from " << size << " to "
+                                                              << _pollSockets.size());
+    }
 
-    // Fire the poll callbacks and remove dead fds.
-    std::chrono::steady_clock::time_point newNow =
-        std::chrono::steady_clock::now();
-
+    // If we had sockets to process.
     if (size > 0)
     {
+        assert(!_pollSockets.empty() && "All existing sockets disappeared from the SocketPoll");
+
+        // Fire the poll callbacks and remove dead fds.
+        std::chrono::steady_clock::time_point newNow = std::chrono::steady_clock::now();
+
         // We use the _pollStartIndex to start the polling at a different index each time. Do some
         // sanity check first to handle the case where we removed one or several sockets last time.
+        ++_pollStartIndex;
         if (_pollStartIndex > size - 1)
-            _pollStartIndex = size - 1;
+            _pollStartIndex = 0;
 
         std::vector<int> toErase;
 
-        LOG_DBG("Starting handling poll results of " << _name << " at index " << _pollStartIndex << " (of " << size << ")");
-
         size_t i = _pollStartIndex;
-        size_t previ = size;
-        while (previ != _pollStartIndex)
+        for (std::size_t j = 0; j < size; ++j)
         {
-            SocketDisposition disposition(_pollSockets[i]);
-            try
+            if (_pollFds[i].fd == _pollSockets[i]->getFD())
             {
-                _pollSockets[i]->handlePoll(disposition, newNow,
-                                            _pollFds[i].revents);
+                SocketDisposition disposition(_pollSockets[i]);
+                try
+                {
+                    LOG_TRC('#' << _pollFds[i].fd << ": Handling poll events of " << _name
+                                << " at index " << i << " (of " << size << "): 0x" << std::hex
+                                << _pollFds[i].revents << std::dec);
+
+                    _pollSockets[i]->handlePoll(disposition, newNow, _pollFds[i].revents);
+                }
+                catch (const std::exception& exc)
+                {
+                    LOG_ERR('#' << _pollFds[i].fd << ": Error while handling poll at " << i
+                                << " in " << _name << ": " << exc.what());
+                    disposition.setClosed();
+                    rc = -1;
+                }
+
+                if (!disposition.isContinue())
+                    toErase.push_back(i);
+
+                disposition.execute();
             }
-            catch (const std::exception& exc)
+            else
             {
-                LOG_ERR("Error while handling poll for socket #" <<
-                        _pollFds[i].fd << " at " << i << " in " << _name << ": " << exc.what());
-                disposition.setClosed();
-                rc = -1;
+                LOG_DBG("Unexpected socket in the wrong position. Expected #"
+                        << _pollFds[i].fd << " at index " << i << " but found "
+                        << _pollSockets[i]->getFD() << " instead. Skipping");
+                assert(!"Unexpected socket at the wrong position");
             }
 
-            if (!disposition.isContinue())
-                toErase.push_back(i);
-
-            disposition.execute();
-
-            previ = i;
             if (i == 0)
                 i = size - 1;
             else
                 i--;
         }
+
         if (!toErase.empty())
         {
+            LOG_TRC("Removing " << toErase.size() << " socket" << (toErase.size() > 1 ? "s" : "")
+                                << " of " << _pollSockets.size() << " total");
+            LOG_ASSERT(_pollSockets.size() > 0);
+            LOG_ASSERT(toErase.size() <= _pollSockets.size());
             std::sort(toErase.begin(), toErase.end(), [](int a, int b) { return a > b; });
-            for (int eraseIndex : toErase)
+            for (const int eraseIndex : toErase)
             {
-                LOG_DBG("Removing socket #" << _pollFds[eraseIndex].fd << " (at " << eraseIndex << " of " <<
-                        _pollSockets.size() << ") from " << _name);
+                LOG_TRC('#' << _pollFds[eraseIndex].fd << ": Removing socket (at " << eraseIndex
+                            << " of " << _pollSockets.size() << ") from " << _name << " to have "
+                            << _pollSockets.size() - 1 << " sockets");
                 _pollSockets.erase(_pollSockets.begin() + eraseIndex);
             }
         }
-
-        // In case we remved sockets the new _pollStartIndex might be out of bounds, but we check it
-        // before using it above anyway.
-        _pollStartIndex = (_pollStartIndex + 1) % size;
     }
 
     return rc;
@@ -504,6 +509,35 @@ void SocketPoll::wakeupWorld()
 {
     for (const auto& fd : getWakeupsArray())
         wakeup(fd);
+}
+
+void SocketPoll::removeSockets()
+{
+    LOG_DBG("Removing all " << _pollSockets.size() + _newSockets.size()
+                            << " sockets from SocketPoll thread " << _name);
+    ASSERT_CORRECT_SOCKET_THREAD(this);
+
+    while (!_pollSockets.empty())
+    {
+        const std::shared_ptr<Socket>& socket = _pollSockets.back();
+        assert(socket);
+
+        LOG_DBG("Removing socket #" << socket->getFD() << " from " << _name);
+        ASSERT_CORRECT_SOCKET_THREAD(socket);
+        socket->resetThreadOwner();
+
+        _pollSockets.pop_back();
+    }
+
+    while (!_newSockets.empty())
+    {
+        const std::shared_ptr<Socket>& socket = _newSockets.back();
+        assert(socket);
+
+        LOG_DBG("Removing socket #" << socket->getFD() << " from newSockets of " << _name);
+
+        _newSockets.pop_back();
+    }
 }
 
 #if !MOBILEAPP
@@ -540,7 +574,7 @@ void SocketPoll::insertNewWebSocketSync(const Poco::URI& uri,
     }
 }
 
-void SocketPoll::insertNewUnixSocket(
+bool SocketPoll::insertNewUnixSocket(
     const std::string &location,
     const std::string &pathAndQuery,
     const std::shared_ptr<WebSocketHandler>& websocketHandler,
@@ -548,6 +582,11 @@ void SocketPoll::insertNewUnixSocket(
 {
     LOG_DBG("Connecting to local UDS " << location);
     const int fd = socket(AF_UNIX, SOCK_STREAM | SOCK_NONBLOCK, 0);
+    if (fd < 0)
+    {
+        LOG_SYS("Failed to connect to unix socket at " << location);
+        return false;
+    }
 
     struct sockaddr_un addrunix;
     std::memset(&addrunix, 0, sizeof(addrunix));
@@ -560,11 +599,11 @@ void SocketPoll::insertNewUnixSocket(
     memcpy(&addrunix.sun_path[1], location.c_str(), location.length());
 
     const int res = connect(fd, (const struct sockaddr*)&addrunix, sizeof(addrunix));
-    if (fd < 0 || (res < 0 && errno != EINPROGRESS))
+    if (res < 0 && errno != EINPROGRESS)
     {
-        LOG_ERR("Failed to connect to unix socket at " << location);
+        LOG_SYS("Failed to connect to unix socket at " << location);
         ::close(fd);
-        return;
+        return false;
     }
 
     std::shared_ptr<StreamSocket> socket
@@ -572,7 +611,7 @@ void SocketPoll::insertNewUnixSocket(
     if (!socket)
     {
         LOG_ERR("Failed to create socket unix socket at " << location);
-        return;
+        return false;
     }
 
     LOG_DBG("Connected to local UDS " << location << " #" << socket->getFD());
@@ -603,6 +642,8 @@ void SocketPoll::insertNewUnixSocket(
 
     // We send lots of data back via this local UDS'
     socket->setSocketBufferSize(Socket::MaximumSendBufferSize);
+
+    return true;
 }
 
 #else
@@ -645,8 +686,10 @@ void ServerSocket::dumpState(std::ostream& os)
 
 void SocketDisposition::execute()
 {
+    LOG_TRC("Executing SocketDisposition of #" << _socket->getFD() << ": " << name(_disposition));
+
     // We should have hard ownership of this socket.
-    assert(_socket->getThreadOwner() == std::this_thread::get_id());
+    ASSERT_CORRECT_SOCKET_THREAD(_socket);
     if (_socketMove)
     {
         // Drop pretentions of ownership before _socketMove.
@@ -673,7 +716,7 @@ void SocketDisposition::execute()
     }
 }
 
-void WebSocketHandler::dumpState(std::ostream& os)
+void WebSocketHandler::dumpState(std::ostream& os) const
 {
     os << (_shuttingDown ? "shutd " : "alive ");
 #if !MOBILEAPP
@@ -690,11 +733,10 @@ void StreamSocket::dumpState(std::ostream& os)
 {
     int64_t timeoutMaxMicroS = SocketPoll::DefaultPollTimeoutMicroS.count();
     const int events = getPollEvents(std::chrono::steady_clock::now(), timeoutMaxMicroS);
-    os << '\t' << getFD() << '\t' << events << '\t'
-       << (ignoringInput() ? "ignore\t" : "process\t")
-       << _inBuffer.size() << '\t' << _outBuffer.size() << '\t'
-       << " r: " << _bytesRecvd << "\t w: " << _bytesSent << '\t'
-       << clientAddress() << '\t';
+    os << '\t' << std::setw(6) << getFD() << "\t0x" << std::hex << events << std::dec << '\t'
+       << (ignoringInput() ? "ignore\t" : "process\t") << std::setw(6) << _inBuffer.size() << '\t'
+       << std::setw(6) << _outBuffer.size() << '\t' << " r: " << std::setw(6) << _bytesRecvd
+       << "\t w: " << std::setw(6) << _bytesSent << '\t' << clientAddress() << '\t';
     _socketHandler->dumpState(os);
     if (_inBuffer.size() > 0)
         Util::dumpHex(os, _inBuffer, "\t\tinBuffer:\n", "\t\t");
@@ -752,15 +794,20 @@ bool StreamSocket::sendAndShutdown(http::Response& response)
     return false;
 }
 
-void SocketPoll::dumpState(std::ostream& os)
+void SocketPoll::dumpState(std::ostream& os) const
 {
     // FIXME: NOT thread-safe! _pollSockets is modified from the polling thread!
-    os << " Poll [" << _pollSockets.size() << "] - wakeup r: "
-       << _wakeup[0] << " w: " << _wakeup[1] << '\n';
-    if (_newCallbacks.size() > 0)
-        os << "\tcallbacks: " << _newCallbacks.size() << '\n';
-    os << "\tfd\tevents\trsize\twsize\n";
-    for (auto &i : _pollSockets)
+    const auto pollSockets = _pollSockets;
+
+    os << "\n  SocketPoll:";
+    os << "\n    Poll [" << name() << "] with " << pollSockets.size() << " socket"
+       << (pollSockets.size() == 1 ? "" : "s") << " - wakeup rfd: " << _wakeup[0]
+       << " wfd: " << _wakeup[1] << '\n';
+    const auto callbacks = _newCallbacks.size();
+    if (callbacks > 0)
+        os << "\tcallbacks: " << callbacks << '\n';
+    os << "\t    fd\tevents\trbuffered\twbuffered\trtotal\twtotal\tclientaddress\n";
+    for (const auto& i : pollSockets)
         i->dumpState(os);
 }
 
@@ -804,20 +851,23 @@ bool ServerSocket::bind(Type type, int port)
 
         const int ipv6only = (_type == Socket::Type::All ? 0 : 1);
         if (::setsockopt(getFD(), IPPROTO_IPV6, IPV6_V6ONLY, (char*)&ipv6only, sizeof(ipv6only)) == -1)
-            LOG_SYS('#' << getFD() << " Failed set ipv6 socket to " << ipv6only);
+            LOG_SYS("Failed set ipv6 socket to " << ipv6only);
 
         rc = ::bind(getFD(), (const sockaddr *)&addrv6, sizeof(addrv6));
     }
 
     if (rc)
-        LOG_SYS('#' << getFD() << " Failed to bind to: "
-                    << (_type == Socket::Type::IPv4 ? "IPv4" : "IPv6") << " port: " << port);
+        LOG_SYS("Failed to bind to: " << (_type == Socket::Type::IPv4 ? "IPv4" : "IPv6")
+                                      << " port: " << port);
     else
-        LOG_TRC('#' << getFD() << " bind to: " << (_type == Socket::Type::IPv4 ? "IPv4" : "IPv6")
-                    << " port: " << port);
+        LOG_TRC("Bind to: " << (_type == Socket::Type::IPv4 ? "IPv4" : "IPv6")
+                            << " port: " << port);
 
     return rc == 0;
 #else
+    (void) type;
+    (void) port;
+
     return true;
 #endif
 }
@@ -835,7 +885,7 @@ std::shared_ptr<Socket> ServerSocket::accept()
 #else
     const int rc = fakeSocketAccept4(getFD());
 #endif
-    LOG_DBG("Accepted socket #" << rc << ", creating socket object.");
+    LOG_TRC("Accepted socket #" << rc << ", creating socket object.");
     try
     {
         // Create a socket object using the factory.
@@ -861,8 +911,9 @@ std::shared_ptr<Socket> ServerSocket::accept()
             inet_ntop(clientInfo.sin6_family, inAddr, addrstr, sizeof(addrstr));
             _socket->setClientAddress(addrstr);
 
-            LOG_DBG("Accepted socket has family " << clientInfo.sin6_family <<
-                    " address " << _socket->clientAddress());
+            LOG_TRC("Accepted socket #" << _socket->getFD() << " has family "
+                                        << clientInfo.sin6_family << " address "
+                                        << _socket->clientAddress());
 #endif
             return _socket;
         }
@@ -912,7 +963,8 @@ bool Socket::isLocal() const
         return true;
     if (_clientAddress == "::1")
         return true;
-    return  _clientAddress.rfind("127.0.0.", 0);
+    return  _clientAddress.rfind("::ffff:127.0.0.", 0) != std::string::npos ||
+                _clientAddress.rfind("127.0.0.", 0) != std::string::npos;
 }
 
 std::shared_ptr<Socket> LocalServerSocket::accept()
@@ -965,8 +1017,8 @@ std::shared_ptr<Socket> LocalServerSocket::accept()
         addr.append(std::to_string(CREDS_PID(creds)));
         _socket->setClientAddress(addr);
 
-        LOG_DBG("Accepted socket is UDS - address " << addr <<
-                " and uid/gid " << CREDS_UID(creds) << '/' << CREDS_GID(creds));
+        LOG_DBG("Accepted socket #" << rc << " is UDS - address " << addr << " and uid/gid "
+                                    << CREDS_UID(creds) << '/' << CREDS_GID(creds));
         return _socket;
     }
     catch (const std::exception& ex)
@@ -988,6 +1040,17 @@ std::string LocalServerSocket::bind()
     if (snapInstanceName && snapInstanceName[0])
         socketAbstractUnixName = std::string("0snap.") + snapInstanceName + ".coolwsd-";
 
+    LOG_INF("Binding to Unix socket for local server with base name: " << socketAbstractUnixName);
+
+    constexpr auto RandomSuffixLength = 8;
+    constexpr auto MaxSocketAbstractUnixNameLength =
+        sizeof(addrunix.sun_path) - RandomSuffixLength - 1; // 1 byte for null termination.
+    LOG_ASSERT_MSG(socketAbstractUnixName.size() < MaxSocketAbstractUnixNameLength,
+                   "SocketAbstractUnixName is too long. Max: " << MaxSocketAbstractUnixNameLength
+                                                               << ", actual: "
+                                                               << socketAbstractUnixName.size());
+
+    int last_errno = 0;
     do
     {
         std::memset(&addrunix, 0, sizeof(addrunix));
@@ -997,12 +1060,18 @@ std::string LocalServerSocket::bind()
         addrunix.sun_path[0] = '\0'; // abstract name
 #endif
 
-        const std::string rand = Util::rng::getFilename(8);
-        memcpy(addrunix.sun_path + socketAbstractUnixName.length(), rand.c_str(), 8);
+        const std::string rand = Util::rng::getFilename(RandomSuffixLength);
+        memcpy(addrunix.sun_path + socketAbstractUnixName.size(), rand.c_str(), RandomSuffixLength);
+        LOG_ASSERT_MSG(addrunix.sun_path[sizeof(addrunix.sun_path) - 1] == '\0',
+                       "addrunix.sun_path is not null terminated");
 
         rc = ::bind(getFD(), (const sockaddr *)&addrunix, sizeof(struct sockaddr_un));
-        LOG_SYS('#' << getFD() << " Bind to location " << std::string(&addrunix.sun_path[1])
-                    << " result - " << rc);
+        last_errno = errno;
+        LOG_TRC("Binding to Unix socket location ["
+                << &addrunix.sun_path[1] << "], result: " << rc
+                << ((rc >= 0) ? std::string()
+                              : '\t' + Util::symbolicErrno(last_errno) + ": " +
+                                    std::strerror(last_errno)));
     } while (rc < 0 && errno == EADDRINUSE);
 
     if (rc >= 0)
@@ -1011,13 +1080,24 @@ std::string LocalServerSocket::bind()
         return std::string(&addrunix.sun_path[1]);
     }
 
+    LOG_SYS_ERRNO(last_errno, "Failed to bind to Unix socket at [" << &addrunix.sun_path[1] << ']');
     return std::string();
 }
+
+#ifndef HAVE_ABSTRACT_UNIX_SOCKETS
+bool LocalServerSocket::link(std::string to)
+{
+    _linkName = to;
+    return 0 == ::link(_name.c_str(), to.c_str());
+}
+#endif
 
 LocalServerSocket::~LocalServerSocket()
 {
 #ifndef HAVE_ABSTRACT_UNIX_SOCKETS
     ::unlink(_name.c_str());
+    if (!_linkName.empty())
+        ::unlink(_linkName.c_str());
 #endif
 }
 
@@ -1031,9 +1111,9 @@ LocalServerSocket::~LocalServerSocket()
 bool StreamSocket::parseHeader(const char *clientName,
                                Poco::MemoryInputStream &message,
                                Poco::Net::HTTPRequest &request,
-                               MessageMap *map)
+                               MessageMap& map)
 {
-    assert(!map || (map->_headerSize == 0 && map->_messageSize == 0));
+    assert(map._headerSize == 0 && map._messageSize == 0);
 
     // Find the end of the header, if any.
     static const std::string marker("\r\n\r\n");
@@ -1041,37 +1121,28 @@ bool StreamSocket::parseHeader(const char *clientName,
                               marker.begin(), marker.end());
     if (itBody == _inBuffer.end())
     {
-        LOG_TRC('#' << getFD() << " doesn't have enough data for the header yet.");
+        LOG_TRC(clientName << " doesn't have enough data for the header yet.");
         return false;
     }
 
     // Skip the marker.
     itBody += marker.size();
-    if (map) // a reasonable guess so far
-    {
-        map->_headerSize = static_cast<size_t>(itBody - _inBuffer.begin());
-        map->_messageSize = map->_headerSize;
-    }
+    map._headerSize = static_cast<size_t>(itBody - _inBuffer.begin());
+    map._messageSize = map._headerSize;
 
     try
     {
         request.read(message);
 
-        Log::StreamLogger logger = Log::info();
-        if (logger.enabled())
-        {
-            logger << '#' << getFD() << ": " << clientName << " HTTP Request: "
-                   << request.getMethod() << ' '
-                   << request.getURI() << ' '
-                   << request.getVersion();
-
-            for (const auto& it : request)
-            {
-                logger << " / " << it.first << ": " << it.second;
-            }
-
-            LOG_END(logger, true);
-        }
+        LOG_INF(clientName << " HTTP Request: " << request.getMethod() << ' ' << request.getURI()
+                           << ' ' << request.getVersion() <<
+                [&](auto& log)
+                {
+                    for (const auto& it : request)
+                    {
+                        log << " / " << it.first << ": " << it.second;
+                    }
+                });
 
         const std::streamsize contentLength = request.getContentLength();
         const auto offset = itBody - _inBuffer.begin();
@@ -1079,18 +1150,17 @@ bool StreamSocket::parseHeader(const char *clientName,
 
         if (contentLength != Poco::Net::HTTPMessage::UNKNOWN_CONTENT_LENGTH && available < contentLength)
         {
-            LOG_DBG('#' << getFD() << ": Not enough content yet: ContentLength: " << contentLength
-                        << ", available: " << available);
+            LOG_DBG("Not enough content yet: ContentLength: " << contentLength
+                                                              << ", available: " << available);
             return false;
         }
-        if (map)
-            map->_messageSize += contentLength;
+        map._messageSize += contentLength;
 
         const std::string expect = request.get("Expect", "");
         const bool getExpectContinue = Util::iequal(expect, "100-continue");
         if (getExpectContinue && !_sentHTTPContinue)
         {
-            LOG_TRC('#' << getFD() << " got Expect: 100-continue, sending Continue");
+            LOG_TRC("Got Expect: 100-continue, sending Continue");
             // FIXME: should validate authentication headers early too.
             send("HTTP/1.1 100 Continue\r\n\r\n",
                  sizeof("HTTP/1.1 100 Continue\r\n\r\n") - 1);
@@ -1100,8 +1170,7 @@ bool StreamSocket::parseHeader(const char *clientName,
         if (request.getChunkedTransferEncoding())
         {
             // keep the header
-            if (map)
-                map->_spans.push_back(std::pair<size_t, size_t>(0, itBody - _inBuffer.begin()));
+            map._spans.push_back(std::pair<size_t, size_t>(0, itBody - _inBuffer.begin()));
 
             int chunk = 0;
             while (itBody != _inBuffer.end())
@@ -1137,7 +1206,7 @@ bool StreamSocket::parseHeader(const char *clientName,
 
                 if (chunkLen == 0) // we're complete.
                 {
-                    map->_messageSize = chunkOffset;
+                    map._messageSize = chunkOffset;
                     return true;
                 }
 
@@ -1150,7 +1219,7 @@ bool StreamSocket::parseHeader(const char *clientName,
                 }
                 itBody += chunkLen;
 
-                map->_spans.push_back(std::pair<size_t,size_t>(chunkOffset, chunkLen));
+                map._spans.push_back(std::pair<size_t,size_t>(chunkOffset, chunkLen));
 
                 if (*itBody != '\r' || *(itBody + 1) != '\n')
                 {
@@ -1172,16 +1241,16 @@ bool StreamSocket::parseHeader(const char *clientName,
     }
     catch (const Poco::Exception& exc)
     {
-        LOG_DBG('#' << getFD() << ": parseHeader exception caught with " << _inBuffer.size()
-                    << " bytes: " << exc.displayText());
+        LOG_DBG("parseHeader exception caught with " << _inBuffer.size()
+                                                     << " bytes: " << exc.displayText());
         // Probably don't have enough data just yet.
         // TODO: timeout if we never get enough.
         return false;
     }
     catch (const std::exception& exc)
     {
-        LOG_DBG('#' << getFD() << ": parseHeader std::exception caught with " << _inBuffer.size()
-                    << " bytes: " << exc.what());
+        LOG_DBG("parseHeader std::exception caught with " << _inBuffer.size()
+                                                          << " bytes: " << exc.what());
         // Probably don't have enough data just yet.
         // TODO: timeout if we never get enough.
         return false;
@@ -1190,18 +1259,17 @@ bool StreamSocket::parseHeader(const char *clientName,
     return true;
 }
 
-bool StreamSocket::compactChunks(MessageMap *map)
+bool StreamSocket::compactChunks(MessageMap& map)
 {
-    assert (map);
-    if (!map->_spans.size())
+    if (!map._spans.size())
         return false; // single message.
 
-    LOG_CHUNK("Pre-compact " << map->_spans.size() << " chunks: \n" <<
+    LOG_CHUNK("Pre-compact " << map._spans.size() << " chunks: \n" <<
               Util::dumpHex("", "", _inBuffer.begin(), _inBuffer.end(), false));
 
     char *first = &_inBuffer[0];
     char *dest = first;
-    for (auto &span : map->_spans)
+    for (const auto &span : map._spans)
     {
         std::memmove(dest, &_inBuffer[span.first], span.second);
         dest += span.second;
@@ -1209,19 +1277,19 @@ bool StreamSocket::compactChunks(MessageMap *map)
 
     // Erase the duplicate bits.
     size_t newEnd = dest - first;
-    size_t gap = map->_messageSize - newEnd;
-    _inBuffer.erase(_inBuffer.begin() + newEnd, _inBuffer.begin() + map->_messageSize);
+    size_t gap = map._messageSize - newEnd;
+    _inBuffer.erase(_inBuffer.begin() + newEnd, _inBuffer.begin() + map._messageSize);
 
-    LOG_CHUNK("Post-compact with erase of " << newEnd << " to " << map->_messageSize << " giving: \n" <<
+    LOG_CHUNK("Post-compact with erase of " << newEnd << " to " << map._messageSize << " giving: \n" <<
               Util::dumpHex("", "", _inBuffer.begin(), _inBuffer.end(), false));
 
     // shrink our size to fit
-    map->_messageSize -= gap;
+    map._messageSize -= gap;
 
 #if ENABLE_DEBUG
     std::ostringstream oss;
     dumpState(oss);
-    LOG_TRC('#' << getFD() << " Socket state: " << oss.str());
+    LOG_TRC("Socket state: " << oss.str());
 #endif
 
     return true;

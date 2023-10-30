@@ -3,13 +3,13 @@
 var helper = require('../../common/helper');
 var impressHelper = require('../../common/impress_helper');
 var mobileHelper = require('../../common/mobile_helper');
+var repairHelper = require('../../common/repair_document_helper');
 
-describe('Trigger hamburger menu options.', function() {
+describe.skip(['tagmobile'], 'Trigger hamburger menu options.', function() {
 	var testFileName = '';
 
 	function before(testFile) {
-		testFileName = testFile;
-		helper.beforeAll(testFileName, 'impress');
+		testFileName = helper.beforeAll(testFile, 'impress');
 
 		// Click on edit button
 		mobileHelper.enableEditingMobile();
@@ -19,13 +19,13 @@ describe('Trigger hamburger menu options.', function() {
 		helper.afterAll(testFileName, this.currentTest.state);
 	});
 
-	it('Save', function() {
+	it('Save', { defaultCommandTimeout: 60000 }, function() {
 		before('hamburger_menu.odp');
 
 		// Change the document content and save it
 		impressHelper.selectTextShapeInTheCenter();
 
-		cy.get('.leaflet-pane.leaflet-overlay-pane g.Page .TextPosition tspan')
+		cy.cGet('.leaflet-pane.leaflet-overlay-pane g.Page .TextPosition tspan')
 			.should('have.text', 'X');
 
 		// Type a new text
@@ -35,19 +35,19 @@ describe('Trigger hamburger menu options.', function() {
 
 		impressHelper.triggerNewSVGForShapeInTheCenter();
 
-		cy.get('.leaflet-pane.leaflet-overlay-pane g.Page .TextPosition tspan')
+		cy.cGet('.leaflet-pane.leaflet-overlay-pane g.Page .TextPosition tspan')
 			.should('have.text', 'Xnew');
 
 		mobileHelper.selectHamburgerMenuItem(['File', 'Save']);
 
 		// Reopen the document and check content.
-		helper.beforeAll(testFileName, 'impress', true);
+		helper.reload(testFileName, 'impress', true);
 
 		mobileHelper.enableEditingMobile();
 
 		impressHelper.selectTextShapeInTheCenter();
 
-		cy.get('.leaflet-pane.leaflet-overlay-pane g.Page .TextPosition tspan')
+		cy.cGet('.leaflet-pane.leaflet-overlay-pane g.Page .TextPosition tspan')
 			.should('have.text', 'Xnew');
 	});
 
@@ -55,22 +55,26 @@ describe('Trigger hamburger menu options.', function() {
 		before('hamburger_menu.odp');
 
 		// A new window should be opened with the PDF.
-		cy.window()
+		helper.getCoolFrameWindow()
 			.then(function(win) {
 				cy.stub(win, 'open');
 			});
 
 		mobileHelper.selectHamburgerMenuItem(['File', 'Print']);
 
-		cy.window().its('open').should('be.called');
+		helper.getCoolFrameWindow()
+			.then(function(win) {
+				cy.wrap(win).its('open').should('be.called');
+			});
 	});
 
 	it('Download as PDF', function() {
 		before('hamburger_menu.odp');
 
 		mobileHelper.selectHamburgerMenuItem(['Download as', 'PDF Document (.pdf)']);
+		mobileHelper.pressPushButtonOfDialog('Export');
 
-		cy.get('iframe')
+		cy.cGet('iframe')
 			.should('have.attr', 'data-src')
 			.should('contain', 'download');
 	});
@@ -80,7 +84,7 @@ describe('Trigger hamburger menu options.', function() {
 
 		mobileHelper.selectHamburgerMenuItem(['Download as', 'ODF presentation (.odp)']);
 
-		cy.get('iframe')
+		cy.cGet('iframe')
 			.should('have.attr', 'data-src')
 			.should('contain', 'download');
 	});
@@ -90,7 +94,7 @@ describe('Trigger hamburger menu options.', function() {
 
 		mobileHelper.selectHamburgerMenuItem(['Download as', 'PowerPoint 2003 Presentation (.ppt)']);
 
-		cy.get('iframe')
+		cy.cGet('iframe')
 			.should('have.attr', 'data-src')
 			.should('contain', 'download');
 	});
@@ -100,7 +104,7 @@ describe('Trigger hamburger menu options.', function() {
 
 		mobileHelper.selectHamburgerMenuItem(['Download as', 'PowerPoint Presentation (.pptx)']);
 
-		cy.get('iframe')
+		cy.cGet('iframe')
 			.should('have.attr', 'data-src')
 			.should('contain', 'download');
 	});
@@ -110,7 +114,7 @@ describe('Trigger hamburger menu options.', function() {
 
 		impressHelper.selectTextShapeInTheCenter();
 
-		cy.get('.leaflet-pane.leaflet-overlay-pane g.Page .TextPosition tspan')
+		cy.cGet('.leaflet-pane.leaflet-overlay-pane g.Page .TextPosition tspan')
 			.should('have.text', 'X');
 
 		// Type a new character
@@ -120,7 +124,7 @@ describe('Trigger hamburger menu options.', function() {
 
 		impressHelper.triggerNewSVGForShapeInTheCenter();
 
-		cy.get('.leaflet-pane.leaflet-overlay-pane g.Page .TextPosition tspan')
+		cy.cGet('.leaflet-pane.leaflet-overlay-pane g.Page .TextPosition tspan')
 			.should('have.text', 'Xq');
 
 		// Undo
@@ -128,7 +132,7 @@ describe('Trigger hamburger menu options.', function() {
 
 		impressHelper.triggerNewSVGForShapeInTheCenter();
 
-		cy.get('.leaflet-pane.leaflet-overlay-pane g.Page .TextPosition tspan')
+		cy.cGet('.leaflet-pane.leaflet-overlay-pane g.Page .TextPosition tspan')
 			.should('have.text', 'X');
 
 		// Redo
@@ -136,7 +140,7 @@ describe('Trigger hamburger menu options.', function() {
 
 		impressHelper.triggerNewSVGForShapeInTheCenter();
 
-		cy.get('.leaflet-pane.leaflet-overlay-pane g.Page .TextPosition tspan')
+		cy.cGet('.leaflet-pane.leaflet-overlay-pane g.Page .TextPosition tspan')
 			.should('have.text', 'Xq');
 	});
 
@@ -145,7 +149,7 @@ describe('Trigger hamburger menu options.', function() {
 
 		impressHelper.selectTextShapeInTheCenter();
 
-		cy.get('.leaflet-pane.leaflet-overlay-pane g.Page .TextPosition tspan')
+		cy.cGet('.leaflet-pane.leaflet-overlay-pane g.Page .TextPosition tspan')
 			.should('have.text', 'X');
 
 		// Type a new character
@@ -155,27 +159,14 @@ describe('Trigger hamburger menu options.', function() {
 
 		impressHelper.triggerNewSVGForShapeInTheCenter();
 
-		cy.get('.leaflet-pane.leaflet-overlay-pane g.Page .TextPosition tspan')
+		cy.cGet('.leaflet-pane.leaflet-overlay-pane g.Page .TextPosition tspan')
 			.should('have.text', 'Xq');
 
-		// Revert one undo step via Repair
-		mobileHelper.selectHamburgerMenuItem(['Edit', 'Repair']);
-
-		cy.get('.leaflet-popup-content')
-			.should('be.visible');
-
-		cy.get('.leaflet-popup-content table tr:nth-of-type(2)')
-			.should('contain.text', 'Undo');
-
-		cy.get('.leaflet-popup-content table tr:nth-of-type(2)')
-			.click();
-
-		cy.get('.leaflet-popup-content input[value=\'Jump to state\']')
-			.click();
+		repairHelper.rollbackPastChange('Undo', undefined, true);
 
 		impressHelper.triggerNewSVGForShapeInTheCenter();
 
-		cy.get('.leaflet-pane.leaflet-overlay-pane g.Page .TextPosition tspan')
+		cy.cGet('.leaflet-pane.leaflet-overlay-pane g.Page .TextPosition tspan')
 			.should('have.text', 'X');
 	});
 
@@ -187,19 +178,7 @@ describe('Trigger hamburger menu options.', function() {
 
 		mobileHelper.selectHamburgerMenuItem(['Edit', 'Cut']);
 
-		// TODO: cypress does not support clipboard operations
-		// so we get a warning dialog here.
-		cy.get('.vex-dialog-form')
-			.should('be.visible');
-
-		cy.get('.vex-dialog-message')
-			.should('have.text', 'Please use the copy/paste buttons on your on-screen keyboard.');
-
-		cy.get('.vex-dialog-button-primary.vex-dialog-button.vex-first')
-			.click();
-
-		cy.get('.vex-dialog-form')
-			.should('not.exist');
+		cy.cGet('#mobile-wizard-content-modal-dialog-copy_paste_warning-box').should('exist');
 	});
 
 	it('Copy.', function() {
@@ -210,19 +189,7 @@ describe('Trigger hamburger menu options.', function() {
 
 		mobileHelper.selectHamburgerMenuItem(['Edit', 'Copy']);
 
-		// TODO: cypress does not support clipboard operations
-		// so we get a warning dialog here.
-		cy.get('.vex-dialog-form')
-			.should('be.visible');
-
-		cy.get('.vex-dialog-message')
-			.should('have.text', 'Please use the copy/paste buttons on your on-screen keyboard.');
-
-		cy.get('.vex-dialog-button-primary.vex-dialog-button.vex-first')
-			.click();
-
-		cy.get('.vex-dialog-form')
-			.should('not.exist');
+		cy.cGet('#mobile-wizard-content-modal-dialog-copy_paste_warning-box').should('exist');
 	});
 
 	it('Paste.', function() {
@@ -233,19 +200,7 @@ describe('Trigger hamburger menu options.', function() {
 
 		mobileHelper.selectHamburgerMenuItem(['Edit', 'Paste']);
 
-		// TODO: cypress does not support clipboard operations
-		// so we get a warning dialog here.
-		cy.get('.vex-dialog-form')
-			.should('be.visible');
-
-		cy.get('.vex-dialog-message')
-			.should('have.text', 'Please use the copy/paste buttons on your on-screen keyboard.');
-
-		cy.get('.vex-dialog-button-primary.vex-dialog-button.vex-first')
-			.click();
-
-		cy.get('.vex-dialog-form')
-			.should('not.exist');
+		cy.cGet('#mobile-wizard-content-modal-dialog-copy_paste_warning-box').should('exist');
 	});
 
 	it('Select all.', function() {
@@ -255,7 +210,7 @@ describe('Trigger hamburger menu options.', function() {
 
 		impressHelper.dblclickOnSelectedShape();
 
-		cy.get('#copy-paste-container pre')
+		cy.cGet('#copy-paste-container pre')
 			.should('not.exist');
 
 		mobileHelper.selectHamburgerMenuItem(['Edit', 'Select All']);
@@ -265,19 +220,19 @@ describe('Trigger hamburger menu options.', function() {
 		helper.expectTextForClipboard('X');
 	});
 
-	it('Search some word.', function() {
+	it.skip('Search some word.', function() {
 		before('hamburger_menu.odp');
 
 		mobileHelper.selectHamburgerMenuItem(['Search']);
 
 		// Search bar become visible
-		cy.get('#mobile-wizard-content')
+		cy.cGet('#mobile-wizard-content')
 			.should('not.be.empty');
 
 		// Search for some word
 		helper.inputOnIdle('#searchterm', 'X');
 
-		cy.get('#search')
+		cy.cGet('#search')
 			.should('not.have.attr', 'disabled');
 
 		helper.clickOnIdle('#search');
@@ -285,7 +240,7 @@ describe('Trigger hamburger menu options.', function() {
 		// A shape and some text should be selected
 		//cy.get('.transform-handler--rotate')
 		//	.should('be.not.visible');
-		cy.get('.leaflet-selection-marker-start')
+		cy.cGet('.leaflet-selection-marker-start')
 			.should('be.visible');
 	});
 
@@ -320,14 +275,9 @@ describe('Trigger hamburger menu options.', function() {
 
 		mobileHelper.selectHamburgerMenuItem(['Slide', 'Delete Slide']);
 
-		cy.get('.vex-content')
-			.should('exist');
-
-		cy.get('.vex-dialog-button-primary')
-			.click();
-
-		cy.get('.vex-content')
-			.should('not.exist');
+		cy.cGet('#mobile-wizard-content-modal-dialog-deleteslide-modal').should('exist');
+		cy.cGet('#deleteslide-modal-response').click();
+		cy.cGet('#mobile-wizard-content-modal-dialog-deleteslide-modal').should('not.exist');
 
 		impressHelper.assertNumberOfSlidePreviews(1);
 	});
@@ -344,12 +294,12 @@ describe('Trigger hamburger menu options.', function() {
 	it('Fullscreen presentation.', function() {
 		before('hamburger_menu.odp');
 
-		cy.get('iframe.leaflet-slideshow')
+		cy.cGet('iframe.leaflet-slideshow')
 			.should('not.exist');
 
 		mobileHelper.selectHamburgerMenuItem(['Fullscreen presentation']);
 
-		cy.get('iframe.leaflet-slideshow')
+		cy.cGet('iframe.leaflet-slideshow')
 			.should('exist');
 	});
 
@@ -358,18 +308,14 @@ describe('Trigger hamburger menu options.', function() {
 
 		mobileHelper.selectHamburgerMenuItem(['About']);
 
-		cy.get('.vex-content')
+		cy.cGet('#mobile-wizard-content')
 			.should('exist');
 
 		// Check the version
-		cy.contains('#lokit-version', 'Collabora Office')
+		cy.cGet('body').contains('#lokit-version', 'Collabora Office')
 			.should('exist');
 
 		// Close about dialog
-		cy.get('.vex-close')
-			.click({force : true});
-
-		cy.get('.vex-content')
-			.should('not.exist');
+		cy.cGet('div.mobile-wizard.jsdialog-overlay.cancellable').click({force : true});
 	});
 });

@@ -25,7 +25,7 @@
     <string name="app_version">Verzija: %1$s, ID gradnje: %2$s</string>
     <string name="app_description">$APP_NAME je moderan softverski paket otvorenog koda s modernim programima za obradu teksta, proračunskih tablica, prezentacija i još mnogo toga.</string>
     <string name="app_vendor">Proizvođač izdanja je $VENDOR.</string>
-    <string name="no_items">Nema elemenata</string>
+    <string name="no_items">Nema stavki</string>
     <string name="temp_file_saving_disabled">Datoteka je zaštićena, spremanje je deaktivirano.</string>
     <string name="file_exists_warning">Datoteka s tim imenom već postoji, biti će prepisana.</string>
     <string name="file_creation_failed">Neuspjelo stvaranje datoteke</string>
@@ -38,7 +38,7 @@
     <string name="pref_show_hidden_files_summary">Aktiviraj prikaz skrivenih datoteka i mapa</string>
     <string name="pref_sort_summary">Odaberi redoslijed datoteka: A-Z, po veličini ili po datumu.</string>
     <string name="pref_viewmode_summary">Prikaži pločasti prikaz ili popis.</string>
-    <string name="pref_file_explorer_title">Prikaz u upravljaču datoteka</string>
+    <string name="pref_file_explorer_title">Raspored upravljača datoteka</string>
     <string name="pref_sort_title">Redoslijed datoteka</string>
     <string name="pref_filter_title">Standardno filtriranje datoteka</string>
     <string name="pref_filter_summary">Postavi standardno filtriranje datoteka.</string>

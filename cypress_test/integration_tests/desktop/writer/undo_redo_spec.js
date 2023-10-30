@@ -1,12 +1,15 @@
-/* global describe it cy beforeEach require afterEach*/
+/* global cy describe it beforeEach require afterEach*/
 
 var helper = require('../../common/helper');
+var repairHelper = require('../../common/repair_document_helper');
+const desktopHelper = require('../../common/desktop_helper');
 
-describe.skip('Editing Operations', function() {
+describe(['tagdesktop', 'tagnextcloud', 'tagproxy'], 'Editing Operations', function() {
 	var testFileName = 'undo_redo.odt';
 
 	beforeEach(function() {
 		helper.beforeAll(testFileName, 'writer');
+		desktopHelper.switchUIToCompact();
 	});
 
 	afterEach(function() {
@@ -20,7 +23,7 @@ describe.skip('Editing Operations', function() {
 
 		helper.selectAllText();
 
-		helper.expectTextForClipboard('\nHello Worl');
+		helper.expectTextForClipboard('Hello ');
 	}
 
 	it('Undo', function() {
@@ -33,21 +36,17 @@ describe.skip('Editing Operations', function() {
 		helper.typeIntoDocument('{ctrl}y');
 
 		helper.selectAllText();
-
-		helper.expectTextForClipboard('\nHello World');
+		cy.wait(500);
+		helper.expectTextForClipboard('Hello World');
 	});
 
 	it('Repair Document', function() {
-		helper.typeIntoDocument('Hello');
+		helper.typeIntoDocument('Hello World');
 
-		cy.get('#menu-editmenu').click()
-			.get('#menu-repair').click();
+		repairHelper.rollbackPastChange('Typing: “World”');
 
-		cy.get('.leaflet-popup-content table').should('exist');
+		helper.selectAllText();
 
-		cy.contains('.leaflet-popup-content table tbody tr','Typing: “e”')
-			.dblclick();
-
-		helper.expectTextForClipboard('\nH');
+		helper.expectTextForClipboard('Hello ');
 	});
 });

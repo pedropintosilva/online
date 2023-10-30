@@ -1,8 +1,8 @@
 <style>
     h1 { text-align: center; }
     table.help { border-collapse: collapse; width: 100%; }
-    td.function { padding: 5px; border-bottom: solid #ddd 1px; width: 70%; }
-    td.shortcut { padding: 5px; border-bottom: solid #ddd 1px; font-weight: bold; width: 30%; }
+    td.function { padding: 5px; border-bottom: 1px solid var(--color-border-lighter); width: 70%; }
+    td.shortcut { padding: 5px; border-bottom: 1px solid var(--color-border-lighter); font-weight: bold; width: 30%; }
     .productname { font-weight:bold; font-style:italic; }
     .ui { font-weight:bold; }
     .def { font-weight:bold; }
@@ -11,7 +11,7 @@
     .screenshot { text-align:center; margin: 0.1in; }
     .screenshot > img { max-width: 100%; height: auto; }
     .blue { color:#63bbee; }
-    button { font-family: "Helvetica Neue", sans-serif; background: none!important; border: none; padding: 0!important; color: -webkit-link; cursor: pointer; text-decoration: underline; font-size: 1em; line-height: 1.5em; }
+    button.border-0 { font-family: "Helvetica Neue", sans-serif; background: none!important; border: none; padding: 0!important; color: -webkit-link; cursor: pointer; text-decoration: underline; font-size: 1em; line-height: 1.5em; }
     button:active { color: -webkit-activelink; }
     button:focus { outline: -webkit-focus-ring-color auto 1px; }
 </style>
@@ -27,6 +27,9 @@
             <tr> <td class="function">Paste special</td> <td class="shortcut"><kbd>Ctrl</kbd><span class="kbd--plus">+</span><kbd>Alt</kbd><span class="kbd--plus">+</span><kbd>Shift</kbd><span class="kbd--plus">+</span><kbd>V</kbd></td> </tr>
             <tr> <td class="function">Print (Download as PDF)</td> <td class="shortcut"><kbd>Ctrl</kbd><span class="kbd--plus">+</span><kbd>P</kbd></td> </tr>
             <tr> <td class="function">Display the Keyboard shortcuts help</td> <td class="shortcut"><kbd>Ctrl</kbd><span class="kbd--plus">+</span><kbd>Shift</kbd><span class="kbd--plus">+</span><kbd>?</kbd></td> </tr>
+            <tr> <td class="function">Focus to notebookbar menu</td> <td class="shortcut"><kbd>Alt</kbd><span class="kbd--plus">+</span><kbd>Shift</kbd><span class="kbd--plus">+</span><kbd>F1</kbd></td> </tr>
+            <tr> <td class="function">Focus to document from menu</td> <td class="shortcut"><kbd>ESC</kbd></td> </tr>
+            <tr> <td class="function">Focus to selected comment's menu</td> <td class="shortcut"><kbd>Alt</kbd><span class="kbd--plus">+</span><kbd>C</kbd></td> </tr>
         </table>
     </div>
     <div id="text-shortcuts" style="display: none;">
@@ -292,41 +295,41 @@
 </div>
 <div id="online-help">
     <h1><span class="productname">%productName</span> Help</h1>
-    <p class="toc-h3"><button onClick='document.getElementById(1327).scrollIntoView();'>Collaborative editing</button></p>
-    <p class="toc-h3"><button onClick='document.getElementById(1333).scrollIntoView();'><span class="productname">%productName</span> user interface</button></p>
-    <p class="toc-h3"><button onClick='document.getElementById(1335).scrollIntoView();'>Opening, closing, saving, printing and downloading documents</button></p>
-    <p class="toc-h3"><button onClick='document.getElementById(1337).scrollIntoView();'>Editing documents</button></p>
-    <p class="toc-h3"><button onClick='document.getElementById(1338).scrollIntoView();'>Advanced features</button></p>
+    <p class="toc-h3 m-v-0"><button class="border-0" onClick='document.getElementById(1327).scrollIntoView();'>Collaborative editing</button></p>
+    <p class="toc-h3 m-v-0"><button class="border-0" onClick='document.getElementById(1333).scrollIntoView();'><span class="productname">%productName</span> user interface</button></p>
+    <p class="toc-h3 m-v-0"><button class="border-0" onClick='document.getElementById(1335).scrollIntoView();'>Opening, closing, saving, printing and downloading documents</button></p>
+    <p class="toc-h3 m-v-0"><button class="border-0" onClick='document.getElementById(1337).scrollIntoView();'>Editing documents</button></p>
+    <p class="toc-h3 m-v-0"><button class="border-0" onClick='document.getElementById(1338).scrollIntoView();'>Advanced features</button></p>
     <div class="spreadsheet" style="display: none;">
-        <p class="toc-h2"><button onClick='document.getElementById(1359).scrollIntoView();'><span class="productname">%productName</span> spreadsheets</button></p>
-        <p class="toc-h3"><button onClick='document.getElementById(1361).scrollIntoView();'>Editing spreadsheets</button></p>
-        <p class="toc-h3"><button onClick='document.getElementById(1363).scrollIntoView();'>Formulas</button></p>
-        <p class="toc-h3"><button honClick='document.getElementById(1367).scrollIntoView();'>Formatting spreadsheets</button></p>
-        <p class="toc-h3"><button onClick='document.getElementById(1371).scrollIntoView();'>Advanced features</button></p>
+        <p class="toc-h2 m-v-0"><button class="border-0" onClick='document.getElementById(1359).scrollIntoView();'><span class="productname">%productName</span> spreadsheets</button></p>
+        <p class="toc-h3 m-v-0"><button class="border-0" onClick='document.getElementById(1361).scrollIntoView();'>Editing spreadsheets</button></p>
+        <p class="toc-h3 m-v-0"><button class="border-0" onClick='document.getElementById(1363).scrollIntoView();'>Formulas</button></p>
+        <p class="toc-h3 m-v-0"><button class="border-0" honClick='document.getElementById(1367).scrollIntoView();'>Formatting spreadsheets</button></p>
+        <p class="toc-h3 m-v-0"><button class="border-0" onClick='document.getElementById(1371).scrollIntoView();'>Advanced features</button></p>
     </div>
     <div class="text" style="display: none;">
-        <p class="toc-h2"><button onClick='document.getElementById(1373).scrollIntoView();'><span class="productname">%productName</span> text documents</button></p>
-        <p class="toc-h3"><button onClick='document.getElementById(1375).scrollIntoView();'>Editing text documents</button></p>
-        <p class="toc-h3"><button onClick='document.getElementById(1377).scrollIntoView();'>Context menus</button></p>
-        <p class="toc-h3"><button onClick='document.getElementById(1383).scrollIntoView();'>Advanced text document editor features</button></p>
+        <p class="toc-h2 m-v-0"><button class="border-0" onClick='document.getElementById(1373).scrollIntoView();'><span class="productname">%productName</span> text documents</button></p>
+        <p class="toc-h3 m-v-0"><button class="border-0" onClick='document.getElementById(1375).scrollIntoView();'>Editing text documents</button></p>
+        <p class="toc-h3 m-v-0"><button class="border-0" onClick='document.getElementById(1377).scrollIntoView();'>Context menus</button></p>
+        <p class="toc-h3 m-v-0"><button class="border-0" onClick='document.getElementById(1383).scrollIntoView();'>Advanced text document editor features</button></p>
     </div>
     <div class="presentation" style="display: none;">
-        <p class="toc-h2"><button onClick='document.getElementById(1391).scrollIntoView();'><span class="productname">%productName</span> presentations</button></p>
-        <p class="toc-h3"><button onClick='document.getElementById(1393).scrollIntoView();'>Editing presentations</button></p>
-        <p class="toc-h3"><button onClick='document.getElementById(1395).scrollIntoView();'>Slide show</button></p>
-        <p class="toc-h3"><button onClick='document.getElementById(1397).scrollIntoView();'>Slide pane</button></p>
-        <p class="toc-h3"><button onClick='document.getElementById(1401).scrollIntoView();'>Advanced features</button></p>
+        <p class="toc-h2 m-v-0"><button class="border-0" onClick='document.getElementById(1391).scrollIntoView();'><span class="productname">%productName</span> presentations</button></p>
+        <p class="toc-h3 m-v-0"><button class="border-0" onClick='document.getElementById(1393).scrollIntoView();'>Editing presentations</button></p>
+        <p class="toc-h3 m-v-0"><button class="border-0" onClick='document.getElementById(1395).scrollIntoView();'>Slide show</button></p>
+        <p class="toc-h3 m-v-0"><button class="border-0" onClick='document.getElementById(1397).scrollIntoView();'>Slide pane</button></p>
+        <p class="toc-h3 m-v-0"><button class="border-0" onClick='document.getElementById(1401).scrollIntoView();'>Advanced features</button></p>
     </div>
-    <p class="toc-h2"><button onClick='document.getElementById(1403).scrollIntoView();'>Frequently Asked Questions</button></p>
-    <p class="toc-h3"><button onClick='document.getElementById(1405).scrollIntoView();'>General</button></p>
+    <p class="toc-h2 m-v-0"><button class="border-0" onClick='document.getElementById(1403).scrollIntoView();'>Frequently Asked Questions</button></p>
+    <p class="toc-h3 m-v-0"><button class="border-0" onClick='document.getElementById(1405).scrollIntoView();'>General</button></p>
     <div class="text" style="display: none;">
-        <p class="toc-h3"><button onClick='document.getElementById(1407).scrollIntoView();'>Text documents</button></p>
+        <p class="toc-h3 m-v-0"><button class="border-0" onClick='document.getElementById(1407).scrollIntoView();'>Text documents</button></p>
     </div>
     <div class="spreadsheet" style="display: none;">
-        <p class="toc-h3"><button onClick='document.getElementById(1409).scrollIntoView();'>Spreadsheets</button></p>
+        <p class="toc-h3 m-v-0"><button class="border-0" onClick='document.getElementById(1409).scrollIntoView();'>Spreadsheets</button></p>
     </div>
     <div class="presentation" style="display: none;">
-        <p class="toc-h3"><button onClick='document.getElementById(1411).scrollIntoView();'>Presentations</button></p>
+        <p class="toc-h3 m-v-0"><button class="border-0" onClick='document.getElementById(1411).scrollIntoView();'>Presentations</button></p>
     </div>
     <p><span class="productname">%productName</span> allows you to create and edit office documents text documents, spreadsheets and presentations directly in your browser, in a simple and straight-forward way. You can work alone on a document, or collaboratively as part of a team.</p>
     <a id="1327"/>
@@ -544,7 +547,7 @@
     <p>Choose menu <span class="ui">Tools</span> and uncheck <span class="ui">Automatic Spell Checking</span>.</p>
     <h4>What is the blue wavy underline in some words in the text?</h4>
     <p>Grammar errors in the text is marked with the blue wavy underline. Click on the underlined text with the right mouse button to open a menu with suggestions to correct the grammar error and the offended grammar rules. Select the right suggestion to change the text.</p>
-    <h4>Is here a thesaurus?</h4>
+    <h4>Is there a thesaurus?</h4>
     <p>Yes. Click in the word you want and choose <span class="ui">Tools</span> → <span class="ui">Thesaurus</span>. A dialog opens with many suggestions for replacements.</p>
     <div class="screenshot"><img alt="" src="images/help/en/thesaurus.png"/></div>
     <h4>What are the blue <span class="blue">¶</span> symbol and how can I remove from my text document?</h4>

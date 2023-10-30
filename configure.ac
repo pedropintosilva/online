@@ -3,7 +3,7 @@
 
 AC_PREREQ([2.63])
 
-AC_INIT([coolwsd], [21.11.0.3], [https://github.com/CollaboraOnline/online/issues], [coolwsd], [https://collaboraonline.github.io/])
+AC_INIT([coolwsd], [23.05.2.2], [https://github.com/CollaboraOnline/online/issues], [coolwsd], [https://collaboraonline.github.io/])
 LT_INIT([shared, disable-static, dlopen])
 
 AM_INIT_AUTOMAKE([1.10 foreign subdir-objects tar-pax -Wno-portability])
@@ -58,16 +58,33 @@ AC_DEFINE_UNQUOTED([COOLWSD_VERSION_HASH],[["$COOLWSD_VERSION_HASH"]],[Collabora
 
 AC_CONFIG_SRCDIR([wsd/COOLWSD.cpp])
 
+AC_DEFINE_UNQUOTED([COOLWSD_BUILDCONFIG],[["$ac_configure_args"]],[Options passed to configure script])
+
+# this is a dummy header, autoheader adds all entries to it
+# don't include config_unused.h anywhere!
+AC_CONFIG_HEADERS([config_unused.h])
+
+# maintain config.h.in and config_version.h.in manually
+# config.h.in is for configurable variables that are stable if configure parameters are unchanged
 AC_CONFIG_HEADERS([config.h])
+# config_version.h.in is for version/hash related variables
+AC_CONFIG_HEADERS([config_version.h])
 
 # Checks for programs.
 AC_PROG_CXX
 AC_PROG_CC
 AC_PROG_LN_S
 
+# override AC_PROG_CXX:
+# avoid libtool from adding -rpath when linking
+if test "$host_os" = "emscripten"; then
+    hardcode_libdir_flag_spec=
+    hardcode_libdir_flag_spec_CXX=
+fi
+
 AC_LANG_PUSH([C++])
 
-AS_IF([test `uname -s` = Linux],
+AS_IF([test `uname -s` = Linux -a "$host_os" != "emscripten"],
       [AC_PATH_PROG([SETCAP], setcap,[],[/bin:/usr/bin:/sbin:/usr/sbin])]
        AS_IF([test -z "$SETCAP"],
        [AC_MSG_ERROR([The setcap command is needed. It might be in a package called libcap-progs.])]))
@@ -79,7 +96,7 @@ for MODULE in lxml polib; do
         AC_MSG_RESULT([yes])
     else
         AC_MSG_RESULT([no])
-        AS_IF([test `uname -s` = Linux -o `uname -s` = FreeBSD -o `uname -s`= Darwin],
+        AS_IF([test `uname -s` = Linux -o `uname -s` = FreeBSD -o `uname -s` = Darwin],
               [AC_MSG_ERROR([${MODULE} for python3 is needed. It might be in a package called python3-${MODULE}.])],
               [AC_MSG_WARN([${MODULE} for python3 is needed. It might be in a package called python3-${MODULE}. But
                if you are building the JS bits on another (Linux) machine, that doesn't matter])])
@@ -126,6 +143,21 @@ AC_ARG_ENABLE([iosapp],
               AS_HELP_STRING([--enable-iosapp],
                              [Use on a Mac where you will build the iOS app.]))
 
+AC_ARG_WITH([wasm-fallback],
+              AS_HELP_STRING([--with-wasm-fallback=<path>],
+                             [Build a COOL where the client can fall back to a WASM implementation if the connection to the server fails.
+                              The path is where the WASM build of Online was done.]))
+
+AC_ARG_WITH([wasm-additional-files],
+              AS_HELP_STRING([--with-wasm-additional-files=<path>],
+                             [Add more files to the in-memory WASM file system in online.wasm in addition to the ones from the WASM
+                              build of Collabora Office. The files will be available in the WASM in-memory file system as pathnames
+                              stripping the initial prefix <path> where they are on the build system. For instance, if you give
+                              --with-wasm-additional-files=$HOME/our-sample-docs, and there is a file $HOME/our-sample-docs/temp/test.docx,
+                              that will be available in the online.wasm as /temp/test.docx.
+                              NOTE: Temporarily for now, this option is mandatory and the additional files should contain a document
+                              in the root called "sample.docx"]))
+
 AC_ARG_WITH([iosapp-appicon],
               AS_HELP_STRING([--with-iosapp-appicon=<path>],
                              [Point to a directory containing an icon set to use instead of the default empty one.]))
@@ -151,7 +183,7 @@ AC_ARG_ENABLE(fuzzers,
     AS_HELP_STRING([--enable-fuzzers],
         [Enables building libfuzzer targets for fuzz testing. It is useful to enable this switch
          only in a separate build tree, since the switch disables the creation of a coolwsd
-         binary.])
+         binary. For best results: --with-sanitizer=address,undefined])
 )
 
 AC_ARG_ENABLE([androidapp],
@@ -196,7 +228,7 @@ AC_ARG_WITH([user-id],
 
 AC_ARG_WITH([icon-theme],
               AS_HELP_STRING([--with-icon-theme=<path>],
-                             [Path to custom icon theme (similar to loleflet/images).]))
+                             [Path to custom icon theme (similar to browser/images).]))
 
 AC_ARG_WITH(vendor,
     AS_HELP_STRING([--with-vendor="John the Builder"],
@@ -206,6 +238,11 @@ AC_ARG_WITH(vendor,
 AC_ARG_WITH(info-url,
     AS_HELP_STRING([--with-info-url="https://john-the-builder.org"],
         [Set the info url of the build.]),
+,)
+
+AC_ARG_WITH(welcome-url,
+    AS_HELP_STRING([--with-welcome-url=<url>],
+        [Set the welcome url of the build.]),
 ,)
 
 AC_ARG_ENABLE([seccomp],
@@ -243,6 +280,18 @@ AC_ARG_WITH([trace-event-file],
 AC_ARG_WITH([poco-includes],
             AS_HELP_STRING([--with-poco-includes=<path>],
                            [Path to the "include" directory with the Poco
+                            headers.  If you are building for Android 64bit,
+                            you need two, separated by a colon ':'.]))
+
+AC_ARG_WITH([zstd-libs],
+            AS_HELP_STRING([--with-zstd-libs=<path>],
+                           [Path to the directory containing libzstd.a
+                            libraries.  If you are building for Android 64bit,
+                            you need two, separated by a colon ':'.]))
+
+AC_ARG_WITH([zstd-includes],
+            AS_HELP_STRING([--with-zstd-includes=<path>],
+                           [Path to the "include" directory with the zstd
                             headers.  If you are building for Android 64bit,
                             you need two, separated by a colon ':'.]))
 
@@ -286,19 +335,19 @@ AC_ARG_WITH([max-documents],
              AS_HELP_STRING([--with-max-documents],
                            [Set the limit on the total number of documents. Def: 10, Min: 2.]))
 
-AC_ARG_WITH([feedback-location],
-            AS_HELP_STRING([--with-feedback-location=<url>],
-                           [User feedback URL location. Default to http://127.0.0.1:8000/Rate/feedback.html]))
+AC_ARG_WITH([feedback-url],
+            AS_HELP_STRING([--with-feedback-url=<url>],
+                           [User feedback URL.]))
 
-AC_ARG_ENABLE(welcome-message,
-    AS_HELP_STRING([--enable-welcome-message],
-        [Enables welcome message on version update. Can be changed later in coolwsd.xml.])
-)
+AC_ARG_WITH([infobar-url],
+            AS_HELP_STRING([--with-infobar-url=<url>],
+                           [Infobar URL.]))
 
-AC_ARG_ENABLE(feedback,
-    AS_HELP_STRING([--enable-feedback],
-        [Enables feedback, user rating.])
-)
+AC_ARG_WITH([coverage],
+             AS_HELP_STRING([--with-coverage=<gcov>],
+                            [Enable a code-coverage method. Currently only gcov is supported (works with both gcc and clang).
+                            Output HTML in gcov/ directory.
+                            Generate report with 'make coverage-report'. Clean coverage files with 'make coverage-clean']))
 
 AC_ARG_WITH([sanitizer],
              AS_HELP_STRING([--with-sanitizer],
@@ -321,22 +370,18 @@ AC_ARG_ENABLE([werror],
             AS_HELP_STRING([--disable-werror],
                           [Do not turn warnings into errors.]))
 
-AC_ARG_ENABLE([vereign],
-            AS_HELP_STRING([--enable-vereign],
-                          [Set Vereign document_signing_url configuration key to the default app.vereign.com.]))
-
 AC_ARG_ENABLE([cypress],
             AS_HELP_STRING([--enable-cypress],
                            [Enable cypress tests.]))
+
+AC_ARG_ENABLE([tests],
+            AS_HELP_STRING([--disable-tests],
+                           [Do not build and run unit tests.]))
 
 AC_ARG_WITH([help-url],
             AS_HELP_STRING([--with-help-url=<url>],
                 [Set the base URL of the online help. Default is https://help.collaboraoffice.com/help.html?])
                 [--without-help-url Help buttons of dialogs will be disabled, external help website will not be used.],,)
-
-AC_ARG_WITH([core-icon-theme],
-            AS_HELP_STRING([--with-core-icon-theme=<theme>],
-                [Set the icon theme coming from core (tunneled sidebar, tunneled dialogs). The default is colibre.]))
 
 AC_ARG_WITH([dictionaries],
             AS_HELP_STRING([--with-dictionaries=<language list>],
@@ -344,13 +389,17 @@ AC_ARG_WITH([dictionaries],
                  on this instance. Allowing too many has negative effect on startup performance. Default: de_DE en_GB
                  en_US es_ES fr_FR it nl pt_BR pt_PT ru.]))
 
-AC_ARG_ENABLE([freemium],
-              AS_HELP_STRING([--enable-freemium],
-                             [Enable freemium model.]))
+AC_ARG_ENABLE([feature-lock],
+              AS_HELP_STRING([--enable-feature-lock],
+                             [Enable control over which uno-commands/feature to lock.]))
 
 AC_ARG_ENABLE([feature-restriction],
               AS_HELP_STRING([--enable-feature-restriction],
-                             [Enable control over which uno-commands/feature to disable.]))
+                             [Enable control over which uno-commands/feature to disable completely.]))
+
+AC_ARG_ENABLE([experimental],
+              AS_HELP_STRING([--enable-experimental],
+                             [Enable experimental features and behavior]))
 
 
 # Handle options
@@ -369,10 +418,14 @@ COOLWSD_ANONYMIZE_USER_DATA=false
 BROWSER_LOGGING="false"
 debug_msg="secure mode: product build"
 anonym_msg=""
+ENABLE_EXPERIMENTAL=false
+experimental_msg="disabled by default"
 bundle_msg="using uglified bundled JS and CSS"
 LOK_LOG_ASSERTIONS=0
 log_asserts_msg="disabled"
+AC_MSG_CHECKING([whether to enable debug build])
 if test "$enable_debug" = "yes"; then
+   AC_MSG_RESULT([yes])
    AC_DEFINE([ENABLE_DEBUG],1,[Whether to compile in some extra debugging support code and disable some security pieces])
    ENABLE_DEBUG=true
    ENABLE_DEBUG_PROTOCOL=true
@@ -383,16 +436,26 @@ if test "$enable_debug" = "yes"; then
    COOLWSD_ANONYMIZE_USER_DATA=false
    BROWSER_LOGGING="true"
    debug_msg="low security debugging mode"
+
+   AC_MSG_CHECKING([whether to bundle JS and CSS files])
    if test "$enable_bundle" != "yes"; then
       ENABLE_BUNDLE=false
       bundle_msg="using individual JS and CSS files"
+      AC_MSG_RESULT([no ($bundle_msg)])
+   else
+      AC_MSG_RESULT([yes])
    fi
+
+   AC_MSG_CHECKING([whether to enable log passing test assertions in debug build (default)])
    if test "$enable_logging_test_asserts" != "no"; then
       LOK_LOG_ASSERTIONS=1
       log_asserts_msg="enabled"
-      AC_MSG_RESULT([Enabling logging of passing test assertions in debug build (default), override with --disable-logging-test-asserts])
+      AC_MSG_RESULT([yes (override with --disable-logging-test-asserts)])
+    else
+      AC_MSG_RESULT([no (to enable --enable-logging-test-asserts)])
     fi
 else
+    AC_MSG_RESULT([no (Release build)])
     AC_DEFINE([ENABLE_DEBUG],0,[Whether to compile in some extra debugging support code and disable some security pieces])
 fi
 AC_SUBST(ENABLE_DEBUG)
@@ -443,6 +506,24 @@ if test -z "$anonym_msg";  then
   anonym_msg="anonymization of user-data is disabled"
 fi
 
+if test "$enable_experimental" = "yes" ; then
+  ENABLE_EXPERIMENTAL=true
+  experimental_msg="enabled by default"
+fi
+AC_SUBST(ENABLE_EXPERIMENTAL)
+
+dnl check for a file at a path with an env-var with a given suffix
+AC_DEFUN([CHK_FILE_VAR], dnl env-var, suffix, file-to-match, msg
+[
+   if test -n "$[$1][$4]" -o "z[$4]" = "z"; then
+       if test -f "$[$1][$4]/[$2]"; then
+           AC_MSG_RESULT([$[$1]])
+       else
+           AC_MSG_ERROR([This is not a [$3] [$4] directory no: $[$1][$4]/[$2]])
+       fi
+   fi
+]) dnl CHK_FILE_VAR
+
 # macOS: When configuring for building the app itself, on macOS, we need these.
 # But not when just configuring for building the JS on Linux, for copying over
 # to the Mac.
@@ -462,8 +543,18 @@ POCOLIB_ARM64_V8A=
 POCOLIB_X86=
 POCOLIB_X86_64=
 POCODEBUG=
+
+ZSTDINCLUDE=
+ZSTDINCLUDE_ARM64_V8A=
+ZSTDINCLUDE_X86=
+ZSTDINCLUDE_X86_64=
+ZSTDLIB=
+ZSTDLIB_ARM64_V8A=
+ZSTDLIB_X86=
+ZSTDLIB_X86_64=
+
 CORE_VERSION_HASH=""
-if test \( "$enable_iosapp" = "yes" -a `uname -s` = "Darwin" \) -o \( "$enable_androidapp" = "yes" \); then
+if test \( "$enable_iosapp" = "yes" -a `uname -s` = "Darwin" \) -o \( "$enable_androidapp" = "yes" \) -o "$host_os" = "emscripten" ; then
    if test "$enable_androidapp" = "yes" ; then
       AC_MSG_CHECKING([for Android ABI to build for])
       if test -n "$with_android_abi" ; then
@@ -496,7 +587,7 @@ if test \( "$enable_iosapp" = "yes" -a `uname -s` = "Darwin" \) -o \( "$enable_a
    CORE_VERSION_HASH=`cd $LOBUILDDIR && grep buildid instdir/program/setuprc | sed -e 's/buildid=//' -e 's/............................$//'`
 
    # Sanity check, just a random object file in the LibreOffice build tree
-   if test \( "$enable_iosapp" = "yes" -a -f "$LOBUILDDIR/workdir/CxxObject/vcl/ios/iosinst.o" \) -o \( "$enable_androidapp" = "yes" -a -f "$LOBUILDDIR/workdir/LinkTarget/StaticLibrary/liblibpng.a" \); then
+   if test \( "$enable_iosapp" = "yes" -a -f "$LOBUILDDIR/workdir/CxxObject/vcl/ios/iosinst.o" \) -o \( "$enable_androidapp" = "yes" -a -f "$LOBUILDDIR/workdir/LinkTarget/StaticLibrary/liblibpng.a" \) -o \( "$host_os" = "emscripten" -a -f "${LOBUILDDIR}/workdir/LinkTarget/StaticLibrary/liblibpng.a" \); then
        AC_MSG_RESULT([$LOBUILDDIR])
    else
        AC_MSG_ERROR([This is not a LibreOffice core build directory: $LOBUILDDIR])
@@ -541,36 +632,11 @@ if test \( "$enable_iosapp" = "yes" -a `uname -s` = "Darwin" \) -o \( "$enable_a
       fi
    fi
 
-   # Sanity check
-   if test -f "$POCOINCLUDE/Poco/Poco.h"; then
-       AC_MSG_RESULT([$POCOINCLUDE])
-   else
-       AC_MSG_ERROR([This is not a Poco include directory: $POCOINCLUDE])
-   fi
-
-   if test -n "$POCOINCLUDE_ARM64_V8A" ; then
-      if test -f "$POCOINCLUDE_ARM64_V8A/Poco/Poco.h"; then
-         AC_MSG_RESULT([$POCOINCLUDE_ARM64_V8A])
-      else
-         AC_MSG_ERROR([This is not a Poco ARM64 include directory: $POCOINCLUDE_ARM64_V8A])
-      fi
-   fi
-
-   if test -n "$POCOINCLUDE_X86" ; then
-      if test -f "$POCOINCLUDE_X86/Poco/Poco.h"; then
-         AC_MSG_RESULT([$POCOINCLUDE_X86])
-      else
-         AC_MSG_ERROR([This is not a Poco x86 include directory: $POCOINCLUDE_X86])
-      fi
-   fi
-
-   if test -n "$POCOINCLUDE_X86_64" ; then
-      if test -f "$POCOINCLUDE_X86_64/Poco/Poco.h"; then
-         AC_MSG_RESULT([$POCOINCLUDE_X86_64])
-      else
-         AC_MSG_ERROR([This is not a Poco x86-64 include directory: $POCOINCLUDE_X86_64])
-      fi
-   fi
+   # Sanity checks
+   CHK_FILE_VAR(POCOINCLUDE,Poco/Poco.h,Poco include)
+   CHK_FILE_VAR(POCOINCLUDE,Poco/Poco.h,Poco include,_ARM64_V8A)
+   CHK_FILE_VAR(POCOINCLUDE,Poco/Poco.h,Poco include,_X64)
+   CHK_FILE_VAR(POCOINCLUDE,Poco/Poco.h,Poco include,_X86_64)
 
    AC_MSG_CHECKING([for Poco lib directory to build against])
    if test -z "$with_poco_libs"; then
@@ -587,41 +653,53 @@ if test \( "$enable_iosapp" = "yes" -a `uname -s` = "Darwin" \) -o \( "$enable_a
       fi
    fi
 
-   # Sanity check
-   if test -f "$POCOLIB/libPocoFoundation.a"; then
-       AC_MSG_RESULT([$POCOLIB])
-   else
-       AC_MSG_ERROR([This is not a Poco lib directory: $POCOLIB])
-   fi
-
-   if test -n "$POCOLIB_ARM64_V8A" ; then
-      if test -f "$POCOLIB_ARM64_V8A/libPocoFoundation.a"; then
-         AC_MSG_RESULT([$POCOLIB_ARM64_V8A])
-      else
-         AC_MSG_ERROR([This is not a Poco ARM64 lib directory: $POCOLIB_ARM64_V8A])
-      fi
-   fi
-
-   if test -n "$POCOLIB_X86" ; then
-      if test -f "$POCOLIB_X86/libPocoFoundation.a"; then
-         AC_MSG_RESULT([$POCOLIB_X86])
-      else
-         AC_MSG_ERROR([This is not a Poco x86 lib directory: $POCOLIB_X86])
-      fi
-   fi
-
-   if test -n "$POCOLIB_X86_64" ; then
-      if test -f "$POCOLIB_X86_64/libPocoFoundation.a"; then
-         AC_MSG_RESULT([$POCOLIB_X86_64])
-      else
-         AC_MSG_ERROR([This is not a Poco x86-64 lib directory: $POCOLIB_X86_64])
-      fi
-   fi
+   # Sanity checks
+   CHK_FILE_VAR(POCOLIB,libPocoFoundation.a,Poco lib)
+   CHK_FILE_VAR(POCOLIB,libPocoFoundation.a,Poco lib,_ARM64_V8A)
+   CHK_FILE_VAR(POCOLIB,libPocoFoundation.a,Poco lib,_X64)
+   CHK_FILE_VAR(POCOLIB,libPocoFoundation.a,Poco lib,_X86_X64)
 
    if test "$ENABLE_DEBUG" = "true" ; then
        POCODEBUG=d
    fi
+
+   AC_MSG_CHECKING([for zstd lib directory to build against])
+   if test -z "$with_zstd_libs"; then
+      AC_MSG_ERROR([You MUST use the --with-zstd-libs option when configuring the mobile app build tree.])
+   fi
+
+   ZSTDINCLUDE="$with_zstd_includes"
+   if test "$enable_androidapp" = "yes" ; then
+      if echo "$ZSTDINCLUDE" | grep -qs ':' ; then
+         ZSTDINCLUDE=`echo $with_zstd_includes | cut -d: -f1`
+         ZSTDINCLUDE_ARM64_V8A=`echo $with_zstd_includes | cut -d: -f2`
+         ZSTDINCLUDE_X86=`echo $with_zstd_includes | cut -d: -f3`
+         ZSTDINCLUDE_X86_64=`echo $with_zstd_includes | cut -d: -f4`
+      fi
+   fi
+
+   # Sanity checks
+   CHK_FILE_VAR(ZSTDINCLUDE,zstd.h,Zstd include)
+   CHK_FILE_VAR(ZSTDINCLUDE,zstd.h,Zstd include,_ARM64_V8A)
+   CHK_FILE_VAR(ZSTDINCLUDE,zstd.h,Zstd include,_X64)
+   CHK_FILE_VAR(ZSTDINCLUDE,zstd.h,Zstd include,_X86_64)
+
+   ZSTDLIB="$with_zstd_libs"
+   if test "$enable_androidapp" = "yes" ; then
+      if echo "$ZSTDLIB" | grep -qs ':' ; then
+         ZSTDLIB=`echo $with_zstd_libs | cut -d: -f1`
+         ZSTDLIB_ARM64_V8A=`echo $with_zstd_libs | cut -d: -f2`
+         ZSTDLIB_X86=`echo $with_zstd_libs | cut -d: -f3`
+         ZSTDLIB_X86_64=`echo $with_zstd_libs | cut -d: -f4`
+      fi
+   fi
+
+   CHK_FILE_VAR(ZSTDLIB,libzstd.a,Zstd lib)
+   CHK_FILE_VAR(ZSTDLIB,libzstd.a,Zstd lib,_ARM64_V8A)
+   CHK_FILE_VAR(ZSTDLIB,libzstd.a,Zstd lib,_X64)
+   CHK_FILE_VAR(ZSTDLIB,libzstd.a,Zstd lib,_X86_64)
 fi
+
 AC_SUBST(LOBUILDDIR)
 AC_SUBST(ANDROID_ABI)
 AC_SUBST(ANDROID_ABI_SPLIT)
@@ -637,6 +715,14 @@ AC_SUBST(POCOLIB_ARM64_V8A)
 AC_SUBST(POCOLIB_X86)
 AC_SUBST(POCOLIB_X86_64)
 AC_SUBST(POCODEBUG)
+AC_SUBST(ZSTDINCLUDE)
+AC_SUBST(ZSTDINCLUDE_ARM64_V8A)
+AC_SUBST(ZSTDINCLUDE_X86)
+AC_SUBST(ZSTDINCLUDE_X86_64)
+AC_SUBST(ZSTDLIB)
+AC_SUBST(ZSTDLIB_ARM64_V8A)
+AC_SUBST(ZSTDLIB_X86)
+AC_SUBST(ZSTDLIB_X86_64)
 AC_SUBST([CORE_VERSION_HASH])
 
 AC_DEFINE_UNQUOTED([CORE_VERSION_HASH],[["$CORE_VERSION_HASH"]],[LibreOffice core git hash if present])
@@ -753,7 +839,35 @@ fi
 AC_SUBST(ENABLE_GTKAPP)
 AM_CONDITIONAL([ENABLE_GTKAPP], [test "$ENABLE_GTKAPP" = "true"])
 
-MAX_CONNECTIONS=20
+dnl ENABLE_WASM_FALLBACK means we are building an otherwise normal COOL but with the "WASM fallback"
+dnl capability. Compare to ENABLE_WASM.
+
+AM_CONDITIONAL([ENABLE_WASM_FALLBACK], [test -n "$with_wasm_fallback"])
+WASM_BUILDDIR="$with_wasm_fallback"
+AC_SUBST(WASM_BUILDDIR)
+
+dnl Temporary hack: We hardcode /sample.docx in a few places, so make sure that file is there
+AS_IF(["$host_os" = "emscripten"],
+      [AC_MSG_CHECKING([that temporarily there is a sample document with a fixed name])
+      AS_IF([test -z "$with_wasm_additional_files"],
+            [AC_MSG_ERROR([You must use the --with-wasm-additional-files option for now])])
+      AS_IF([test ! -f "$with_wasm_additional_files/sample.docx"],
+            [AC_MSG_ERROR([There must be a file called sample.docx in $with_wasm_additional_files for now])])
+      AC_MSG_RESULT([yes])])
+
+AM_CONDITIONAL([ENABLE_WASM_ADDITIONAL_FILES], [test -n "$with_wasm_additional_files"])
+WASM_ADDITIONAL_FILES="$with_wasm_additional_files"
+AC_SUBST(WASM_ADDITIONAL_FILES)
+
+AS_IF([test -n "$WASM_ADDITIONAL_FILES" && test ! -d "$WASM_ADDITIONAL_FILES"],
+      [AC_MSG_ERROR([No such directory "'"$WASM_ADDITIONAL_FILES"'"])])
+
+dnl ENABLE_WASM means that we are building the WASM "app" that will run locally in the
+dnl client when necessary. ENABLE_WASM_FALLBACK and ENABLE_WASM can't both be on simultaneously.
+
+AM_CONDITIONAL([ENABLE_WASM], [test "$host_os" = "emscripten"])
+
+MAX_CONNECTIONS=9999
 AS_IF([test -n "$with_max_connections" && test "$with_max_connections" -gt "0"],
       [MAX_CONNECTIONS="$with_max_connections"])
 AS_IF([test "$MAX_CONNECTIONS" -lt "3"],
@@ -761,7 +875,7 @@ AS_IF([test "$MAX_CONNECTIONS" -lt "3"],
 AC_DEFINE_UNQUOTED([MAX_CONNECTIONS],[$MAX_CONNECTIONS],[Limit the maximum number of open connections])
 AC_SUBST(MAX_CONNECTIONS)
 
-MAX_DOCUMENTS=10
+MAX_DOCUMENTS=9999
 AS_IF([test -n "$with_max_documents" && test "$with_max_documents" -gt "0"],
       [MAX_DOCUMENTS="$with_max_documents"])
 AS_IF([test "$MAX_DOCUMENTS" -gt "$MAX_CONNECTIONS"],
@@ -771,48 +885,40 @@ AS_IF([test "$MAX_DOCUMENTS" -lt "2"],
 AC_DEFINE_UNQUOTED([MAX_DOCUMENTS],[$MAX_DOCUMENTS],[Limit the maximum number of open documents])
 AC_SUBST(MAX_DOCUMENTS)
 
-ENABLE_WELCOME_MESSAGE=false
-AS_IF([test "$enable_welcome_message" = "yes"],
-      [ENABLE_WELCOME_MESSAGE="true"])
-AC_DEFINE_UNQUOTED([ENABLE_WELCOME_MESSAGE],["$ENABLE_WELCOME_MESSAGE"],[Should the Release notes message on startup be enabled by default?])
-AC_SUBST(ENABLE_WELCOME_MESSAGE)
+FEEDBACK_URL=
 
-ENABLE_FEEDBACK=
-FEEDBACK_LOCATION=
-
-if test "$enable_feedback" = "yes"; then
-   ENABLE_FEEDBACK="true"
-
-   if test -n "$with_feedback_location"; then
-       FEEDBACK_LOCATION=$with_feedback_location
-   else
-       FEEDBACK_LOCATION="http://127.0.0.1:8000/Rate/feedback.html"
-   fi
+if test -n "$with_feedback_url"; then
+   FEEDBACK_URL=$with_feedback_url
 fi
 
-AC_DEFINE_UNQUOTED([ENABLE_FEEDBACK],["$ENABLE_FEEDBACK"],[User feedback rating])
-AC_DEFINE_UNQUOTED([FEEDBACK_LOCATION],["$FEEDBACK_LOCATION"],[User feedback URL location])
-AC_SUBST(ENABLE_FEEDBACK)
-AM_CONDITIONAL([ENABLE_FEEDBACK], [test "$ENABLE_FEEDBACK" = "true"])
+AC_DEFINE_UNQUOTED([FEEDBACK_URL],["$FEEDBACK_URL"],[User feedback URL.])
 
-ENABLE_WELCOME_MESSAGE_BUTTON=false
-AS_IF([test "$enable_welcome_message_button" = "yes"],
-      [ENABLE_WELCOME_MESSAGE_BUTTON="true"])
-AC_DEFINE_UNQUOTED([ENABLE_WELCOME_MESSAGE_BUTTON],["$ENABLE_WELCOME_MESSAGE_BUTTON"],[Should the Release notes message on startup should have a dismiss button instead of an x button to close by default?])
-AC_SUBST(ENABLE_WELCOME_MESSAGE_BUTTON)
-
-VEREIGN_URL=
-if test "$enable_vereign" = "yes"; then
-    VEREIGN_URL="https://app.vereign.com"
+INFOBAR_URL=
+if test -n "$with_infobar_url"; then
+   INFOBAR_URL=$with_infobar_url
 fi
-AC_DEFINE_UNQUOTED([VEREIGN_URL],["$VEREIGN_URL"],[Default value of per_documents.document_signing_url])
-AC_SUBST(VEREIGN_URL)
+
+AC_DEFINE_UNQUOTED([INFOBAR_URL],["$INFOBAR_URL"],[Infobar URL.])
+
+WELCOME_CONFIG_FRAGMENT=/dev/null
+ENABLE_WELCOME_MESSAGE=0
+WELCOME_URL=
+if test -n "$with_welcome_url"; then
+    WELCOME_URL=$with_welcome_url
+    ENABLE_WELCOME_MESSAGE=1
+else
+    WELCOME_CONFIG_FRAGMENT=$srcdir/coolwsd-welcome.xml
+fi
+
+AC_SUBST_FILE([WELCOME_CONFIG_FRAGMENT])
+AC_DEFINE_UNQUOTED([ENABLE_WELCOME_MESSAGE],$ENABLE_WELCOME_MESSAGE,[Should the Release notes message be shown on upgrade])
+AM_CONDITIONAL([ENABLE_WELCOME_MESSAGE], [test "$ENABLE_WELCOME_MESSAGE" = "1"])
+AC_DEFINE_UNQUOTED([WELCOME_URL],["$WELCOME_URL"],[The welcome url of the build.])
 
 # Test for build environment
 
 AS_IF([test "$ENABLE_GTKAPP" != true],
-[CXXFLAGS="$CXXFLAGS -std=c++11"
-CXXFLAGS="$CXXFLAGS -Wall -Wextra -Wshadow"])
+[CXXFLAGS="$CXXFLAGS -Wall -Wextra -Wshadow -Wundef"])
 
 CFLAGS="$CFLAGS -Wall -Wextra"
 
@@ -825,22 +931,35 @@ else
     AC_MSG_RESULT([no])
 fi
 
-AC_MSG_CHECKING([whether to turn sanitizers on])
-if test "x$with_sanitizer" != "x"; then
-    AC_MSG_RESULT([yes ($with_sanitizer)])
-    SANITIZER_FLAGS="-O1 -fno-omit-frame-pointer -fsanitize=$with_sanitizer -frtti -static-libasan"
-    CXXFLAGS="$CXXFLAGS $SANITIZER_FLAGS"
-    CFLAGS="$CFLAGS $SANITIZER_FLAGS"
+# Code Coverage.
+AC_MSG_CHECKING([whether code-coverage is enabled])
+if test "x$with_coverage" != "x"; then
+    AC_MSG_RESULT([yes ($with_coverage)])
+    CODE_COVERAGE=1
+    CXXFLAGS="$CXXFLAGS --coverage"
+    CFLAGS="$CFLAGS --coverage"
+    LDFLAGS="$LDFLAGS -Wl,--dynamic-list-data --coverage"
+    coverage_msg="Code-Coverage is enabled"
 else
     AC_MSG_RESULT([no])
+    CODE_COVERAGE=0
+    coverage_msg="Code-Coverage is disabled"
 fi
+AC_DEFINE_UNQUOTED([CODE_COVERAGE],[$CODE_COVERAGE],[Define to 1 if this is a code-coverage build.])
+AM_CONDITIONAL([ENABLE_CODE_COVERAGE], [test "$CODE_COVERAGE" = "1"])
 
+# Fuzzing.
 AC_MSG_CHECKING([whether to build fuzzers])
 if test "$enable_fuzzers" = "yes"; then
     AC_MSG_RESULT([yes])
-    LIBFUZZER_FLAGS="-fsanitize=fuzzer-no-link"
-    CXXFLAGS="$CXXFLAGS $LIBFUZZER_FLAGS"
-    CFLAGS="$CFLAGS $LIBFUZZER_FLAGS"
+    AC_MSG_CHECKING([whether sanitizers are enabled])
+    if test "x$with_sanitizer" != "x"; then
+    AC_MSG_RESULT([yes ($with_sanitizer)])
+    with_sanitizer="$with_sanitizer,fuzzer-no-link"
+    else
+    AC_MSG_RESULT([no])
+    with_sanitizer="fuzzer-no-link"
+    fi
     LIBFUZZER=1
 else
     AC_MSG_RESULT([no])
@@ -849,8 +968,39 @@ fi
 AC_DEFINE_UNQUOTED([LIBFUZZER],[$LIBFUZZER],[Define to 1 if this is a libfuzzer build.])
 AM_CONDITIONAL([ENABLE_LIBFUZZER], [test "$LIBFUZZER" = "1"])
 
-# check for C++11 support
-HAVE_CXX11=
+# Sanitizers.
+CXXFLAGS_CXXSTD=
+AC_MSG_CHECKING([whether to turn sanitizers on])
+if test "x$with_sanitizer" != "x"; then
+    AC_MSG_RESULT([yes ($with_sanitizer)])
+    LIBSAN=-static-libasan
+    for flag in -static-libasan -static-libsan ; do
+        AC_MSG_CHECKING([whether to use $flag])
+        save_CXXFLAGS=$CXXFLAGS
+        CXXFLAGS="$CXXFLAGS -O1 -fno-omit-frame-pointer -fsanitize=$with_sanitizer -frtti $flag -Werror"
+        AC_LANG_PUSH([C++])
+        AC_COMPILE_IFELSE([AC_LANG_PROGRAM([[
+            ]])],[CXXFLAGS_CXXSTD=$flag])
+        AC_LANG_POP([C++])
+        CXXFLAGS=$save_CXXFLAGS
+        if test -n "$CXXFLAGS_CXXSTD"; then
+            LIBSAN=$flag
+            AC_MSG_RESULT([yes ($LIBSAN)])
+            break
+        else
+            AC_MSG_RESULT([no])
+        fi
+    done
+    SANITIZER_FLAGS="-O1 -fno-omit-frame-pointer -fsanitize=$with_sanitizer -frtti $LIBSAN"
+    CXXFLAGS="$CXXFLAGS $SANITIZER_FLAGS"
+    CFLAGS="$CFLAGS $SANITIZER_FLAGS"
+else
+    AC_MSG_RESULT([no])
+fi
+
+# Check for C++17 support.
+HAVE_CXXSTD=
+CXXFLAGS_CXXSTD=
 AC_MSG_CHECKING([whether $CXX supports C++17])
 for flag in -std=c++17 -std=c++1z ; do
     save_CXXFLAGS=$CXXFLAGS
@@ -863,22 +1013,42 @@ for flag in -std=c++17 -std=c++1z ; do
         void f(std::vector<int> & v, std::function<bool(int, int)> fn) {
             std::sort(v.begin(), v.end(), fn);
         }
-        ]])],[CXXFLAGS_CXX11=$flag])
+        ]])],[CXXFLAGS_CXXSTD=$flag])
     AC_LANG_POP([C++])
     CXXFLAGS=$save_CXXFLAGS
-    if test -n "$CXXFLAGS_CXX11"; then
-        HAVE_CXX11=TRUE
+    if test -n "$CXXFLAGS_CXXSTD"; then
+        HAVE_CXXSTD=TRUE
         break
     fi
 done
-if test "$HAVE_CXX11" = TRUE; then
-    AC_MSG_RESULT([yes ($CXXFLAGS_CXX11)])
+if test "$HAVE_CXXSTD" = TRUE; then
+    AC_MSG_RESULT([yes ($CXXFLAGS_CXXSTD)])
 else
-    AC_MSG_ERROR(no)
+    AC_MSG_RESULT([no])
+    AC_MSG_ERROR(Compiler doesn't support C++17)
 fi
 
+# Check if we have clang, rather than gcc, which
+# doesn't like -pthread on the linker command-line.
+HAVE_CLANG=false
+AC_MSG_CHECKING([whether the compiler is clang])
+AC_COMPILE_IFELSE([AC_LANG_SOURCE([
+    #if !defined(__clang__)
+    #error not clang
+    #endif
+])],
+                    [AC_MSG_RESULT([yes])
+                    AC_DEFINE([HAVE_CLANG],true,[whether the C++ compiler is clang])],
+                    [AC_MSG_RESULT([no])
+                    AC_DEFINE([HAVE_CLANG],false,[whether the C++ compiler is clang])])
+AM_CONDITIONAL([HAVE_CLANG], [test "$HAVE_CLANG" = "true"])
+AC_SUBST(HAVE_CLANG)
+
+AS_IF([test "$ENABLE_GTKAPP" != true],
+[CXXFLAGS="$CXXFLAGS $CXXFLAGS_CXXSTD"])
+
 STD_FILESYSTEM=
-if test "$CXXFLAGS_CXX11" = "-std=c++17" -a "$ENABLE_ANDROIDAPP" != "true" ; then
+if test "$HAVE_CXXSTD" = TRUE -a "$ENABLE_ANDROIDAPP" != "true" ; then
     save_CXXFLAGS=$CXXFLAGS
     CXXFLAGS="$CXXFLAGS -Werror"
     save_LIBS=$LIBS
@@ -918,6 +1088,26 @@ if test -n "$STD_FILESYSTEM" ; then
 else
     AC_DEFINE([HAVE_STD_FILESYSTEM],0,[Whether the used C++ has support for std::filesystem.])
     AC_DEFINE([HAVE_STD_FILESYSTEM_EXPERIMENTAL],0,[Whether the std::filesystem is in the experimental header.])
+fi
+
+SYS_RANDOM=
+AC_LANG_PUSH([C++])
+AC_LINK_IFELSE(
+    [AC_LANG_SOURCE([[
+    #include <sys/random.h>
+    int main()
+    {
+        char buffer[8];
+        getrandom(buffer, sizeof(buffer), GRND_NONBLOCK);
+    }
+    ]])],
+    [SYS_RANDOM=TRUE])
+AC_LANG_POP([C++])
+
+if test "$SYS_RANDOM" == "TRUE" ; then
+    AC_DEFINE([HAVE_SYS_RANDOM_H],1,[Define to 1 if you have the <sys/random.h> header file.])
+else
+    AC_DEFINE([HAVE_SYS_RANDOM_H],0,[Define to 1 if you have the <sys/random.h> header file.])
 fi
 
 AS_IF([test -n "$LOKIT_PATH"],
@@ -965,6 +1155,12 @@ AS_IF([test -n "$with_poco_includes"],
 AS_IF([test -n "$with_poco_libs"],
       [LDFLAGS="$LDFLAGS -L${with_poco_libs}"])
 
+AS_IF([test -n "$with_zstd_includes"],
+      [CPPFLAGS="$CPPFLAGS -isystem ${with_zstd_includes}"])
+
+AS_IF([test -n "$with_zstd_libs"],
+      [LDFLAGS="$LDFLAGS -L${with_zstd_libs}"])
+
 AS_IF([test -n "$LIBPNG_INCLUDES"],
       [CPPFLAGS="$CPPFLAGS -isystem ${LIBPNG_INCLUDES}"])
 
@@ -977,11 +1173,11 @@ AS_IF([test -n "$with_cppunit_includes"],
 AS_IF([test -n "$with_cppunit_libs"],
       [LDFLAGS="$LDFLAGS -L${with_cppunit_libs}"])
 
-AS_IF([test `uname -s` = Linux -o `uname -s` = FreeBSD],
+AS_IF([test \( `uname -s` = Linux -o `uname -s` = FreeBSD \) -a "$host_os" != "emscripten"],
       [AS_IF([test -n "$with_poco_libs" -a -f "$with_poco_libs/libPocoFoundation.so"],
              [LDFLAGS="$LDFLAGS -Wl,-rpath,${with_poco_libs}"])])
 
-AS_IF([test `uname -s` = Linux -o `uname -s` = FreeBSD],
+AS_IF([test \( `uname -s` = Linux -o `uname -s` = FreeBSD \) -a "$host_os" != "emscripten"],
       [AS_IF([test -n "$with_cppunit_libs"],
              [LDFLAGS="$LDFLAGS -Wl,-rpath,${with_cppunit_libs}"])])
 
@@ -991,17 +1187,17 @@ AS_IF([test `uname -s` != Darwin],
                       [],
                       [AC_MSG_ERROR([dlopen not found])])])
 
-AS_IF([test "$ENABLE_IOSAPP" != "true" -a "$ENABLE_ANDROIDAPP" != "true"],
-      [AC_SEARCH_LIBS([png_create_write_struct],
-                      [png],
-                      [],
-                      [AC_MSG_ERROR([libpng not available?])])
+AS_IF([test "$ENABLE_IOSAPP" != "true" -a "$ENABLE_ANDROIDAPP" != "true" -a "$host_os" != "emscripten"],
+      [PKG_CHECK_MODULES([PNG], [libpng])
+dnl    deflated HTTP / web-page serving
        PKG_CHECK_MODULES([ZLIB], [zlib])
+dnl    tile compression
+       PKG_CHECK_MODULES([ZSTD], [libzstd >= 1.4.0])
 
        PKG_CHECK_MODULES([CPPUNIT], [cppunit])
        ])
 
-AS_IF([test `uname -s` = Linux -a "$ENABLE_ANDROIDAPP" != "true"],
+AS_IF([test `uname -s` = Linux -a "$ENABLE_ANDROIDAPP" != "true" -a "$host_os" != "emscripten"],
       [AC_SEARCH_LIBS([cap_get_proc],
                       [cap],
                       [],
@@ -1016,7 +1212,7 @@ mobile_app=
 ENABLE_MOBILEAPP=
 MOBILEAPP=0
 AC_MSG_CHECKING([Is this a mobile app])
-if test "$enable_gtkapp" = "yes" -o "$enable_iosapp" = "yes" -o "$enable_androidapp" = "yes"; then
+if test "$enable_gtkapp" = "yes" -o "$enable_iosapp" = "yes" -o "$enable_androidapp" = "yes" -o "$host_os" = "emscripten" ; then
      AC_MSG_RESULT([Yes])
      mobile_app=true;
      MOBILEAPP=1
@@ -1027,6 +1223,11 @@ fi
 AC_DEFINE_UNQUOTED([MOBILEAPP],[$MOBILEAPP],[Define to 1 if this is a mobileapp (eg. Android) build.])
 AC_SUBST(ENABLE_MOBILEAPP)
 AM_CONDITIONAL([ENABLE_MOBILEAPP], [test "$ENABLE_MOBILEAPP" = "true"])
+
+if test "$host_os" = "emscripten" ; then
+    ENABLE_EMSCRIPTENAPP=true
+fi
+AC_SUBST(ENABLE_EMSCRIPTENAPP)
 
 ENABLE_SSL=true
 if test "$enable_ssl" != "no" -a "$mobile_app" != "true"; then
@@ -1045,7 +1246,7 @@ fi
 AM_CONDITIONAL([ENABLE_SSL], [$ENABLE_SSL])
 AC_SUBST(ENABLE_SSL)
 
-AS_IF([test "$ENABLE_ANDROIDAPP" != "true"],
+AS_IF([test "$ENABLE_ANDROIDAPP" != "true" -a "$host_os" != "emscripten"],
       [AC_CHECK_HEADERS([security/pam_appl.h],
                         [],
                         [AC_MSG_ERROR([header security/pam_appl.h not found, install PAM development package])])
@@ -1067,12 +1268,14 @@ else
 fi
 AC_SUBST(ENABLE_SUPPORT_KEY)
 
-LIBS="$LIBS -lPocoNetSSL${POCO_DEBUG_SUFFIX} -lPocoNet${POCO_DEBUG_SUFFIX} -lPocoUtil${POCO_DEBUG_SUFFIX} -lPocoJSON${POCO_DEBUG_SUFFIX} -lPocoXML${POCO_DEBUG_SUFFIX} -lPocoFoundation${POCO_DEBUG_SUFFIX} -lPocoCrypto${POCO_DEBUG_SUFFIX}"
+if test "$host_os" != "emscripten"; then
+    LIBS="$LIBS -lPocoNetSSL${POCO_DEBUG_SUFFIX} -lPocoNet${POCO_DEBUG_SUFFIX} -lPocoUtil${POCO_DEBUG_SUFFIX} -lPocoJSON${POCO_DEBUG_SUFFIX} -lPocoXML${POCO_DEBUG_SUFFIX} -lPocoFoundation${POCO_DEBUG_SUFFIX} -lPocoCrypto${POCO_DEBUG_SUFFIX}"
+fi
 
 AS_IF([test "$ENABLE_SSL" = "true"],
       [LIBS="$LIBS -lssl -lcrypto"])
 
-AS_IF([test "$ENABLE_IOSAPP" != "true" -a "$ENABLE_ANDROIDAPP" != "true"],
+AS_IF([test "$ENABLE_IOSAPP" != "true" -a "$ENABLE_ANDROIDAPP" != "true" -a "$host_os" != "emscripten"],
       [AC_CHECK_HEADERS([LibreOfficeKit/LibreOfficeKit.h],
                         [],
                         [AC_MSG_ERROR([header LibreOfficeKit/LibreOfficeKit.h not found, perhaps you want to use --with-lokit-path])])
@@ -1089,6 +1292,7 @@ AS_IF([test "$ENABLE_IOSAPP" != "true" -a "$ENABLE_ANDROIDAPP" != "true"],
            AC_DEFINE([DISABLE_SECCOMP],1,[Whether to disable SECCOMP])
        fi
 
+       PKG_CHECK_MODULES([OPENSSL], [openssl])
        AC_MSG_CHECKING([Whether OpenSSL has PKCS5_PBKDF2_HMAC()])
        AC_COMPILE_IFELSE([AC_LANG_SOURCE([
        #include <openssl/opensslv.h>
@@ -1190,10 +1394,10 @@ if test -n "$with_user_id"; then
 fi
 AC_DEFINE_UNQUOTED([COOL_USER_ID],["$COOL_USER_ID"],[The user-name which is allowed to run coolwsd and its tools])
 
-AM_CONDITIONAL([ENABLE_SETCAP], [test "$enable_setcap" != "no" -a `uname -s` = "Linux"])
+AM_CONDITIONAL([ENABLE_SETCAP], [test "$enable_setcap" != "no" -a `uname -s` = "Linux" -a "$enable_fuzzers" != "yes" -a "$host_os" != "emscripten"])
 
 ENABLE_SETCAP=
-if test "$enable_setcap" != "no" -a `uname -s` = "Linux"; then
+if test "$enable_setcap" != "no" -a `uname -s` = "Linux" -a "$enable_fuzzers" != "yes" -a "$host_os" != "emscripten"; then
     ENABLE_SETCAP=true
     setcap_msg="setcap enabled"
 else
@@ -1205,7 +1409,6 @@ AC_SUBST(ENABLE_SETCAP)
 AC_CONFIG_LINKS([discovery.xml:discovery.xml])
 AC_CONFIG_LINKS([browser/package.json:browser/package.json])
 AC_CONFIG_LINKS([cypress_test/package.json:cypress_test/package.json])
-AC_CONFIG_LINKS([cypress_test/cypress.json:cypress_test/cypress.json])
 AC_CONFIG_COMMANDS_PRE([
 if test "$srcdir" != '.'; then
    dst_dirs="cypress_test/plugins cypress_test/eslint_plugin browser/archived-packages"
@@ -1287,6 +1490,15 @@ else
 fi
 AM_CONDITIONAL([ENABLE_CYPRESS], [$ENABLE_CYPRESS])
 
+ENABLE_TESTS=true
+if test "$enable_tests" = "no"; then
+    ENABLE_TESTS=false
+else
+    ENABLE_TESTS=true
+fi
+AM_CONDITIONAL([ENABLE_TESTS], [$ENABLE_TESTS])
+
+
 AC_MSG_CHECKING([for URL of online help])
 if test -n "$with_help_url" -a "$with_help_url" != "no"; then
     HELP_URL="$with_help_url"
@@ -1299,16 +1511,7 @@ else
     AC_MSG_RESULT([default: $HELP_URL])
 fi
 AC_SUBST(HELP_URL)
-
-AC_MSG_CHECKING([for icon theme from core (tunneled sidebar, tunneled dialogs)])
-if test -n "$with_core_icon_theme" -a "$with_core_icon_theme" != "no"; then
-    ICON_THEME="$with_core_icon_theme"
-    AC_MSG_RESULT([custom: $ICON_THEME])
-else
-    ICON_THEME="colibre"
-    AC_MSG_RESULT([default: $ICON_THEME])
-fi
-AC_SUBST(ICON_THEME)
+AC_DEFINE_UNQUOTED([HELP_URL],["$HELP_URL"],[Default value of help root URL])
 
 AC_MSG_CHECKING([for allowed languages for Writing Aids])
 if test -n "$with_dictionaries" -a "$with_dictionaries" != "no"; then
@@ -1317,92 +1520,124 @@ else
     ALLOWED_LANGUAGES="de_DE en_GB en_US es_ES fr_FR it nl pt_BR pt_PT ru"
 fi
 
-AS_IF([test "$enable_freemium" = "yes"],
-      [AC_DEFINE([ENABLE_FREEMIUM],1,[Whether to compile and enable freemium mode])])
+AS_IF([test "$enable_feature_lock" = "yes"],
+      [AC_DEFINE([ENABLE_FEATURE_LOCK],1,[Whether to compile and enable feature locking])],
+      [AC_DEFINE([ENABLE_FEATURE_LOCK],0,[Whether to compile and enable feature locking])])
 
-DISABLED_COMMANDS=
-if test "$enable_freemium" = "yes"; then
-    DISABLED_COMMANDS=".uno:DataDataPilotRun .uno:RecalcPivotTable \
+LOCKED_COMMANDS=
+if test "$enable_feature_lock" = "yes"; then
+    LOCKED_COMMANDS=".uno:DataDataPilotRun .uno:RecalcPivotTable \
 .uno:DeletePivotTable .uno:SamplingDialog .uno:DescriptiveStatisticsDialog \
 .uno:AnalysisOfVarianceDialog .uno:CorrelationDialog .uno:CovarianceDialog \
 .uno:ExponentialSmoothingDialog .uno:MovingAverageDialog .uno:RegressionDialog \
 .uno:TTestDialog .uno:FTestDialog .uno:ZTestDialog .uno:ChiSquareTestDialog \
 .uno:FourierAnalysisDialog .uno:Validation .uno:DataFilterSpecialFilter \
 .uno:TrackChanges .uno:AcceptTrackedChanges .uno:InsertReferenceField \
-.uno:Watermark .uno:InsertIndexesEntry .uno:InsertAuthoritiesEntry \
-.uno:InsertMultiIndex .uno:SlideMasterPage downloadas-epub downloadas-rtf masterslidebutton"
+.uno:Watermark .uno:InsertIndexesEntry \
+.uno:InsertMultiIndex .uno:SlideMasterPage exportepub downloadas-rtf masterslidebutton"
 fi
-AC_DEFINE_UNQUOTED([DISABLED_COMMANDS],["$DISABLED_COMMANDS"],[Default value of freemium.disabled_commands])
-AC_SUBST(DISABLED_COMMANDS)
+AC_DEFINE_UNQUOTED([LOCKED_COMMANDS],["$LOCKED_COMMANDS"],[Default value of feature_lock.locked_commands])
+AC_SUBST(LOCKED_COMMANDS)
 
-PURCHASE_TITLE=
-if test "$enable_freemium" = "yes"; then
-    PURCHASE_TITLE="Unlock your potential"
+UNLOCK_TITLE=
+if test "$enable_feature_lock" = "yes"; then
+    UNLOCK_TITLE="Unlock your potential"
 fi
-AC_DEFINE_UNQUOTED([PURCHASE_TITLE],["$PURCHASE_TITLE"],[Default value of freemium.purchase_title])
-AC_SUBST(PURCHASE_TITLE)
+AC_DEFINE_UNQUOTED([UNLOCK_TITLE],["$UNLOCK_TITLE"],[Default value of feature_lock.unlock_title])
+AC_SUBST(UNLOCK_TITLE)
 
-PURCHASE_LINK=
-if test "$enable_freemium" = "yes"; then
-    PURCHASE_LINK="https://www.collaboraoffice.com/subscriptions/"
+UNLOCK_LINK=
+if test "$enable_feature_lock" = "yes"; then
+    UNLOCK_LINK="https://www.collaboraoffice.com/subscriptions/"
 fi
-AC_DEFINE_UNQUOTED([PURCHASE_LINK],["$PURCHASE_LINK"],[Default value of freemium.purchase_link])
-AC_SUBST(PURCHASE_LINK)
+AC_DEFINE_UNQUOTED([UNLOCK_LINK],["$UNLOCK_LINK"],[Default value of feature_lock.unlock_link])
+AC_SUBST(UNLOCK_LINK)
 
-PURCHASE_DESCRIPTION=
-if test "$enable_freemium" = "yes"; then
-    PURCHASE_DESCRIPTION="Head over to the subscription page and discover all the features:"
+UNLOCK_DESCRIPTION=
+if test "$enable_feature_lock" = "yes"; then
+    UNLOCK_DESCRIPTION="Head over to the details page and discover all the features:"
 fi
-AC_DEFINE_UNQUOTED([PURCHASE_DESCRIPTION],["$PURCHASE_DESCRIPTION"],[Default value of freemium.purchase_description])
-AC_SUBST(PURCHASE_DESCRIPTION)
+AC_DEFINE_UNQUOTED([UNLOCK_DESCRIPTION],["$UNLOCK_DESCRIPTION"],[Default value of feature_lock.unlock_description])
+AC_SUBST(UNLOCK_DESCRIPTION)
 
-WRITER_SUBSCRIPTION_HIGHLIGHTS=
-if test "$enable_freemium" = "yes"; then
-    WRITER_SUBSCRIPTION_HIGHLIGHTS="Review and write with ease"
+WRITER_UNLOCK_HIGHLIGHTS=
+if test "$enable_feature_lock" = "yes"; then
+    WRITER_UNLOCK_HIGHLIGHTS="Review and write with ease"
 fi
-AC_DEFINE_UNQUOTED([WRITER_SUBSCRIPTION_HIGHLIGHTS],["$WRITER_SUBSCRIPTION_HIGHLIGHTS"],[Default value of freemium.writer_subscription_highlights])
-AC_SUBST(WRITER_SUBSCRIPTION_HIGHLIGHTS)
+AC_DEFINE_UNQUOTED([WRITER_UNLOCK_HIGHLIGHTS],["$WRITER_UNLOCK_HIGHLIGHTS"],[Default value of feature_lock.writer_unlock_highlights])
+AC_SUBST(WRITER_UNLOCK_HIGHLIGHTS)
 
-CALC_SUBSCRIPTION_HIGHLIGHTS=
-if test "$enable_freemium" = "yes"; then
-    CALC_SUBSCRIPTION_HIGHLIGHTS="Get a better picture of your data"
+CALC_UNLOCK_HIGHLIGHTS=
+if test "$enable_feature_lock" = "yes"; then
+    CALC_UNLOCK_HIGHLIGHTS="Get a better picture of your data"
 fi
-AC_DEFINE_UNQUOTED([CALC_SUBSCRIPTION_HIGHLIGHTS],["$CALC_SUBSCRIPTION_HIGHLIGHTS"],[Default value of freemium.calc_subscription_highlights])
-AC_SUBST(CALC_SUBSCRIPTION_HIGHLIGHTS)
+AC_DEFINE_UNQUOTED([CALC_UNLOCK_HIGHLIGHTS],["$CALC_UNLOCK_HIGHLIGHTS"],[Default value of feature_lock.calc_unlock_highlights])
+AC_SUBST(CALC_UNLOCK_HIGHLIGHTS)
 
-IMPRESS_SUBSCRIPTION_HIGHLIGHTS=
-if test "$enable_freemium" = "yes"; then
-    IMPRESS_SUBSCRIPTION_HIGHLIGHTS="Nail your next presentation"
+IMPRESS_UNLOCK_HIGHLIGHTS=
+if test "$enable_feature_lock" = "yes"; then
+    IMPRESS_UNLOCK_HIGHLIGHTS="Nail your next presentation"
 fi
-AC_DEFINE_UNQUOTED([IMPRESS_SUBSCRIPTION_HIGHLIGHTS],["$IMPRESS_SUBSCRIPTION_HIGHLIGHTS"],[Default value of freemium.impress_subscription_highlights])
-AC_SUBST(IMPRESS_SUBSCRIPTION_HIGHLIGHTS)
+AC_DEFINE_UNQUOTED([IMPRESS_UNLOCK_HIGHLIGHTS],["$IMPRESS_UNLOCK_HIGHLIGHTS"],[Default value of feature_lock.impress_unlock_highlights])
+AC_SUBST(IMPRESS_UNLOCK_HIGHLIGHTS)
 
-DRAW_SUBSCRIPTION_HIGHLIGHTS=
-if test "$enable_freemium" = "yes"; then
-    DRAW_SUBSCRIPTION_HIGHLIGHTS="Draw and get organized"
+DRAW_UNLOCK_HIGHLIGHTS=
+if test "$enable_feature_lock" = "yes"; then
+    DRAW_UNLOCK_HIGHLIGHTS="Draw and get organized"
 fi
-AC_DEFINE_UNQUOTED([DRAW_SUBSCRIPTION_HIGHLIGHTS],["$DRAW_SUBSCRIPTION_HIGHLIGHTS"],[Default value of freemium.draw_subscription_highlights])
-AC_SUBST(DRAW_SUBSCRIPTION_HIGHLIGHTS)
+AC_DEFINE_UNQUOTED([DRAW_UNLOCK_HIGHLIGHTS],["$DRAW_UNLOCK_HIGHLIGHTS"],[Default value of feature_lock.draw_unlock_highlights])
+AC_SUBST(DRAW_UNLOCK_HIGHLIGHTS)
 
-FREEMIUM_CONFIGURATION=
-if test "$enable_freemium" = "yes"; then
-    FREEMIUM_CONFIGURATION="<freemium desc=\"Freemium settings\">
-        <disabled_commands desc=\"List of commands to disable the functionality.\" default=\"$DISABLED_COMMANDS\">$DISABLED_COMMANDS</disabled_commands>
-        <purchase_title desc=\"Title to show user when prompting the subscription popup\" default=\"$PURCHASE_TITLE\">$PURCHASE_TITLE</purchase_title>
-        <purchase_link desc=\"Link from where user can buy the subscription\" default=\"$PURCHASE_LINK\">$PURCHASE_LINK</purchase_link>
-        <purchase_description desc=\"Description about the subscription\" default=\"$PURCHASE_DESCRIPTION\">$PURCHASE_DESCRIPTION</purchase_description>
-        <writer_subscription_highlights desc=\"Short note about Writer benefits of subscription\" default=\"$WRITER_SUBSCRIPTION_HIGHLIGHTS\">$WRITER_SUBSCRIPTION_HIGHLIGHTS</writer_subscription_highlights>
-        <calc_subscription_highlights desc=\"Short note about Calc benefits of subscription\" default=\"$CALC_SUBSCRIPTION_HIGHLIGHTS\">$CALC_SUBSCRIPTION_HIGHLIGHTS</calc_subscription_highlights>
-        <impress_subscription_highlights desc=\"Short note about Impress benefits of subscription\" default=\"$IMPRESS_SUBSCRIPTION_HIGHLIGHTS\">$IMPRESS_SUBSCRIPTION_HIGHLIGHTS</impress_subscription_highlights>
-        <draw_subscription_highlights desc=\"Short note about Draw benefits of subscription\" default=\"$DRAW_SUBSCRIPTION_HIGHLIGHTS\">$DRAW_SUBSCRIPTION_HIGHLIGHTS</draw_subscription_highlights>
-    </freemium>"
+LOCK_CONFIGURATION=
+if test "$enable_feature_lock" = "yes"; then
+    LOCK_CONFIGURATION="<feature_lock desc=\"Feature lock settings\">
+        <locked_hosts desc=\"Allow/deny feature-locked hosts. When allowed, the below host specification overrides the CheckFileInfo response.\" allow=\"false\">
+            <fallback desc=\"What to do if the given host is not covered by any rule in locked_hosts\" read_only=\"true\" disabled_commands=\"true\"/>
+            <host desc=\"Regex pattern of hostname to set as full-featured or locked.\" read_only=\"false\" disabled_commands=\"false\">localhost</host>
+            <host desc=\"Regex pattern of hostname to set as full-featured or locked.\" read_only=\"false\" disabled_commands=\"false\">10\\.[0-9]{1,3}\\.[0-9]{1,3}\\.[0-9]{1,3}</host>
+            <host desc=\"Regex pattern of hostname to set as full-featured or locked.\" read_only=\"false\" disabled_commands=\"false\">172\\.3[01]\\.[0-9]{1,3}\\.[0-9]{1,3}</host>
+        </locked_hosts>
+        <is_lock_readonly desc=\"Give locked users read only access to the documents. If this is set to true it will make all the locked_host readonly who has disabled_commands set to true\" type=\"bool\" default=\"false\">false</is_lock_readonly>
+        <locked_commands desc=\"List of commands to lock the functionality\" default=\"$LOCKED_COMMANDS\">$LOCKED_COMMANDS</locked_commands>
+        <unlock_title desc=\"Title to show user when prompting the unlock popup\" default=\"$UNLOCK_TITLE\">$UNLOCK_TITLE</unlock_title>
+        <unlock_link desc=\"Link from where user can unlock the features\" default=\"$UNLOCK_LINK\">$UNLOCK_LINK</unlock_link>
+        <unlock_description desc=\"Description about unlocking features\" default=\"$UNLOCK_DESCRIPTION\">$UNLOCK_DESCRIPTION</unlock_description>
+        <unlock_image desc=\"URL of image shown when unlock dialog get displayed\" default=\"\"></unlock_image><!-- URL structure - https://<hostname>/static/<image_endpoint> -->
+        <writer_unlock_highlights desc=\"Short note about Writer benefits of unlocking\" default=\"$WRITER_UNLOCK_HIGHLIGHTS\">$WRITER_UNLOCK_HIGHLIGHTS</writer_unlock_highlights>
+        <calc_unlock_highlights desc=\"Short note about Calc benefits of unlocking\" default=\"$CALC_UNLOCK_HIGHLIGHTS\">$CALC_UNLOCK_HIGHLIGHTS</calc_unlock_highlights>
+        <impress_unlock_highlights desc=\"Short note about Impress benefits of unlocking\" default=\"$IMPRESS_UNLOCK_HIGHLIGHTS\">$IMPRESS_UNLOCK_HIGHLIGHTS</impress_unlock_highlights>
+        <draw_unlock_highlights desc=\"Short note about Draw benefits of unlocking\" default=\"$DRAW_UNLOCK_HIGHLIGHTS\">$DRAW_UNLOCK_HIGHLIGHTS</draw_unlock_highlights>
+
+        <translations>
+            <!-- Example to add german language for feature lock dialog -->
+            <!--
+            <language name=\"de\">
+                <unlock_title desc=\"Title to show user when prompting the unlock popup\" default=\"Entfesseln Sie Ihr Potenzial\">Entfesseln Sie Ihr Potenzial</unlock_title>
+                <unlock_description desc=\"Description about unlocking features\" default=\"Gehen Sie zur Detailseite und entdecken Sie alle Funktionen:\">Gehen Sie zur Detailseite und entdecken Sie alle Funktionen:</unlock_description>
+                <writer_unlock_highlights desc=\"Short note about Writer benefits of unlocking\" default=\"Überprüfen und schreiben Sie mit Leichtigkeit\">Überprüfen und schreiben Sie mit Leichtigkeit</writer_unlock_highlights>
+                <calc_unlock_highlights desc=\"Short note about Calc benefits of unlocking\" default=\"Machen Sie sich ein besseres Bild von Ihren Daten\">Machen Sie sich ein besseres Bild von Ihren Daten</calc_unlock_highlights>
+                <impress_unlock_highlights desc=\"Short note about Impress benefits of unlocking\" default=\"Bringen Sie Ihre nächste Präsentation auf den Punkt\">Bringen Sie Ihre nächste Präsentation auf den Punkt</impress_unlock_highlights>
+                <draw_unlock_highlights desc=\"Short note about Draw benefits of unlocking\" default=\"Zeichne und organisiere dich\">Zeichne und organisiere dich</draw_unlock_highlights>
+            </language>
+            -->
+        </translations>
+    </feature_lock>"
 fi
 
-AC_SUBST(FREEMIUM_CONFIGURATION)
-AM_SUBST_NOTMAKE(FREEMIUM_CONFIGURATION)
+AC_SUBST(LOCK_CONFIGURATION)
+AM_SUBST_NOTMAKE(LOCK_CONFIGURATION)
+
+UNLOCK_LINK_PER_HOST=
+if test "$enable_feature_lock" = "yes"; then
+    UNLOCK_LINK_PER_HOST="<unlock_link desc=\"Link from where user can unlock the features, which will get mapped with alias_group. According to hostname coolwsd will set the unlock link for feature unlock dialog. If not specified it will fallback to feature_lock.unlock_link entry\" default=\"\"></unlock_link>"
+fi
+
+AC_SUBST(UNLOCK_LINK_PER_HOST)
+AM_SUBST_NOTMAKE(UNLOCK_LINK_PER_HOST)
 
 AS_IF([test "$enable_feature_restriction" = "yes"],
-    [AC_DEFINE([ENABLE_FEATURE_RESTRICTION],1,[Whether to compile and enable feature restrictions])])
+    [AC_DEFINE([ENABLE_FEATURE_RESTRICTION],1,[Whether to compile and enable feature restrictions])],
+    [AC_DEFINE([ENABLE_FEATURE_RESTRICTION],0,[Whether to compile and enable feature restrictions])])
 
 FEATURE_RESTRICTION_CONFIGURATION=
 if test "$enable_feature_restriction" = "yes"; then
@@ -1418,6 +1653,7 @@ AC_SUBST(ALLOWED_LANGUAGES)
 AC_CONFIG_FILES([Makefile
                  cypress_test/Makefile
                  gtk/Makefile
+                 wasm/Makefile
                  test/Makefile
                  browser/Makefile
                  browser/npm-shrinkwrap.json
@@ -1442,6 +1678,7 @@ if test "$enable_androidapp" = "yes"; then
 fi
 
 AC_CONFIG_FILES([test/run_unit.sh],[chmod +x test/run_unit.sh])
+AC_CONFIG_FILES([test/run_unit_standalone.sh],[chmod +x test/run_unit_standalone.sh])
 AC_CONFIG_FILES([jsstress],[chmod +x jsstress])
 
 AC_OUTPUT
@@ -1479,6 +1716,20 @@ AS_IF([test "$ENABLE_IOSAPP" = "true"],
           fi
           ln -s "$POCOLIB" pocolib-symlink
 
+          if test -L zstdinclude-symlink; then
+             rm -f zstdinclude-symlink
+          elif test -f zstdinclude-symlink; then
+             AC_MSG_ERROR([zstdinclude-symlink exists and is not a symbolic link])
+          fi
+          ln -s "$ZSTDINCLUDE" zstdinclude-symlink
+
+          if test -L zstdlib-symlink; then
+             rm -f zstdlib-symlink
+          elif test -f zstdlib-symlink; then
+             AC_MSG_ERROR([zstdlib-symlink exists and is not a symbolic link])
+          fi
+          ln -s "$ZSTDLIB" zstdlib-symlink
+
           eval `grep 'export ICU_MAJOR=' "$LOBUILDDIR/config_host.mk"`
           if test -L ICU.dat; then
              rm -f ICU.dat
@@ -1507,12 +1758,15 @@ Configuration:
     LO integration tests      ${lo_msg}
     SSL support               $ssl_msg
     Debug & low security      $debug_msg
+    Experimental features     $experimental_msg
     Test assertion logging    $log_asserts_msg
     Uglification and bundling $bundle_msg
     Anonymization             $anonym_msg
     Set capabilities          $setcap_msg
     Browsersync               $browsersync_msg
     cypress                   $cypress_msg
+    C++ compiler flags        $CXXFLAGS
+    Code-Coverage             $coverage_msg
 
     \$ make # to compile"
 if test -n "$with_lo_path"; then

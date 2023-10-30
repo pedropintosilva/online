@@ -23,7 +23,7 @@ L.Control.SearchBar = L.Control.extend({
 					html: '<div id="search-input-group" style="padding: 3px 10px;" class="cool-font">' +
 						'    <label for="search-input">Search:</label>' +
 						'    <input size="10" id="search-input"' +
-						'style="padding: 2px; border-radius: 2px; border: 1px solid silver"/>' +
+						'style="padding: 2px; border-radius: var(--border-radius); border: 1px solid var(--color-border)"/>' +
 						'</div>'
 				},
 				{type: 'button', id: 'searchprev', img: 'prev', hint: _UNO('.uno:UpSearch'), disabled: true},
@@ -80,10 +80,10 @@ L.Control.SearchBar = L.Control.extend({
 		}
 		else if (id === 'hidesearchbar') {
 			$('#toolbar-search').hide();
-			if (this.map.isPermissionEdit())
+			if (this.map.isEditMode())
 				$('#toolbar-down').show();
 			/** show edit button if only we are able to edit but in readonly mode */
-			if (window.docPermission  === 'edit' && this.map.isPermissionReadOnly())
+			if (this.map.canUserWrite() && this.map.isReadOnlyMode())
 				$('#mobile-edit-button').show();
 		}
 	},

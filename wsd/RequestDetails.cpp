@@ -9,7 +9,9 @@
 
 #include "COOLWSD.hpp"
 #include "RequestDetails.hpp"
+#include "Util.hpp"
 #include "common/Log.hpp"
+#include "HostUtil.hpp"
 
 #include <Poco/URI.h>
 #include "Exceptions.hpp"
@@ -22,50 +24,19 @@ std::map<std::string, std::string> getParams(const std::string& uri)
     std::map<std::string, std::string> result;
     for (const auto& param : Poco::URI(uri).getQueryParameters())
     {
-        std::string key;
-        Poco::URI::decode(param.first, key);
-        std::string value;
-        Poco::URI::decode(param.second, value);
+        std::string key = Util::decodeURIComponent(param.first);
+        std::string value = Util::decodeURIComponent(param.second);
         LOG_TRC("Decoding param [" << param.first << "] = [" << param.second << "] -> [" << key
-                                   << "] = [" << value << "].");
+                                   << "] = [" << value << ']');
 
-        result.emplace(key, value);
+        result.emplace(std::move(key), std::move(value));
     }
 
     return result;
 }
-
-/// Returns true iff the two containers are equal.
-template <typename T> bool equal(const T& lhs, const T& rhs)
-{
-    if (lhs.size() != rhs.size())
-    {
-        LOG_ERR("!!! Size mismatch: [" << lhs.size() << "] != [" << rhs.size() << "].");
-        return false;
-    }
-
-    const auto endLeft = std::end(lhs);
-
-    auto itRight = std::begin(rhs);
-
-    for (auto itLeft = std::begin(lhs); itLeft != endLeft; ++itLeft, ++itRight)
-    {
-        const auto subLeft = lhs.getParam(*itLeft);
-        const auto subRight = rhs.getParam(*itRight);
-
-        if (subLeft != subRight)
-        {
-            LOG_ERR("!!! Data mismatch: [" << subLeft << "] != [" << subRight << ']');
-            return false;
-        }
-    }
-
-    return true;
-}
 }
 
 RequestDetails::RequestDetails(Poco::Net::HTTPRequest &request, const std::string& serviceRoot)
-    : _isMobile(false)
 {
     // Check and remove the ServiceRoot from the request.getURI()
     if (!Util::startsWith(request.getURI(), serviceRoot))
@@ -99,7 +70,6 @@ RequestDetails::RequestDetails(const std::string &mobileURI)
     , _isProxy(false)
     , _isWebSocket(false)
 {
-    _isMobile = true;
     _uriString = mobileURI;
     dehexify();
     processURI();
@@ -175,7 +145,7 @@ void RequestDetails::processURI()
     if (_pathSegs.equals(0, "cool"))
     {
         //FIXME: For historic reasons the DocumentURI includes the WOPISrc.
-        // This is problematic because decoding a URI that embedds not one, but
+        // This is problematic because decoding a URI that embeds not one, but
         // *two* encoded URIs within it is bound to produce an invalid URI.
         // Potentially three '?' might exist in the result (after decoding).
         std::size_t end = uriRes.rfind("/ws?");
@@ -194,15 +164,11 @@ void RequestDetails::processURI()
 
         const std::string docUri = uriRes.substr(0, end);
 
-        std::string decoded;
-        Poco::URI::decode(docUri, decoded);
-        _fields[Field::LegacyDocumentURI] = decoded;
+        _fields[Field::LegacyDocumentURI] = Util::decodeURIComponent(docUri);
 
         // Find the DocumentURI proper.
         end = uriRes.find_first_of("/?", 0, 2);
-        decoded.clear();
-        Poco::URI::decode(uriRes.substr(0, end), decoded);
-        _fields[Field::DocumentURI] = decoded;
+        _fields[Field::DocumentURI] = Util::decodeURIComponent(uriRes.substr(0, end));
     }
     else // Otherwise, it's the full URI.
     {
@@ -223,7 +189,7 @@ void RequestDetails::processURI()
     if (posLastWS != std::string::npos)
     {
         std::string lastWS = uriRes.substr(posLastWS);
-        const auto proxyTokens = Util::tokenize(lastWS, '/');
+        const auto proxyTokens = StringVector::tokenize(lastWS, '/');
         if (proxyTokens.size() > 1)
         {
             _fields[Field::SessionId] = proxyTokens[1];
@@ -243,9 +209,7 @@ Poco::URI RequestDetails::sanitizeURI(const std::string& uri)
 {
     // The URI of the document should be url-encoded.
 #if !MOBILEAPP
-    std::string decodedUri;
-    Poco::URI::decode(uri, decodedUri);
-    Poco::URI uriPublic(decodedUri);
+    Poco::URI uriPublic(Util::decodeURIComponent(uri));
 #else
     Poco::URI uriPublic(uri);
 #endif
@@ -269,9 +233,7 @@ Poco::URI RequestDetails::sanitizeURI(const std::string& uri)
         // look for encoded query params (access token as of now)
         if (param.first == "access_token")
         {
-            std::string decodedToken;
-            Poco::URI::decode(param.second, decodedToken);
-            param.second = decodedToken;
+            param.second = Util::decodeURIComponent(param.second);
         }
     }
 
@@ -281,19 +243,20 @@ Poco::URI RequestDetails::sanitizeURI(const std::string& uri)
     return uriPublic;
 }
 
+#if !defined(BUILDING_TESTS)
 std::string RequestDetails::getDocKey(const Poco::URI& uri)
 {
-    // If multiple host-names are used to access us, then
-    // they must be aliases. Permission to access aliased hosts
-    // is checked at the point of accepting incoming connections.
-    // At this point storing the hostname artificially discriminates
-    // between aliases and forces same document (when opened from
-    // alias hosts) to load as separate documents and sharing doesn't
-    // work. Worse, saving overwrites one another.
-    std::string docKey;
-    Poco::URI::encode(uri.getPath(), "", docKey);
+    // resolve aliases
+#if !MOBILEAPP
+    const std::string newUri = HostUtil::getNewUri(uri);
+#else
+    const std::string newUri = uri.getPath();
+#endif
+
+    std::string docKey = Util::encodeURIComponent(newUri);
     LOG_INF("DocKey from URI [" << uri.toString() << "] => [" << docKey << ']');
     return docKey;
 }
+#endif // !defined(BUILDING_TESTS)
 
 /* vim:set shiftwidth=4 softtabstop=4 expandtab: */

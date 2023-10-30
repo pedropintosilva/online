@@ -93,7 +93,7 @@ int mount_wrapper(const char *source, const char *target,
     build_iovec(&iov, &iovlen, "fspath", reinterpret_cast<const void*>(target), (size_t)-1);
     build_iovec(&iov, &iovlen, "from", reinterpret_cast<const void*>(source), (size_t)-1);
 
-    return nmount(iov, iovlen, 0);
+    return nmount(iov, iovlen, freebsd_flags);
 }
 
 #define MNT_DETACH 1
@@ -132,8 +132,14 @@ void usage(const char* program)
 {
     fprintf(stderr, "Usage: %s <-b|-r> <source path> <target path>\n", program);
     fprintf(stderr, "       %s -u <target>.\n", program);
+#ifdef __FreeBSD__
+    fprintf(stderr, "       %s -d <target>.\n", program);
+#endif
     fprintf(stderr, "       -b bind and mount the source to target.\n");
     fprintf(stderr, "       -r bind and mount the source to target as readonly.\n");
+#ifdef __FreeBSD__
+    fprintf(stderr, "       -d mount minimal devfs layout (random and urandom) to target.\n");
+#endif
     fprintf(stderr, "       -u to unmount the target.\n");
 }
 
@@ -182,23 +188,88 @@ int main(int argc, char** argv)
             }
         }
     }
-    else if (argc == 4) // Mount
+#ifdef __FreeBSD__
+    else if (argc == 3 && strcmp(option, "-d") == 0) // Mount devfs
     {
-        const char* source = argv[2];
-        struct stat sb;
-        if (stat(source, &sb) != 0 || !S_ISDIR(sb.st_mode))
-        {
-            fprintf(stderr, "%s: cannot mount from invalid source directory [%s].\n", program,
-                    source);
-            return EX_USAGE;
-        }
+        const char* target = argv[2];
 
-        const char* target = argv[3];
+        struct stat sb;
         const bool target_exists = (stat(target, &sb) == 0 && S_ISDIR(sb.st_mode));
+
         if (!target_exists)
         {
             fprintf(stderr, "%s: cannot mount on invalid target directory [%s].\n", program,
                     target);
+            return EX_USAGE;
+        }
+
+        struct iovec *iov = NULL;
+        int iovlen = 0;
+
+        build_iovec(&iov, &iovlen, "fstype", "devfs", (size_t)-1);
+        build_iovec(&iov, &iovlen, "fspath", reinterpret_cast<const void*>(target), (size_t)-1);
+        build_iovec(&iov, &iovlen, "from", "devfs", (size_t)-1);
+        // See /etc/defaults/devfs.rules
+        // [devfsrules_jail=4]
+        build_iovec(&iov, &iovlen, "ruleset", "4", (size_t)-1);
+
+        int retval = nmount(iov, iovlen, 0);
+        if (retval)
+        {
+            fprintf(stderr, "%s: mount failed create to devfs layout in [%s]: %s.\n", program, target,
+                    strerror(errno));
+            return EX_SOFTWARE;
+        }
+    }
+#endif
+    else if (argc == 4) // Mount
+    {
+        const char* source = argv[2];
+        struct stat sb;
+        if (stat(source, &sb))
+        {
+            fprintf(stderr, "%s: cannot mount from invalid source [%s]. stat failed with %s\n",
+                    program, source, strerror(errno));
+            return EX_USAGE;
+        }
+
+        const bool isDir = S_ISDIR(sb.st_mode);
+        const bool isCharDev = S_ISCHR(sb.st_mode); // We don't support regular files.
+        if (isCharDev)
+        {
+            // Even for character devices, we only support the random devices.
+            if (strstr("/dev/random", source) && strstr("/dev/urandom", source))
+            {
+                fprintf(stderr, "%s: cannot mount untrusted character-device [%s]", program,
+                        source);
+                return EX_USAGE;
+            }
+        }
+
+        if (!isDir && !isCharDev)
+        {
+            fprintf(stderr,
+                    "%s: cannot mount from invalid source [%s], it is neither a file nor a "
+                    "directory.\n",
+                    program, source);
+            return EX_USAGE;
+        }
+
+        const char* target = argv[3];
+        if (stat(target, &sb))
+        {
+            fprintf(stderr, "%s: cannot mount on invalid target [%s]. stat failed with %s\n",
+                    program, target, strerror(errno));
+            return EX_USAGE;
+        }
+
+        const bool target_exists =
+            ((isDir && S_ISDIR(sb.st_mode)) || (isCharDev && S_ISREG(sb.st_mode)));
+        if (!target_exists)
+        {
+            fprintf(stderr,
+                    "%s: cannot mount on invalid target [%s], it is not a %s as the source\n",
+                    program, target, isDir ? "directory" : "file");
             return EX_USAGE;
         }
 

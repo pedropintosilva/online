@@ -24,8 +24,6 @@
 #include <Util.hpp>
 #include <helpers.hpp>
 
-class COOLWebSocket;
-
 namespace
 {
 int findInDOM(Poco::XML::Document* doc, const char* string, bool checkName,
@@ -58,12 +56,17 @@ class UnitSession : public UnitWSD
     TestResult testSlideShow();
 
 public:
+    UnitSession()
+        : UnitWSD("UnitSession")
+    {
+    }
+
     void invokeWSDTest() override;
 };
 
 UnitBase::TestResult UnitSession::testBadRequest()
 {
-    const char* testname = "badrequest ";
+    setTestname(__func__);
     TST_LOG("Starting Test: " << testname);
     try
     {
@@ -95,7 +98,7 @@ UnitBase::TestResult UnitSession::testBadRequest()
 
 UnitBase::TestResult UnitSession::testHandshake()
 {
-    const char* testname = "handshake ";
+    setTestname(__func__);
     TST_LOG("Starting Test: " << testname);
 
     std::shared_ptr<SocketPoll> socketPoll = std::make_shared<SocketPoll>(testname);
@@ -111,7 +114,7 @@ UnitBase::TestResult UnitSession::testHandshake()
 
     wsSession->sendMessage("load url=" + documentURL);
 
-    auto assertMessage = [&wsSession, &testname](const std::string expectedStr)
+    auto assertMessage = [&wsSession, this](const std::string expectedStr)
     {
         wsSession->poll(
             [&](const std::vector<char>& message)
@@ -145,7 +148,7 @@ UnitBase::TestResult UnitSession::testHandshake()
 
 UnitBase::TestResult UnitSession::testSlideShow()
 {
-    const char* testname = "slideshow ";
+    setTestname(__func__);
     TST_LOG("Starting Test: " << testname);
     try
     {
@@ -154,14 +157,11 @@ UnitBase::TestResult UnitSession::testSlideShow()
         std::string response;
         helpers::getDocumentPathAndURL("setclientpart.odp", documentPath, documentURL, testname);
 
-        Poco::Net::HTTPRequest request(Poco::Net::HTTPRequest::HTTP_GET, documentURL);
-        Poco::Net::HTTPResponse httpResponse;
-        std::shared_ptr<COOLWebSocket> socket = helpers::connectLOKit(
-            Poco::URI(helpers::getTestServerURI()), request, httpResponse, testname);
+        std::shared_ptr<SocketPoll> socketPoll = std::make_shared<SocketPoll>(testname);
+        socketPoll->startThread();
 
-        helpers::sendTextFrame(socket, "load url=" + documentURL, testname);
-        LOK_ASSERT_MESSAGE("cannot load the document " + documentURL,
-                               helpers::isDocumentLoaded(socket, testname));
+        std::shared_ptr<http::WebSocketSession> socket = helpers::loadDocAndGetSession(
+            socketPoll, Poco::URI(helpers::getTestServerURI()), documentURL, testname);
 
         // request slide show
         helpers::sendTextFrame(
@@ -170,7 +170,7 @@ UnitBase::TestResult UnitSession::testSlideShow()
         LOK_ASSERT_MESSAGE("did not receive a downloadas: message as expected",
                                !response.empty());
 
-        StringVector tokens(Util::tokenize(response.substr(11), ' '));
+        StringVector tokens(StringVector::tokenize(response.substr(11), ' '));
         // "downloadas: downloadId= port= id=slideshow"
         const std::string downloadId = tokens[0].substr(std::string("downloadId=").size());
         const int port = std::stoi(tokens[1].substr(std::string("port=").size()));

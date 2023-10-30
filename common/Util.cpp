@@ -6,11 +6,21 @@
  */
 
 #include <config.h>
+#include <config_version.h>
+
+#ifndef COOLWSD_BUILDCONFIG
+#define COOLWSD_BUILDCONFIG
+#endif
 
 #include "Util.hpp"
 
 #include <csignal>
-#include <sys/poll.h>
+#include <poll.h>
+
+#ifdef HAVE_SYS_RANDOM_H
+#  include <sys/random.h>
+#endif
+
 #ifdef __linux__
 #  include <sys/prctl.h>
 #  include <sys/syscall.h>
@@ -58,6 +68,7 @@
 #include <Poco/RandomStream.h>
 #include <Poco/TemporaryFile.h>
 #include <Poco/Util/Application.h>
+#include <Poco/URI.h>
 
 #include "Common.hpp"
 #include "Log.hpp"
@@ -119,15 +130,24 @@ namespace Util
 
             // a poor fallback but something.
             std::vector<char> random = getBytes(length);
-            int fd = open("/dev/urandom", O_RDONLY);
             int len = 0;
-            if (fd < 0 ||
-                (len = read(fd, random.data(), length)) < 0 ||
-                std::size_t(len) < length)
+#ifdef HAVE_SYS_RANDOM_H
+            len = getrandom(random.data(), length, GRND_NONBLOCK);
+
+            // if getrandom() fails, we fall back to "/dev/[u]random" approach.
+            if (len != length)
+#endif
             {
-                LOG_ERR("failed to read " << length << " hard random bytes, got " << len << " for hash: " << errno);
+                const int fd = open("/dev/urandom", O_RDONLY);
+                if (fd < 0 ||
+                    (len = read(fd, random.data(), length)) < 0 ||
+                    std::size_t(len) < length)
+                {
+                    LOG_ERR("failed to read " << length << " hard random bytes, got " << len << " for hash: " << errno);
+                }
+                if (fd >= 0)
+                    close(fd);
             }
-            close(fd);
 
             hex.rdbuf()->setLineLength(0); // Don't insert line breaks.
             hex.write(random.data(), length);
@@ -271,8 +291,7 @@ namespace Util
             int ret = execvp(params[0], &params[0]);
             if (ret < 0)
                 LOG_SFL("Failed to exec command '" << cmd << '\'');
-            Log::shutdown();
-            _exit(42);
+            Util::forcedExit(42);
         }
         // else spawning process still
         if (stdInput)
@@ -308,9 +327,11 @@ namespace Util
 
 #if !MOBILEAPP
 
-    static const char *startsWith(const char *line, const char *tag)
+    static const char *startsWith(const char *line, const char *tag, std::size_t tagLen)
     {
-        std::size_t len = std::strlen(tag);
+        assert(strlen(tag) == tagLen);
+
+        std::size_t len = tagLen;
         if (!strncmp(line, tag, len))
         {
             while (!isdigit(line[len]) && line[len] != '\0')
@@ -358,12 +379,13 @@ namespace Util
             while (fgets(line, sizeof(line), file))
             {
                 const char* value;
-                if ((value = startsWith(line, "MemTotal:")))
+                if ((value = startsWith(line, "MemTotal:", 9)))
                 {
                     totalMemKb = atoi(value);
                     break;
                 }
             }
+            fclose(file);
         }
 
         return totalMemKb;
@@ -379,13 +401,17 @@ namespace Util
             char line[4096] = { 0 };
             while (fgets(line, sizeof (line), file))
             {
+                if (line[0] != 'P')
+                    continue;
+
                 const char *value;
+
                 // Shared_Dirty is accounted for by forkit's RSS
-                if ((value = startsWith(line, "Private_Dirty:")))
+                if ((value = startsWith(line, "Private_Dirty:", 14)))
                 {
                     numDirtyKb += atoi(value);
                 }
-                else if ((value = startsWith(line, "Pss:")))
+                else if ((value = startsWith(line, "Pss:", 4)))
                 {
                     numPSSKb += atoi(value);
                 }
@@ -475,6 +501,7 @@ namespace Util
                         pos = s.find(' ', pos + 1);
                     }
                 }
+                fclose(fp);
             }
         }
         return 0;
@@ -504,7 +531,7 @@ namespace Util
             std::string::size_type pos = 0;
             while ((pos = result.find(a, pos)) != std::string::npos)
             {
-                result = result.replace(pos, aSize, b);
+                result.replace(pos, aSize, b);
                 pos += bSize; // Skip the replacee to avoid endless recursion.
             }
         }
@@ -617,22 +644,24 @@ namespace Util
         hash.resize(std::min(8, (int)hash.length()));
     }
 
-    std::string getProcessIdentifier()
+    const std::string& getProcessIdentifier()
     {
         static std::string id = Util::rng::getHexString(8);
 
         return id;
     }
 
-    std::string getVersionJSON()
+    std::string getVersionJSON(bool enableExperimental)
     {
         std::string version, hash;
         Util::getVersionInfo(version, hash);
         return
-            "{ \"Version\":  \"" + version + "\", "
-            "\"Hash\":     \"" + hash + "\", "
-            "\"Protocol\": \"" + COOLProtocol::GetProtocolVersion() + "\", "
-            "\"Id\":  \"" + Util::getProcessIdentifier() + "\" }";
+            "{ \"Version\":     \"" + version + "\", "
+              "\"Hash\":        \"" + hash + "\", "
+              "\"BuildConfig\": \"" + std::string(COOLWSD_BUILDCONFIG) + "\", "
+              "\"Protocol\":    \"" + COOLProtocol::GetProtocolVersion() + "\", "
+              "\"Id\":          \"" + Util::getProcessIdentifier() + "\", "
+              "\"Options\":     \"" + std::string(enableExperimental ? " (E)" : "") + "\" }";
     }
 
     std::string UniqueId()
@@ -690,19 +719,35 @@ namespace Util
         return true;
     }
 
+    std::string encodeURIComponent(const std::string& uri, const std::string& reserved)
+    {
+        std::string encoded;
+        Poco::URI::encode(uri, reserved, encoded);
+        return encoded;
+    }
+
+    std::string decodeURIComponent(const std::string& uri)
+    {
+        std::string decoded;
+        Poco::URI::decode(uri, decoded);
+        return decoded;
+    }
+
     /// Split a string in two at the delimiter and give the delimiter to the first.
     static
-    std::pair<std::string, std::string> splitLast2(const char* s, const int length, const char delimiter = ' ')
+    std::pair<std::string, std::string> splitLast2(const std::string& str, const char delimiter = ' ')
     {
-        if (s != nullptr && length > 0)
+        if (!str.empty())
         {
+            const char* s = str.c_str();
+            const int length = str.size();
             const int pos = getLastDelimiterPosition(s, length, delimiter);
             if (pos < length)
                 return std::make_pair(std::string(s, pos + 1), std::string(s + pos + 1));
         }
 
         // Not found; return in first.
-        return std::make_pair(std::string(s, length), std::string());
+        return std::make_pair(str, std::string());
     }
 
     std::tuple<std::string, std::string, std::string, std::string> splitUrl(const std::string& url)
@@ -713,7 +758,7 @@ namespace Util
         std::tie(base, params) = Util::split(url, '?', false);
 
         std::string filename;
-        std::tie(base, filename) = Util::splitLast2(base.c_str(), base.size(), '/');
+        std::tie(base, filename) = Util::splitLast2(base, '/');
         if (filename.empty())
         {
             // If no '/', then it's only filename.
@@ -812,7 +857,8 @@ namespace Util
         char time_now[64];
         std::chrono::system_clock::time_point now = std::chrono::system_clock::now();
         std::time_t now_c = std::chrono::system_clock::to_time_t(now);
-        std::tm now_tm = *std::gmtime(&now_c);
+        std::tm now_tm;
+        gmtime_r(&now_c, &now_tm);
         strftime(time_now, sizeof(time_now), "%a, %d %b %Y %T", &now_tm);
 
         return time_now;
@@ -822,7 +868,8 @@ namespace Util
     {
         char http_time[64];
         std::time_t time_c = std::chrono::system_clock::to_time_t(time);
-        std::tm time_tm = *std::gmtime(&time_c);
+        std::tm time_tm;
+        gmtime_r(&time_c, &time_tm);
         strftime(http_time, sizeof(http_time), "%a, %d %b %Y %T", &time_tm);
 
         return http_time;
@@ -845,7 +892,8 @@ namespace Util
     std::string getIso8601FracformatTime(std::chrono::system_clock::time_point time){
         char time_modified[64];
         std::time_t lastModified_us_t = std::chrono::system_clock::to_time_t(time);
-        std::tm lastModified_tm = *std::gmtime(&lastModified_us_t);
+        std::tm lastModified_tm;
+        gmtime_r(&lastModified_us_t,&lastModified_tm);
         strftime(time_modified, sizeof(time_modified), "%FT%T.", &lastModified_tm);
 
         auto lastModified_s = std::chrono::time_point_cast<std::chrono::seconds>(time);
@@ -922,13 +970,26 @@ namespace Util
         return timestamp;
     }
 
-    std::string getSteadyClockAsString(const std::chrono::steady_clock::time_point &time)
+    /// Returns the given system_clock time_point as string in the local time.
+    /// Format: Thu Jan 27 03:45:27.123 2022
+    std::string getSystemClockAsString(const std::chrono::system_clock::time_point &time)
     {
-        auto now = std::chrono::steady_clock::now();
-        const std::time_t t = std::chrono::system_clock::to_time_t(
-            std::chrono::time_point_cast<std::chrono::seconds>(
-                std::chrono::system_clock::now() + (time - now)));
-        return std::ctime(&t);
+        const auto ms = std::chrono::time_point_cast<std::chrono::milliseconds>(time);
+        const std::time_t t = std::chrono::system_clock::to_time_t(ms);
+        const int msFraction =
+            std::chrono::duration_cast<std::chrono::milliseconds>(time.time_since_epoch())
+                .count() %
+            1000;
+
+        std::tm tm;
+        localtime_r(&t, &tm);
+
+        char buffer[128] = { 0 };
+        std::strftime(buffer, 80, "%a %b %d %H:%M", &tm);
+        std::stringstream ss;
+        ss << buffer << '.' << std::setfill('0') << std::setw(3) << msFraction << ' '
+           << tm.tm_year + 1900;
+        return ss.str();
     }
 
     bool isFuzzing()
@@ -1019,52 +1080,6 @@ namespace Util
         }
     #endif
 
-    StringVector tokenizeAnyOf(const std::string& s, const char* delimiters)
-    {
-        // trim from the end so that we do not have to check this exact case
-        // later
-        std::size_t length = s.length();
-        while (length > 0 && s[length - 1] == ' ')
-            --length;
-
-        if (length == 0)
-            return StringVector();
-
-        std::size_t delimitersLength = std::strlen(delimiters);
-        std::size_t start = 0;
-
-        std::vector<StringToken> tokens;
-        tokens.reserve(16);
-
-        while (start < length)
-        {
-            // ignore the leading whitespace
-            while (start < length && s[start] == ' ')
-                ++start;
-
-            // anything left?
-            if (start == length)
-                break;
-
-            std::size_t end = s.find_first_of(delimiters, start, delimitersLength);
-            if (end == std::string::npos)
-                end = length;
-
-            // trim the trailing whitespace
-            std::size_t trimEnd = end;
-            while (start < trimEnd && s[trimEnd - 1] == ' ')
-                --trimEnd;
-
-            // add only non-empty tokens
-            if (start < trimEnd)
-                tokens.emplace_back(start, trimEnd - start);
-
-            start = end + 1;
-        }
-
-        return StringVector(s, std::move(tokens));
-    }
-
     int safe_atoi(const char* p, int len)
     {
         long ret{};
@@ -1117,8 +1132,127 @@ namespace Util
 
     void forcedExit(int code)
     {
+        if (code)
+            LOG_FTL("Forced Exit with code: " << code);
+        else
+            LOG_INF("Forced Exit with code: " << code);
         Log::shutdown();
+
+#if CODE_COVERAGE
+        __gcov_dump();
+#endif
+
         std::_Exit(code);
+    }
+
+    bool matchRegex(const std::set<std::string>& set, const std::string& subject)
+    {
+        if (set.find(subject) != set.end())
+        {
+            return true;
+        }
+
+        // Not a perfect match, try regex.
+        for (const auto& value : set)
+        {
+            try
+            {
+                // Not performance critical to warrant caching.
+                Poco::RegularExpression re(value, Poco::RegularExpression::RE_CASELESS);
+                Poco::RegularExpression::Match reMatch;
+
+                // Must be a full match.
+                if (re.match(subject, reMatch) && reMatch.offset == 0 &&
+                    reMatch.length == subject.size())
+                {
+                    return true;
+                }
+            }
+            catch (const std::exception& exc)
+            {
+                // Nothing to do; skip.
+            }
+        }
+
+        return false;
+    }
+
+    std::string getValue(const std::map<std::string, std::string>& map, const std::string& subject)
+    {
+        if (map.find(subject) != map.end())
+        {
+            return map.at(subject);
+        }
+
+        // Not a perfect match, try regex.
+        for (const auto& value : map)
+        {
+            try
+            {
+                // Not performance critical to warrant caching.
+                Poco::RegularExpression re(value.first, Poco::RegularExpression::RE_CASELESS);
+                Poco::RegularExpression::Match reMatch;
+
+                // Must be a full match.
+                if (re.match(subject, reMatch) && reMatch.offset == 0 &&
+                    reMatch.length == subject.size())
+                {
+                    return value.second;
+                }
+            }
+            catch (const std::exception& exc)
+            {
+                // Nothing to do; skip.
+            }
+        }
+
+        return std::string();
+    }
+
+    std::string getValue(const std::set<std::string>& set, const std::string& subject)
+    {
+        auto search = set.find(subject);
+        if (search != set.end())
+        {
+            return *search;
+        }
+
+        // Not a perfect match, try regex.
+        for (const auto& value : set)
+        {
+            try
+            {
+                // Not performance critical to warrant caching.
+                Poco::RegularExpression re(value, Poco::RegularExpression::RE_CASELESS);
+                Poco::RegularExpression::Match reMatch;
+
+                // Must be a full match.
+                if (re.match(subject, reMatch) && reMatch.offset == 0 &&
+                    reMatch.length == subject.size())
+                {
+                    return value;
+                }
+            }
+            catch (const std::exception& exc)
+            {
+                // Nothing to do; skip.
+            }
+        }
+
+        return std::string();
+    }
+
+    void assertCorrectThread(std::thread::id owner, const char* fileName, int lineNo)
+    {
+        // uninitialized owner means detached and can be invoked by any thread.
+        const bool sameThread = (owner == std::thread::id() || owner == std::this_thread::get_id());
+        if (!sameThread)
+            LOG_ERR("Incorrect thread affinity. Expected: "
+                    << Log::to_string(owner) << " but called from "
+                    << Log::to_string(std::this_thread::get_id()) << " (" << Util::getThreadId()
+                    << "). (" << fileName << ":" << lineNo << ")");
+
+        assert(sameThread);
     }
 }
 

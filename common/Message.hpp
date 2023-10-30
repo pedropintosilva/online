@@ -8,12 +8,15 @@
 #pragma once
 
 #include <atomic>
+#include <cstring>
 #include <string>
 #include <vector>
 #include <functional>
 
 #include "Protocol.hpp"
+#include "StringVector.hpp"
 #include "Log.hpp"
+#include "Util.hpp"
 
 /// The payload type used to send/receive data.
 class Message
@@ -29,7 +32,7 @@ public:
             const enum Dir dir) :
         _forwardToken(getForwardToken(message.data(), message.size())),
         _data(copyDataAfterOffset(message.data(), message.size(), _forwardToken.size())),
-        _tokens(Util::tokenize(_data.data(), _data.size())),
+        _tokens(StringVector::tokenize(_data.data(), _data.size())),
         _id(makeId(dir)),
         _type(detectType())
     {
@@ -44,7 +47,7 @@ public:
             const size_t reserve) :
         _forwardToken(getForwardToken(message.data(), message.size())),
         _data(copyDataAfterOffset(message.data(), message.size(), _forwardToken.size())),
-        _tokens(Util::tokenize(message.data() + _forwardToken.size(), message.size() - _forwardToken.size())),
+        _tokens(StringVector::tokenize(message.data() + _forwardToken.size(), message.size() - _forwardToken.size())),
         _id(makeId(dir)),
         _type(detectType())
     {
@@ -59,7 +62,7 @@ public:
             const enum Dir dir) :
         _forwardToken(getForwardToken(p, len)),
         _data(copyDataAfterOffset(p, len, _forwardToken.size())),
-        _tokens(Util::tokenize(_data.data(), _data.size())),
+        _tokens(StringVector::tokenize(_data.data(), _data.size())),
         _id(makeId(dir)),
         _type(detectType())
     {
@@ -74,6 +77,15 @@ public:
     std::string firstToken() const { return _tokens[0]; }
     bool firstTokenMatches(const std::string& target) const { return _tokens[0] == target; }
     std::string operator[](size_t index) const { return _tokens[index]; }
+
+    /// Find a subarray in the raw message.
+    int find(const char* sub, const std::size_t subLen) const
+    {
+        return Util::findSubArray(&_data[0], _data.size(), sub, subLen);
+    }
+
+    /// Returns true iff the subarray exists in the raw message.
+    bool contains(const char* p, const std::size_t len) const { return find(p, len) >= 0; }
 
     const std::string& firstLine()
     {
@@ -96,7 +108,8 @@ public:
     /// Returns the json part of the message, if any.
     std::string jsonString() const
     {
-        if (_tokens.size() > 1 && _tokens[1].size() && _tokens[1][0] == '{')
+        if (_tokens.size() > 1 && _tokens[1].size() >= 1 &&
+            (_tokens[1][0] == '{' || _tokens[1][0] == '['))
         {
             const size_t firstTokenSize = _tokens[0].size();
             return std::string(_data.data() + firstTokenSize, _data.size() - firstTokenSize);
@@ -150,13 +163,15 @@ private:
     {
         if (_tokens.equals(0, "tile:") ||
             _tokens.equals(0, "tilecombine:") ||
+            _tokens.equals(0, "delta:") ||
             _tokens.equals(0, "renderfont:") ||
+            _tokens.equals(0, "rendersearchresult:") ||
             _tokens.equals(0, "windowpaint:"))
         {
             return Type::Binary;
         }
 
-        if (_data.size() > 0 && _data[_data.size() - 1] == '}')
+        if (_data.size() > 0 && (_data[_data.size() - 1] == '}' || _data[_data.size() - 1] == ']'))
         {
             return Type::JSON;
         }

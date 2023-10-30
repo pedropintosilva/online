@@ -24,6 +24,7 @@
 #include <cppunit/TestRunner.h>
 #include <cppunit/TextTestProgressListener.h>
 #include <cppunit/extensions/TestFactoryRegistry.h>
+#include <cppunit/extensions/HelperMacros.h>
 
 #include <Poco/RegularExpression.h>
 #include <Poco/DirectoryIterator.h>
@@ -137,7 +138,7 @@ int main(int argc, char** argv)
     LOG_INF("SSL is unsupported in this build.");
 #endif
 
-    return runClientTests(true, verbose)? 0: 1;
+    return runClientTests(argv[0], true, verbose) ? 0 : 1;
 }
 
 static bool IsStandalone = false;
@@ -213,7 +214,7 @@ private:
 };
 
 // returns true on success
-bool runClientTests(bool standalone, bool verbose)
+bool runClientTests(const char* cmd, bool standalone, bool verbose)
 {
     IsVerbose = verbose;
     IsStandalone = standalone;
@@ -271,10 +272,10 @@ bool runClientTests(bool standalone, bool verbose)
     {
         std::cerr << "\nTo reproduce the first test failure use:\n\n";
 #ifdef STANDALONE_CPPUNIT // unittest
-        const char *cmd = "./unittest";
         std::cerr << "To debug:\n\n";
         std::cerr << "  (cd test; CPPUNIT_TEST_NAME=\"" << (*failures.begin())->failedTestName() << "\" gdb --args " << cmd << ")\n\n";
 #else
+        (void)cmd;
         std::string aLib = UnitBase::get().getUnitLibPath();
         std::size_t lastSlash = aLib.rfind('/');
         if (lastSlash != std::string::npos)

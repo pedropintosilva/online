@@ -7,8 +7,11 @@
 
 #pragma once
 
+#include <config.h>
+
 #include <cassert>
 #include <cerrno>
+#include <chrono>
 #include <cinttypes>
 #include <cstddef>
 #include <cstdint>
@@ -28,9 +31,7 @@
 
 #include <memory.h>
 
-#ifndef __linux__
 #include <thread>
-#endif
 
 #include <Poco/File.h>
 #include <Poco/Path.h>
@@ -40,6 +41,36 @@
 #include <LibreOfficeKit/LibreOfficeKitEnums.h>
 
 #include <StringVector.hpp>
+
+#if CODE_COVERAGE
+extern "C"
+{
+    void __gcov_reset(void);
+    void __gcov_flush(void);
+    void __gcov_dump(void);
+}
+#endif
+
+/// Format seconds with the units suffix until we migrate to C++20.
+inline std::ostream& operator<<(std::ostream& os, const std::chrono::seconds& s)
+{
+    os << s.count() << 's';
+    return os;
+}
+
+/// Format milliseconds with the units suffix until we migrate to C++20.
+inline std::ostream& operator<<(std::ostream& os, const std::chrono::milliseconds& ms)
+{
+    os << ms.count() << "ms";
+    return os;
+}
+
+/// Format microseconds with the units suffix until we migrate to C++20.
+inline std::ostream& operator<<(std::ostream& os, const std::chrono::microseconds& ms)
+{
+    os << ms.count() << "us";
+    return os;
+}
 
 namespace Util
 {
@@ -61,6 +92,37 @@ namespace Util
         /// file/directory names.
         std::string getFilename(const size_t length);
     }
+
+    /// A utility class to track relative time from some arbitrary
+    /// origin, and to check if a certain amount has elapsed or not.
+    class Stopwatch
+    {
+    public:
+        Stopwatch()
+            : _startTime(std::chrono::steady_clock::now())
+        {
+        }
+
+        void restart() { _startTime = std::chrono::steady_clock::now(); }
+
+        /// Returns the time that has elapsed since starting, in the units required.
+        /// Units defaults to milliseconds.
+        template <typename T = std::chrono::milliseconds>
+        T
+        elapsed(std::chrono::steady_clock::time_point now = std::chrono::steady_clock::now()) const
+        {
+            return std::chrono::duration_cast<T>(now - _startTime);
+        }
+
+        /// Returns true iff at least the given amount of time has elapsed.
+        template <typename T> bool elapsed(T duration) const
+        {
+            return elapsed<std::chrono::nanoseconds>() >= duration;
+        }
+
+    private:
+        std::chrono::steady_clock::time_point _startTime;
+    };
 
 #if !MOBILEAPP
     /// Get number of threads in this process or -1 on error
@@ -89,7 +151,7 @@ namespace Util
             if ((offset + i) >= buffer.size())
                 break;
 
-            sprintf(scratch, "%.2x", static_cast<unsigned char>(buffer[offset + i]));
+            snprintf(scratch, sizeof(scratch), "%.2x", static_cast<unsigned char>(buffer[offset + i]));
             os << scratch;
         }
 
@@ -199,6 +261,7 @@ namespace Util
     void setProcessAndThreadPriorities(const pid_t pid, int prio);
 #endif
 
+    /// Replace substring @a in string @s with string @b.
     std::string replace(std::string s, const std::string& a, const std::string& b);
 
     std::string formatLinesForLog(const std::string& s);
@@ -217,9 +280,9 @@ namespace Util
     void getVersionInfo(std::string& version, std::string& hash);
 
     ///< A random hex string that identifies the current process.
-    std::string getProcessIdentifier();
+    const std::string& getProcessIdentifier();
 
-    std::string getVersionJSON();
+    std::string getVersionJSON(bool enableExperimental);
 
     /// Return a string that is unique across processes and calls.
     std::string UniqueId();
@@ -270,6 +333,39 @@ namespace Util
             return -1;
     }
 
+#if ENABLE_DEBUG
+    // for debugging validation only.
+    inline size_t isValidUtf8(const unsigned char *data, size_t len)
+    {
+        for (size_t i = 0; i < len; ++i)
+        {
+            if (data[i] < 0x80)
+                continue;
+            if (data[i] >> 6 != 0x3)
+                return i;
+            int chunkLen = 1;
+            for (; data[i] & (1 << (7-chunkLen)); chunkLen++)
+                if (chunkLen > 4)
+                    return i;
+
+            // Allow equality as the lower limit of the loop below is not zero.
+            if (i + chunkLen > len)
+                return i;
+
+            for (; chunkLen > 1; --chunkLen)
+                if (data[++i] >> 6 != 0x2)
+                    return i;
+        }
+        return len + 1;
+    }
+
+    // for debugging validation only.
+    inline bool isValidUtf8(const std::string& s)
+    {
+        return Util::isValidUtf8((unsigned char *)s.c_str(), s.size()) > s.size();
+    }
+#endif
+
     inline std::string hexStringToBytes(const uint8_t* data, size_t size)
     {
         assert(data && (size % 2 == 0) && "Invalid hex digits to convert.");
@@ -307,31 +403,34 @@ namespace Util
     inline std::string stringifyHexLine(const T& buffer, std::size_t offset,
                                         const std::size_t width = 32)
     {
-        char scratch[64];
-        std::stringstream os;
+        std::string str;
+        str.reserve(width * 4 + width / 8 + 3 + 1);
 
         for (unsigned int i = 0; i < width; i++)
         {
             if (i && (i % 8) == 0)
-                os << ' ';
+                str.push_back(' ');
             if ((offset + i) < buffer.size())
-                sprintf (scratch, "%.2x ", (unsigned char)buffer[offset+i]);
+            {
+                const unsigned short hex = hexFromByte(buffer[offset+i]);
+                str.push_back(hex >> 8);
+                str.push_back(hex & 0xff);
+                str.push_back(' ');
+            }
             else
-                sprintf (scratch, "   ");
-            os << scratch;
+                str.append(3, ' ');
         }
-        os << " | ";
+        str.append(" | ");
 
         for (unsigned int i = 0; i < width; i++)
         {
             if ((offset + i) < buffer.size())
-                sprintf(scratch, "%c", ::isprint(buffer[offset + i]) ? buffer[offset + i] : '.');
+                str.push_back(::isprint(buffer[offset + i]) ? buffer[offset + i] : '.');
             else
-                sprintf(scratch, " "); // Leave blank if we are out of data.
-            os << scratch;
+                str.push_back(' '); // Leave blank if we are out of data.
         }
 
-        return os.str();
+        return str;
     }
 
     /// Dump data as hex and chars to stream.
@@ -352,7 +451,7 @@ namespace Util
         os << legend;
         for (j = 0; j < buffer.size() + width - 1; j += width)
         {
-            sprintf (scratch, "%s0x%.4x  ", prefix, j);
+            snprintf (scratch, sizeof(scratch), "%s0x%.4x  ", prefix, j);
             os << scratch;
 
             std::string line = stringifyHexLine(buffer, j, width);
@@ -377,11 +476,11 @@ namespace Util
     /// Dump data as hex and chars into a string.
     /// Primarily used for logging.
     template <typename T>
-    inline std::string dumpHex(const T& buffer, const char* prefix = "", bool skipDup = true,
-                               const unsigned int width = 32)
+    inline std::string dumpHex(const T& buffer, const char* legend = "", const char* prefix = "",
+                               bool skipDup = true, const unsigned int width = 32)
     {
         std::ostringstream oss;
-        dumpHex(oss, buffer, "", prefix, skipDup, width);
+        dumpHex(oss, buffer, legend, prefix, skipDup, width);
         return oss.str();
     }
 
@@ -497,20 +596,6 @@ namespace Util
         return trimmed(std::string(s));
     }
 
-    // Trim all type of whitespace from left and right
-    inline std::string trim_whitespace(std::string s)
-    {
-        auto last =
-            std::find_if(s.rbegin(), s.rend(), [](char ch) { return !std::isspace(ch); });
-        s.erase(last.base(), s.end()); //trim from right
-
-        auto first =
-            std::find_if(s.begin(), s.end(), [](char ch) { return !std::isspace(ch); });
-        s.erase(s.begin(), first); //trim from left
-
-        return s;
-    }
-
     /// Return true iff s starts with t.
     inline bool startsWith(const std::string& s, const std::string& t)
     {
@@ -534,97 +619,6 @@ namespace Util
     {
         return equal(t.rbegin(), t.rend(), s.rbegin());
     }
-
-    /// Tokenize delimited values until we hit new-line or the end.
-    inline void tokenize(const char* data, const std::size_t size, const char delimiter,
-                         std::vector<StringToken>& tokens)
-    {
-        if (size == 0 || data == nullptr || *data == '\0')
-            return;
-
-        tokens.reserve(16);
-
-        const char* start = data;
-        const char* end = data;
-        for (std::size_t i = 0; i < size && data[i] != '\n'; ++i, ++end)
-        {
-            if (data[i] == delimiter)
-            {
-                if (start != end && *start != delimiter)
-                    tokens.emplace_back(start - data, end - start);
-
-                start = end;
-            }
-            else if (*start == delimiter)
-                ++start;
-        }
-
-        if (start != end && *start != delimiter && *start != '\n')
-            tokens.emplace_back(start - data, end - start);
-    }
-
-    /// Tokenize single-char delimited values until we hit new-line or the end.
-    inline StringVector tokenize(const char* data, const std::size_t size,
-                                 const char delimiter = ' ')
-    {
-        if (size == 0 || data == nullptr || *data == '\0')
-            return StringVector();
-
-        std::vector<StringToken> tokens;
-        tokenize(data, size, delimiter, tokens);
-        return StringVector(std::string(data, size), std::move(tokens));
-    }
-
-    /// Tokenize single-char delimited values until we hit new-line or the end.
-    inline StringVector tokenize(const std::string& s, const char delimiter = ' ')
-    {
-        if (s.empty())
-            return StringVector();
-
-        std::vector<StringToken> tokens;
-        tokenize(s.data(), s.size(), delimiter, tokens);
-        return StringVector(s, std::move(tokens));
-    }
-
-    /// Tokenize by the delimiter string.
-    inline StringVector tokenize(const std::string& s, const char* delimiter, int len = -1)
-    {
-        if (s.empty() || len == 0 || delimiter == nullptr || *delimiter == '\0')
-            return StringVector();
-
-        if (len < 0)
-            len = std::strlen(delimiter);
-
-        std::size_t start = 0;
-        std::size_t end = s.find(delimiter, start);
-
-        std::vector<StringToken> tokens;
-        tokens.reserve(16);
-
-        tokens.emplace_back(start, end - start);
-        start = end + len;
-
-        while (end != std::string::npos)
-        {
-            end = s.find(delimiter, start);
-            tokens.emplace_back(start, end - start);
-            start = end + len;
-        }
-
-        return StringVector(s, std::move(tokens));
-    }
-
-    inline StringVector tokenize(const std::string& s, const std::string& delimiter)
-    {
-        return tokenize(s, delimiter.data(), delimiter.size());
-    }
-
-    /** Tokenize based on any of the characters in 'delimiters'.
-
-        Ie. when there is '\n\r' in there, any of them means a delimiter.
-        In addition, trim the values so there are no leadiding or trailing spaces.
-    */
-    StringVector tokenizeAnyOf(const std::string& s, const char* delimiters);
 
 #ifdef IOS
 
@@ -706,6 +700,7 @@ int main(int argc, char**argv)
     /// Return the symbolic name for an errno value, or in decimal if not handled here.
     inline std::string symbolicErrno(int e)
     {
+        // LCOV_EXCL_START Coverage for these is not very useful.
         // Errnos from <asm-generic/errno-base.h> and <asm-generic/errno.h> on Linux.
         switch (e)
         {
@@ -930,6 +925,7 @@ int main(int argc, char**argv)
 #endif
         default: return std::to_string(e);
         }
+        // LCOV_EXCL_STOP Coverage for these is not very useful.
     }
 
     inline size_t getDelimiterPosition(const char* message, const int length, const char delim)
@@ -942,6 +938,29 @@ int main(int argc, char**argv)
         }
 
         return 0;
+    }
+
+    /// Return the position of sub-array @sub in array @data, if found, -1 otherwise.
+    inline int findSubArray(const char* data, const std::size_t dataLen, const char* sub,
+                            const std::size_t subLen)
+    {
+        assert(subLen < std::numeric_limits<unsigned int>::max() &&
+               "Invalid sub-array length to find");
+        if (sub && subLen && dataLen >= subLen)
+        {
+            for (std::size_t i = 0; i < dataLen; ++i)
+            {
+                std::size_t j;
+                for (j = 0; j < subLen && i + j < dataLen && data[i + j] == sub[j]; ++j)
+                {
+                }
+
+                if (j >= subLen)
+                    return i;
+            }
+        }
+
+        return -1;
     }
 
     inline
@@ -1036,7 +1055,7 @@ int main(int argc, char**argv)
     inline void vectorAppendHex(std::vector<char> &vector, uint64_t number)
     {
         char output[32];
-        sprintf(output, "%" PRIx64, number);
+        snprintf(output, sizeof(output), "%" PRIx64, number);
         vectorAppend(vector, output);
     }
 
@@ -1051,6 +1070,13 @@ int main(int argc, char**argv)
     /// Check for the URI host validity.
     /// For now just a basic sanity check, can be extended if necessary.
     bool isValidURIHost(const std::string& host);
+
+    /// Encode a URI with the JS-compatible reserved characters.
+    std::string encodeURIComponent(const std::string& uri,
+                                   const std::string& reserved = ",/?:@&=+$#");
+
+    /// Decode a URI encoded with encodeURIComponent.
+    std::string decodeURIComponent(const std::string& uri);
 
     /// Anonymize a sensitive string to avoid leaking it.
     /// Called on strings to be logged or exposed.
@@ -1068,6 +1094,16 @@ int main(int argc, char**argv)
 
     /// Extract and return the filename given a url or path.
     std::string getFilenameFromURL(const std::string& url);
+
+    /// Return true if the subject matches in given set. It uses regex
+    /// Mainly used to match WOPI hosts patterns
+    bool matchRegex(const std::set<std::string>& set, const std::string& subject);
+
+    /// Return value from key:value pair if the subject matches in given map. It uses regex
+    /// Mainly used to match WOPI hosts patterns
+    std::string getValue(const std::map<std::string, std::string>& map, const std::string& subject);
+
+    std::string getValue(const std::set<std::string>& set, const std::string& subject);
 
     /// Given one or more patterns to allow, and one or more to deny,
     /// the match member will return true if, and only if, the subject
@@ -1122,39 +1158,21 @@ int main(int argc, char**argv)
 
         bool match(const std::string& subject) const
         {
-            return (_allowByDefault || match(_allowed, subject)) && !match(_denied, subject);
+            return (_allowByDefault ||
+                    Util::matchRegex(_allowed, subject)) &&
+                   !Util::matchRegex(_denied, subject);
         }
 
-    private:
-        static bool match(const std::set<std::string>& set, const std::string& subject)
+        // whether a match exist within both _allowed and _denied
+        bool matchExist(const std::string& subject) const
         {
-            if (set.find(subject) != set.end())
-            {
-                return true;
-            }
+            return (Util::matchRegex(_allowed, subject) ||
+                    Util::matchRegex(_denied, subject));
+        }
 
-            // Not a perfect match, try regex.
-            for (const auto& value : set)
-            {
-                try
-                {
-                    // Not performance critical to warrant caching.
-                    Poco::RegularExpression re(value, Poco::RegularExpression::RE_CASELESS);
-                    Poco::RegularExpression::Match reMatch;
-
-                    // Must be a full match.
-                    if (re.match(subject, reMatch) && reMatch.offset == 0 && reMatch.length == subject.size())
-                    {
-                        return true;
-                    }
-                }
-                catch (const std::exception& exc)
-                {
-                    // Nothing to do; skip.
-                }
-            }
-
-            return false;
+        bool empty() const
+        {
+            return _allowed.empty() && _denied.empty();
         }
 
     private:
@@ -1215,8 +1233,62 @@ int main(int argc, char**argv)
     /// Convert time from ISO8061 fraction format
     std::chrono::system_clock::time_point iso8601ToTimestamp(const std::string& iso8601Time, const std::string& logName);
 
+    /// A null-converter between two identical clocks.
+    template <typename Dst, typename Src, typename std::is_same<Src, Dst>::type>
+    Dst convertChronoClock(const Src time)
+    {
+        return std::chrono::time_point_cast<Dst>(time);
+    }
+
+    /// Converter between two different clocks,
+    /// such as system_clock and stead_clock.
+    /// Note: by nature this has limited accuracy.
+    template <typename Dst, typename Src, typename Enable = void>
+    Dst convertChronoClock(const Src time)
+    {
+        const auto before = Src::clock::now();
+        const auto now = Dst::clock::now();
+        const auto after = Src::clock::now();
+        const auto diff = after - before;
+        const auto correction = before + (diff / 2);
+        return std::chrono::time_point_cast<typename Dst::duration>(now + (time - correction));
+    }
+
+    /// Converts from system_clock to string for debugging / tracing.
+    /// Format (local time): Thu Jan 27 03:45:27.123 2022
+    std::string getSystemClockAsString(const std::chrono::system_clock::time_point &time);
+
     /// conversion from steady_clock for debugging / tracing
-    std::string getSteadyClockAsString(const std::chrono::steady_clock::time_point &time);
+    /// Format (local time): Thu Jan 27 03:45:27.123 2022
+    inline std::string getSteadyClockAsString(const std::chrono::steady_clock::time_point& time)
+    {
+        return getSystemClockAsString(
+            convertChronoClock<std::chrono::system_clock::time_point>(time));
+    }
+
+    /// See getSystemClockAsString.
+    inline std::string getClockAsString(const std::chrono::system_clock::time_point& time)
+    {
+        return getSystemClockAsString(time);
+    }
+
+    /// See getSteadyClockAsString.
+    inline std::string getClockAsString(const std::chrono::steady_clock::time_point& time)
+    {
+        return getSteadyClockAsString(time);
+    }
+
+    template <typename U, typename T> std::string getTimeForLog(const U& now, const T& time)
+    {
+        const auto elapsed = now - convertChronoClock<U>(time);
+        const auto elapsedS = std::chrono::duration_cast<std::chrono::seconds>(elapsed);
+        const auto elapsedMS =
+            std::chrono::duration_cast<std::chrono::milliseconds>(elapsed) - elapsedS;
+
+        std::stringstream ss;
+        ss << getClockAsString(time) << " (" << elapsedS << ' ' << elapsedMS << " ago)";
+        return ss.str();
+    }
 
     /**
      * Avoid using the configuration layer and rely on defaults which is only useful for special
@@ -1228,6 +1300,7 @@ int main(int argc, char**argv)
      * Splits string into vector<string>. Does not accept referenced variables for easy
      * usage like (splitString("test", ..)) or (splitString(getStringOnTheFly(), ..))
      */
+     //FIXME: merge with StringVector.
     inline std::vector<std::string> splitStringToVector(const std::string& str, const char delim)
     {
         size_t start;
@@ -1258,7 +1331,7 @@ int main(int argc, char**argv)
 #endif
 
     /// Convert a string to 32-bit signed int.
-    /// Returns the parsed value and a boolean indiciating success or failure.
+    /// Returns the parsed value and a boolean indicating success or failure.
     inline std::pair<std::int32_t, bool> i32FromString(const std::string& input)
     {
         const char* str = input.data();
@@ -1278,7 +1351,7 @@ int main(int argc, char**argv)
     }
 
     /// Convert a string to 64-bit unsigned int.
-    /// Returns the parsed value and a boolean indiciating success or failure.
+    /// Returns the parsed value and a boolean indicating success or failure.
     inline std::pair<std::uint64_t, bool> u64FromString(const std::string& input)
     {
         const char* str = input.data();
@@ -1288,7 +1361,7 @@ int main(int argc, char**argv)
         return std::make_pair(value, endptr > str && errno != ERANGE);
     }
 
-    /// Convert a string to 64-bit usigned int. On failure, returns the default
+    /// Convert a string to 64-bit unsigned int. On failure, returns the default
     /// value, and sets the bool to false (to signify that parsing had failed).
     inline std::pair<std::uint64_t, bool> u64FromString(const std::string& input,
                                                         const std::uint64_t def)
@@ -1326,7 +1399,7 @@ int main(int argc, char**argv)
         return iequal(lhs.c_str(), lhs.size(), rhs.c_str(), rhs.size());
     }
 
-    /// Get system_clock now in miliseconds.
+    /// Get system_clock now in milliseconds.
     inline int64_t getNowInMS()
     {
         return std::chrono::time_point_cast<std::chrono::milliseconds>(std::chrono::system_clock::now()).time_since_epoch().count();
@@ -1355,16 +1428,24 @@ int main(int argc, char**argv)
         return std::string(s);
     }
 
-    /**
-     * Constructs an object of type T and wraps it in a std::unique_ptr.
-     *
-     * Can be replaced by std::make_unique when we allow C++14.
-     */
-    template<typename T, typename... Args>
-    typename std::unique_ptr<T> make_unique(Args&& ... args)
+    /// Dump an object that supports .dumpState into a string.
+    /// Helpful for logging.
+    template <typename T> std::string dump(const T& object, const std::string& indent = ", ")
     {
-        return std::unique_ptr<T>(new T(std::forward<Args>(args)...));
+        std::ostringstream oss;
+        object.dumpState(oss, indent);
+        return oss.str().substr(indent.size());
     }
+
+    /// Asserts in the debug builds, otherwise just logs.
+    void assertCorrectThread(std::thread::id owner, const char* fileName, int lineNo);
+
+#ifndef ASSERT_CORRECT_THREAD
+#define ASSERT_CORRECT_THREAD() assertCorrectThread(__FILE__, __LINE__)
+#endif
+#ifndef ASSERT_CORRECT_THREAD_OWNER
+#define ASSERT_CORRECT_THREAD_OWNER(OWNER) Util::assertCorrectThread(OWNER, __FILE__, __LINE__)
+#endif
 
     /**
      * Similar to std::atoi() but does not require p to be null-terminated.
@@ -1376,8 +1457,15 @@ int main(int argc, char**argv)
     /// Close logs and forcefully exit with the given exit code.
     /// This calls std::_Exit, which terminates the program without cleaning up
     /// static instances (i.e. anything registered with `atexit' or `on_exit').
+    // coverity[+kill]
     void forcedExit(int code) __attribute__ ((__noreturn__));
 
 } // end namespace Util
+
+inline std::ostream& operator<<(std::ostream& os, const std::chrono::system_clock::time_point& ts)
+{
+    os << Util::getIso8601FracformatTime(ts);
+    return os;
+}
 
 /* vim:set shiftwidth=4 softtabstop=4 expandtab: */

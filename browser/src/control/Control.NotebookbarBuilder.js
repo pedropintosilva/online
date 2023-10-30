@@ -3,7 +3,7 @@
  * L.Control.NotebookbarBuilder
  */
 
-/* global app $ _ _UNO */
+/* global $ _ _UNO JSDialog app */
 L.Control.NotebookbarBuilder = L.Control.JSDialogBuilder.extend({
 
 	_customizeOptions: function() {
@@ -16,7 +16,9 @@ L.Control.NotebookbarBuilder = L.Control.JSDialogBuilder.extend({
 		this._controlHandlers['combobox'] = this._comboboxControlHandler;
 		this._controlHandlers['listbox'] = this._comboboxControlHandler;
 		this._controlHandlers['tabcontrol'] = this._overriddenTabsControlHandler;
-		this._controlHandlers['menubartoolitem'] = this._menubarToolItemHandler;
+		this._controlHandlers['tabpage'] = this._overriddenTabPageHandler;
+		this._controlHandlers['menubartoolitem'] = this._inlineMenubarToolItemHandler;
+		this._controlHandlers['bigmenubartoolitem'] = this._bigMenubarToolItemHandler;
 		this._controlHandlers['bigtoolitem'] = this._bigtoolitemHandler;
 		this._controlHandlers['toolbox'] = this._toolboxHandler;
 
@@ -34,13 +36,11 @@ L.Control.NotebookbarBuilder = L.Control.JSDialogBuilder.extend({
 		this._toolitemHandlers['.uno:Color'] = this._colorControl;
 		this._toolitemHandlers['.uno:FillColor'] = this._colorControl;
 
-		this._toolitemHandlers['.uno:HyperlinkDialog'] = this._insertHyperlinkControl;
 		this._toolitemHandlers['.uno:InsertTable'] = this._insertTableControl;
 		this._toolitemHandlers['.uno:InsertGraphic'] = this._insertGraphicControl;
 		this._toolitemHandlers['.uno:InsertAnnotation'] = this._insertAnnotationControl;
 		this._toolitemHandlers['.uno:LineSpacing'] = this._lineSpacingControl;
 		this._toolitemHandlers['.uno:CharSpacing'] = this._CharSpacing;
-		this._toolitemHandlers['.uno:CharmapControl'] = this._symbolControl;
 		this._toolitemHandlers['.uno:Cut'] = this._clipboardButtonControl;
 		this._toolitemHandlers['.uno:Copy'] = this._clipboardButtonControl;
 		this._toolitemHandlers['.uno:Paste'] = this._clipboardButtonControl;
@@ -48,33 +48,29 @@ L.Control.NotebookbarBuilder = L.Control.JSDialogBuilder.extend({
 		this._toolitemHandlers['.uno:ConditionalFormatMenu'] = this._conditionalFormatControl;
 		this._toolitemHandlers['.uno:SetBorderStyle'] = this._borderStyleControl;
 		this._toolitemHandlers['.uno:SetDefault'] = this._formattingControl;
-		this._toolitemHandlers['.uno:Presentation'] = this._startPresentationControl;
 		this._toolitemHandlers['.uno:Save'] = this._saveControl;
 		this._toolitemHandlers['.uno:SaveAs'] = this._saveAsControl;
-		this._toolitemHandlers['.uno:shareas'] = this._shareAsControl;
 		this._toolitemHandlers['.uno:Print'] = this._printControl;
-		this._toolitemHandlers['.uno:rev-history'] = this._revHistoryControl;
-		this._toolitemHandlers['.uno:Menubar'] = this._menubarControl;
 		this._toolitemHandlers['.uno:InsertPageHeader'] = this._headerFooterControl;
 		this._toolitemHandlers['.uno:InsertPageFooter'] = this._headerFooterControl;
 		this._toolitemHandlers['.uno:Text'] = this._insertTextBoxControl;
 		this._toolitemHandlers['.uno:DrawText'] = this._insertTextBoxControl;
 		this._toolitemHandlers['.uno:VerticalText'] = this._insertTextBoxControl;
-		this._toolitemHandlers['.uno:ShowResolvedAnnotations'] = this._showResolvedAnnotationsControl;
 		this._toolitemHandlers['.uno:OnlineHelp'] = this._onlineHelpControl;
+		this._toolitemHandlers['.uno:ForumHelp'] = this._onlineHelpControl;
 		this._toolitemHandlers['.uno:KeyboardShortcuts'] = this._onlineHelpControl;
 		this._toolitemHandlers['.uno:ReportIssue'] = this._onlineHelpControl;
 		this._toolitemHandlers['.uno:LatestUpdates'] = this._onlineHelpControl;
 		this._toolitemHandlers['.uno:Feedback'] = this._onlineHelpControl;
 		this._toolitemHandlers['.uno:About'] = this._onlineHelpControl;
 		this._toolitemHandlers['.uno:FullScreen'] = this._onlineHelpControl;
+		this._toolitemHandlers['.uno:LanguageMenu'] = JSDialog.notebookbarLanguageSelector;
 
 		this._toolitemHandlers['.uno:SelectWidth'] = function() {};
 		this._toolitemHandlers['.uno:SetOutline'] = function() {};
 		this._toolitemHandlers['.uno:DesignerDialog'] = function() {};
 		this._toolitemHandlers['.uno:Zoom'] = function() {};
 		this._toolitemHandlers['.uno:PrintPreview'] = function() {};
-		this._toolitemHandlers['.uno:Navigator'] = function() {};
 		this._toolitemHandlers['.uno:InsertObject'] = function() {};
 		this._toolitemHandlers['.uno:Gallery'] = function() {};
 		this._toolitemHandlers['.uno:InsertAVMedia'] = function() {};
@@ -90,7 +86,6 @@ L.Control.NotebookbarBuilder = L.Control.JSDialogBuilder.extend({
 		this._toolitemHandlers['.uno:StarShapes'] = function() {};
 		this._toolitemHandlers['.uno:CalloutShapes'] = function() {};
 		this._toolitemHandlers['.uno:FlowChartShapes'] = function() {};
-		this._toolitemHandlers['.uno:InsertObjectStarMath'] = function() {};
 		this._toolitemHandlers['.uno:EmojiControl'] = function() {};
 		this._toolitemHandlers['.uno:InsertDraw'] = function() {};
 		this._toolitemHandlers['.uno:EditGlossary'] = function() {};
@@ -141,7 +136,6 @@ L.Control.NotebookbarBuilder = L.Control.JSDialogBuilder.extend({
 		this._toolitemHandlers['.uno:Insert'] = function() {};
 		this._toolitemHandlers['.uno:InsertCell'] = function() {};
 		this._toolitemHandlers['.uno:ToolProtectionDocument'] = function() {};
-		this._toolitemHandlers['.uno:Protect'] = function() {};
 		this._toolitemHandlers['.uno:ImportFromFile'] = function() {};
 		this._toolitemHandlers['.uno:PhotoAlbumDialog'] = function() {};
 		this._toolitemHandlers['.uno:AutoFormat'] = function() {};
@@ -234,9 +228,9 @@ L.Control.NotebookbarBuilder = L.Control.JSDialogBuilder.extend({
 		if (commandName === '.uno:CharFontName') {
 			if (window.ThisIsTheiOSApp) {
 				if (state === '')
-					$('#fontnamecombobox').html(_('Font Name'));
+					$('#fontnamecomboboxios').html(_('Font Name'));
 				else
-					$('#fontnamecombobox').html(state);
+					$('#fontnamecomboboxios').html(state);
 				window.LastSetiOSFontNameButtonFont = state;
 			}
 		} else if (commandName === '.uno:StyleApply') {
@@ -244,21 +238,25 @@ L.Control.NotebookbarBuilder = L.Control.JSDialogBuilder.extend({
 		}
 		else if (commandName === '.uno:ModifiedStatus') {
 			if (e.state === 'true') {
+				$('#Save1').addClass('savemodified');
 				$('#Save').addClass('savemodified');
 			}
 			else {
+				$('#Save1').removeClass('savemodified');
 				$('#Save').removeClass('savemodified');
 			}
 		}
 	},
 
 	_createiOsFontButton: function(parentContainer, data, builder) {
-		var table = L.DomUtil.createWithId('div', 'table-fontnamecombobox', parentContainer);
+		// Fix issue #5838 Use unique IDs for font name combobox elements
+		var table = L.DomUtil.createWithId('div', data.id, parentContainer);
 		var row = L.DomUtil.create('div', 'notebookbar row', table);
-		var button = L.DomUtil.createWithId('button', data.id, row);
+		var button = L.DomUtil.createWithId('button', data.id + 'ios', row);
 
 		$(table).addClass('select2 select2-container select2-container--default');
-		$(row).addClass('select2-selection select2-selection--single');
+		// Fix issue #5838 Don't add the "select2-selection--single" class
+		$(row).addClass('select2-selection');
 		$(button).addClass('select2-selection__rendered');
 
 		if (data.selectedEntries.length && data.entries[data.selectedEntries[0]])
@@ -344,36 +342,61 @@ L.Control.NotebookbarBuilder = L.Control.JSDialogBuilder.extend({
 	// overriden
 	_createTabClick: function(builder, t, tabs, contentDivs, tabIds)
 	{
+		var tooltipCollapsed = _('Tap to expand');
+		var tooltipExpanded = _('Tap to collapse');
+		$(tabs[t]).prop('title', tooltipExpanded);
 		return function(event) {
 			var tabIsSelected = $(tabs[t]).hasClass('selected');
 			var notebookbarIsCollapsed = builder.wizard.isCollapsed();
 
-			if (tabIsSelected && !notebookbarIsCollapsed) {
+			var accessibilityInputElementHasFocus = app.UI.notebookbarAccessibility && app.UI.notebookbarAccessibility.accessibilityInputElement === document.activeElement ? true: false;
+
+			if (tabIsSelected && !notebookbarIsCollapsed && !accessibilityInputElementHasFocus) {
 				builder.wizard.collapse();
+				$(tabs[t]).prop('title', tooltipCollapsed);
 			} else if (notebookbarIsCollapsed) {
 				builder.wizard.extend();
+				$(tabs[t]).prop('title', tooltipExpanded);
 			}
 
 			$(tabs[t]).addClass('selected');
+			tabs[t].setAttribute('aria-selected', 'true');
+			tabs[t].removeAttribute('tabindex');
 			for (var i = 0; i < tabs.length; i++) {
 				if (i !== t) {
 					$(tabs[i]).removeClass('selected');
-					$(contentDivs[i]).hide();
+					tabs[i].setAttribute('aria-selected', 'false');
+					tabs[i].tabIndex = -1;
+					$(tabs[i]).prop('title', '');
+					$(contentDivs[i]).addClass('hidden');
 				}
 			}
-			$(contentDivs[t]).show();
+			$(contentDivs[t]).removeClass('hidden');
 			$(window).resize();
 			builder.wizard.selectedTab(tabIds[t]);
 
-			// don't lose focus on tab change
-			event.preventDefault();
-			builder.map.focus();
+			// Keep focus if user is navigating via keyboard.
+			if (!tabs[t].enterPressed) {
+				// don't lose focus on tab change
+				event.preventDefault();
+				builder.map.focus();
+				t.enterPressed = false;
+			}
 		};
 	},
 
 	_overriddenTabsControlHandler: function(parentContainer, data, builder) {
 		data.tabs = builder.wizard.getTabs();
-		return builder._tabsControlHandler(parentContainer, data, builder);
+		return builder._tabsControlHandler(parentContainer, data, builder, _('Tap to collapse'));
+	},
+
+	_overriddenTabPageHandler: function(parentContainer, data, builder) {
+		var result = builder._tabPageHandler(parentContainer, data, builder);
+
+		var tabPage = parentContainer.lastChild;
+		JSDialog.MakeFocusCycle(tabPage);
+
+		return result;
 	},
 
 	_toolboxHandler: function(parentContainer, data) {
@@ -386,6 +409,58 @@ L.Control.NotebookbarBuilder = L.Control.JSDialogBuilder.extend({
 		return true;
 	},
 
+	_makeW2MenuFocusable: function(builder, id, menu, parentId, itemCallback) {
+		var element = document.getElementById(id);
+		var rows = element.getElementsByTagName('tr');
+		rows = Array.from(rows);
+
+		if (rows.length > 0) {
+			var tabStartIndex = 1000; // Shouldn't be 0 (zero).
+			// Loop focus inside menu - start.
+			var parentNode = rows[0].parentNode;
+			var trBegin = document.createElement('tr');
+			trBegin.tabIndex = tabStartIndex - 1;
+			trBegin.id = id + '-beginning';
+			parentNode.insertBefore(trBegin, parentNode.children[0]);
+
+			var trEnd = document.createElement('tr');
+			trEnd.id = id + '-ending';
+			trEnd.tabIndex = tabStartIndex + rows.length;
+			parentNode.appendChild(trEnd);
+
+			trBegin.addEventListener('focusin', function() {
+				rows[rows.length - 1].focus();
+			});
+
+			trEnd.addEventListener('focusin', function() {
+				rows[0].focus();
+			});
+			// Loop focus inside menu - end.
+
+			rows.forEach(function(row, index) {
+				if (!menu[index].type || (menu[index].type !== 'break' && menu[index].type !== 'separator'))
+					row.tabIndex = index + tabStartIndex;
+
+				row.onkeydown = function(e) {
+					var elementToHide = document.getElementById(id);
+					if (e.code === 'Enter' || e.code === 'Space') {
+						itemCallback({ item: menu[index] });
+						if (elementToHide)
+							elementToHide.style.display = 'none';
+					}
+					else if (e.code === 'Escape') {
+						if (elementToHide)
+							elementToHide.style.display = 'none';
+						var parentUNOButton = document.getElementById(parentId).querySelector('button');
+						parentUNOButton ? document.getElementById(parentId).querySelector('button').focus() : document.getElementById(parentId).focus();
+					}
+				};
+			});
+
+			trEnd.focus();
+		}
+	},
+
 	_menubarToolItemHandler: function(parentContainer, data, builder) {
 		if (data.id && data.id.startsWith('downloadas-')) {
 			var format = data.id.substring('downloadas-'.length);
@@ -395,30 +470,297 @@ L.Control.NotebookbarBuilder = L.Control.JSDialogBuilder.extend({
 				return false;
 		}
 
-		var originalInLineState = builder.options.useInLineLabelsForUnoButtons;
-		builder.options.useInLineLabelsForUnoButtons = true;
-
 		data.command = data.id;
-		var control = builder._unoToolButton(parentContainer, data, builder);
 
-		builder.options.useInLineLabelsForUnoButtons = originalInLineState;
+		var isDownloadAsGroup = data.id === 'downloadas';
+		var isSaveAsGroup = data.id === 'saveas';
+		var isExportAsGroup = data.id === 'exportas';
+		var options = {};
+		var hasCustomMenu = isDownloadAsGroup || isSaveAsGroup || isExportAsGroup;
+		if (hasCustomMenu) {
+			options.hasDropdownArrow = true;
+		}
+
+		var control = builder._unoToolButton(parentContainer, data, builder, options);
+		var submenuOpts = builder._getSubmenuOpts(builder.options.map._docLayer._docType, data.id, builder);
 
 		$(control.container).unbind('click.toolbutton');
-		if (!builder.map.isFreemiumDeniedItem(data)) {
+		if (!builder.map.isLockedItem(data)) {
 			$(control.container).click(function () {
-				L.control.menubar()._executeAction.bind({_map: builder.options.map})(undefined, {id: data.id});
+				if (!hasCustomMenu) {
+					L.control.menubar()._executeAction.bind({_map: builder.options.map})(undefined, {id: data.id});
+					return;
+				}
+
+				var itemCallback = function(event) {
+					builder.map.dispatch(event.item.id);
+				};
+
+				$(control.container).w2menu({
+					name: 'download-as-menu',
+					items: submenuOpts,
+					onSelect: itemCallback
+				});
+
+				builder._makeW2MenuFocusable(builder, 'w2ui-overlay-download-as-menu', submenuOpts, data.id, itemCallback);
 			});
+		}
+
+		for (var i in submenuOpts) {
+			var item = submenuOpts[i];
+
+			if (item.id.startsWith('export')) {
+				var format = item.id.substring('export'.length);
+				builder.map._docLayer.registerExportFormat(item.text, format);
+			}
+			else if (item.id.startsWith('downloadas-')) {
+				var format = item.id.substring('downloadas-'.length);
+				builder.map._docLayer.registerExportFormat(item.text, format);
+			}
 		}
 	},
 
-	_insertHyperlinkControl: function(parentContainer, data, builder) {
-		var control = builder._unoToolButton(parentContainer, data, builder);
+	_inlineMenubarToolItemHandler: function(parentContainer, data, builder) {
+		var originalInLineState = builder.options.useInLineLabelsForUnoButtons;
+		builder.options.useInLineLabelsForUnoButtons = true;
 
-		$(control.container).unbind('click.toolbutton');
-		$(control.container).click(function () {
-			builder.map.showHyperlinkDialog();
+		builder._menubarToolItemHandler(parentContainer, data, builder);
+
+		builder.options.useInLineLabelsForUnoButtons = originalInLineState;
+
+		return false;
+	},
+
+	_bigMenubarToolItemHandler: function(parentContainer, data, builder) {
+		var noLabels = builder.options.noLabelsForUnoButtons;
+		builder.options.noLabelsForUnoButtons = false;
+
+		builder._menubarToolItemHandler(parentContainer, data, builder);
+
+		builder.options.noLabelsForUnoButtons = noLabels;
+
+		return false;
+	},
+
+	_getSubmenuOpts: function(docType, id, builder) {
+		switch (id) {
+		case 'downloadas':
+			return builder._getDownloadAsSubmenuOpts(docType);
+		case 'saveas':
+			return builder._getSaveAsSubmenuOpts(docType);
+		case 'exportas':
+			return builder._getExportAsSubmenuOpts(docType);
+		}
+		return [];
+	},
+
+	_getDownloadAsSubmenuOpts: function(docType) {
+		var submenuOpts = [];
+
+		if (docType === 'text') {
+			submenuOpts = [
+				{
+					'id': 'downloadas-odt',
+					'text': _('ODF text document (.odt)')
+				},
+				{
+					'id': 'downloadas-rtf',
+					'text': _('Rich Text (.rtf)')
+				},
+				{
+					'id': 'downloadas-docx',
+					'text': _('Word Document (.docx)')
+				},
+				{
+					'id': 'downloadas-doc',
+					'text': _('Word 2003 Document (.doc)')
+				},
+				{
+					'id': !window.ThisIsAMobileApp ? 'exportepub' : 'downloadas-epub',
+					'text': _('EPUB (.epub)'),
+					'command': !window.ThisIsAMobileApp ? 'exportepub' : 'downloadas-epub'
+				},
+				{
+					'id': !window.ThisIsAMobileApp ? 'exportdirectpdf' : 'downloadas-direct-pdf',
+					'text': _('PDF Document (.pdf)'),
+					'command': !window.ThisIsAMobileApp ? 'exportdirectpdf' : 'downloadas-direct-pdf'
+				},
+				{
+					'id': !window.ThisIsAMobileApp ? 'exportpdf' : 'downloadas-pdf',
+					'text': _('PDF Document (.pdf) as...'),
+					'command': !window.ThisIsAMobileApp ? 'exportpdf' : 'downloadas-pdf'
+				}
+			];
+		} else if (docType === 'spreadsheet') {
+			submenuOpts = [
+				{
+					'id': 'downloadas-ods',
+					'text': _('ODF spreadsheet (.ods)')
+				},
+				{
+					'id': 'downloadas-xlsx',
+					'text': _('Excel Spreadsheet (.xlsx)')
+				},
+				{
+					'id': 'downloadas-xls',
+					'text': _('Excel 2003 Spreadsheet (.xls)')
+				},
+				{
+					'id': 'downloadas-csv',
+					'text': _('CSV File (.csv)')
+				},
+				{
+					'id': !window.ThisIsAMobileApp ? 'exportdirectpdf' : 'downloadas-direct-pdf',
+					'text': _('PDF Document (.pdf)'),
+					'command': !window.ThisIsAMobileApp ? 'exportdirectpdf' : 'downloadas-direct-pdf'
+				},
+				{
+					'id': !window.ThisIsAMobileApp ? 'exportpdf' : 'downloadas-pdf',
+					'text': _('PDF Document (.pdf) as...'),
+					'command': !window.ThisIsAMobileApp ? 'exportpdf' : 'downloadas-pdf'
+				}
+			];
+		} else if (docType === 'presentation') {
+			submenuOpts = [
+				{
+					'id': 'downloadas-odp',
+					'text': _('ODF presentation (.odp)')
+				},
+				{
+					'id': 'downloadas-odg',
+					'text': _('ODF Drawing (.odg)')
+				},
+				{
+					'id': 'downloadas-pptx',
+					'text': _('PowerPoint Presentation (.pptx)')
+				},
+				{
+					'id': 'downloadas-ppt',
+					'text': _('PowerPoint 2003 Presentation (.ppt)')
+				},
+				{
+					'id': !window.ThisIsAMobileApp ? 'exportdirectpdf' : 'downloadas-direct-pdf',
+					'text': _('PDF Document (.pdf)'),
+					'command': !window.ThisIsAMobileApp ? 'exportdirectpdf' : 'downloadas-direct-pdf'
+				},
+				{
+					'id': !window.ThisIsAMobileApp ? 'exportpdf' : 'downloadas-pdf',
+					'text': _('PDF Document (.pdf) as...'),
+					'command': !window.ThisIsAMobileApp ? 'exportpdf' : 'downloadas-pdf'
+				}
+			];
+		}
+
+		submenuOpts.forEach(function mapIconToItem(menuItem) {
+			menuItem.icon = menuItem.id + '-submenu-icon';
 		});
-		builder._preventDocumentLosingFocusOnClick(control.container);
+
+		return submenuOpts;
+	},
+
+	_getSaveAsSubmenuOpts: function(docType) {
+		var submenuOpts = [];
+
+		if (docType === 'text') {
+			submenuOpts = [
+				{
+					'id': 'saveas-odt',
+					'text': _('ODF text document (.odt)')
+				},
+				{
+					'id': 'saveas-rtf',
+					'text': _('Rich Text (.rtf)')
+				},
+				{
+					'id': 'saveas-docx',
+					'text': _('Word Document (.docx)')
+				},
+				{
+					'id': 'saveas-doc',
+					'text': _('Word 2003 Document (.doc)')
+				}
+			];
+		} else if (docType === 'spreadsheet') {
+			submenuOpts = [
+				{
+					'id': 'saveas-ods',
+					'text': _('ODF spreadsheet (.ods)')
+				},
+				{
+					'id': 'saveas-xlsx',
+					'text': _('Excel Spreadsheet (.xlsx)')
+				},
+				{
+					'id': 'saveas-xls',
+					'text': _('Excel 2003 Spreadsheet (.xls)')
+				}
+			];
+		} else if (docType === 'presentation') {
+			submenuOpts = [
+				{
+					'id': 'saveas-odp',
+					'text': _('ODF presentation (.odp)')
+				},
+				{
+					'id': 'saveas-pptx',
+					'text': _('PowerPoint Presentation (.pptx)')
+				},
+				{
+					'id': 'saveas-ppt',
+					'text': _('PowerPoint 2003 Presentation (.ppt)')
+				}
+			];
+		}
+
+		submenuOpts.forEach(function mapIconToItem(menuItem) {
+			menuItem.icon = menuItem.id + '-submenu-icon';
+		});
+
+		return submenuOpts;
+	},
+
+	_getExportAsSubmenuOpts: function(docType) {
+		var submenuOpts = [];
+
+		if (docType === 'text') {
+			submenuOpts = [
+				{
+					'id': 'exportas-pdf',
+					'text': _('PDF Document (.pdf)')
+				},
+				{
+					'id': 'exportas-epub',
+					'text': _('EPUB (.epub)')
+				}
+			];
+		} else if (docType === 'spreadsheet') {
+			submenuOpts = [
+				{
+					'id': 'exportas-pdf',
+					'text': _('PDF Document (.pdf)')
+				}
+			];
+		} else if (docType === 'presentation') {
+			submenuOpts = [
+				{
+					'id': 'exportas-pdf',
+					'text': _('PDF Document (.pdf)')
+				}
+			];
+		} else if (docType === 'drawing') {
+			submenuOpts = [
+				{
+					'id': 'exportas-pdf',
+					'text': _('PDF Document (.pdf)')
+				}
+			];
+		}
+
+		submenuOpts.forEach(function mapIconToItem(menuItem) {
+			menuItem.icon = menuItem.id + '-submenu-icon';
+		});
+
+		return submenuOpts;
 	},
 
 	_headerFooterControl: function(parentContainer, data, builder) {
@@ -445,25 +787,13 @@ L.Control.NotebookbarBuilder = L.Control.JSDialogBuilder.extend({
 		builder._preventDocumentLosingFocusOnClick(control.container);
 	},
 
-	_showResolvedAnnotationsControl: function(parentContainer, data, builder) {
-		var control = builder._unoToolButton(parentContainer, data, builder);
-
-		$(control.container).unbind('click.toolbutton');
-		$(control.container).click(function () {
-			var items = builder.map['stateChangeHandler'];
-			var val = items.getItemValue('.uno:ShowResolvedAnnotations');
-			val = (val === 'true' || val === true);
-			builder.map.showResolvedComments(!val);
-		});
-		builder._preventDocumentLosingFocusOnClick(control.container);
-	},
-
 	_onlineHelpControl: function(parentContainer, data, builder) {
+		var originalDataId = data.id; // builder can change this
 		var control = builder._unoToolButton(parentContainer, data, builder);
 
 		$(control.container).unbind('click.toolbutton');
 		$(control.container).click(function () {
-			L.control.menubar()._executeAction.bind({_map: builder.options.map})(undefined, {id: data.id});
+			L.control.menubar()._executeAction.bind({_map: builder.options.map})(undefined, {id: originalDataId});
 		});
 		builder._preventDocumentLosingFocusOnClick(control.container);
 	},
@@ -512,14 +842,63 @@ L.Control.NotebookbarBuilder = L.Control.JSDialogBuilder.extend({
 		var options = {hasDropdownArrow: true};
 		var control = builder._unoToolButton(parentContainer, data, builder, options);
 
+		var closeAll = function (skip) {
+			var menus = ['conditionalformatmenu', 'conditionalformatmenu-sub'];
+			for (var i = 0; i < menus.length; ++i) {
+				// called on onHide so skip it, it is already being hidden
+				if (skip === menus[i])
+					continue;
+				var div = $('#w2ui-overlay-'+ menus[i]);
+				if (div.length && div[0])
+					div[0].hide();
+			}
+		};
+
+		var menu = [
+			{text: _UNO('.uno:ConditionalFormatDialog', 'spreadsheet'), uno: 'ConditionalFormatDialog'},
+			{text: _UNO('.uno:ColorScaleFormatDialog', 'spreadsheet'), uno: 'ColorScaleFormatDialog'},
+			{text: _UNO('.uno:DataBarFormatDialog', 'spreadsheet'), uno: 'DataBarFormatDialog'},
+			{text: _UNO('.uno:IconSetFormatDialog', 'spreadsheet'), uno: 'IconSetFormatDialog', html: window.getConditionalFormatMenuHtml('iconsetoverlay') },
+			{text: _UNO('.uno:CondDateFormatDialog', 'spreadsheet'), uno: 'CondDateFormatDialog'},
+			{type: 'separator'},
+			{text: _UNO('.uno:ConditionalFormatManagerDialog', 'spreadsheet'), uno: 'ConditionalFormatManagerDialog'}
+		];
+
 		$(control.container).unbind('click.toolbutton');
 		$(control.container).click(function () {
 			if (!$('#conditionalformatmenu-grid').length) {
-				$(control.container).w2overlay(window.getConditionalFormatMenuHtml());
+				var itemCallback = function(event) {
+					if (event.item.html && !$('#w2ui-overlay-conditionalformatmenu-sub').length) {
+						$(event.originalEvent.target).w2overlay({
+							name: 'conditionalformatmenu-sub',
+							html: event.item.html,
+							left: 100,
+							top: -20,
+							noTip: true,
+							onHide: function() {
+								closeAll(this.name);
+							}
+						});
+						if ($('#iconsetoverlay').length) {
+							$('#iconsetoverlay').click(function() {
+								builder.map.sendUnoCommand('.uno:IconSetFormatDialog');
+								closeAll();
+							});
+						}
+					} else if (!event.item.html) {
+						builder.map.sendUnoCommand('.uno:' + event.item.uno);
+						closeAll();
+					}
+				};
 
-				$('#conditionalformatmenu-grid tr td').click(function () {
-					$(control.container).w2overlay();
+				$(control.container).w2menu({
+					name: 'conditionalformatmenu',
+					items: menu,
+					keepOpen: true,
+					onSelect: itemCallback
 				});
+
+				builder._makeW2MenuFocusable(builder, 'w2ui-overlay-conditionalformatmenu', menu, data.id, itemCallback);
 			}
 		});
 		builder._preventDocumentLosingFocusOnClick(control.container);
@@ -549,19 +928,25 @@ L.Control.NotebookbarBuilder = L.Control.JSDialogBuilder.extend({
 		$(control.container).unbind('click.toolbutton');
 		$(control.container).click(function () {
 			if (builder.map['wopi'].EnableInsertRemoteImage) {
-				$(control.container).w2menu({
-					items: [
-						{id: 'localgraphic', text: _('Insert Local Image')},
-						{id: 'remotegraphic', text: _UNO('.uno:InsertGraphic', '', true)}
-					],
-					onSelect: function (event) {
-						if (event.item.id === 'localgraphic') {
-							L.DomUtil.get('insertgraphic').click();
-						} else if (event.item.id === 'remotegraphic') {
-							builder.map.fire('postMessage', {msgId: 'UI_InsertGraphic'});
-						}
+				var menu = [
+					{id: 'localgraphic', text: _('Insert Local Image')},
+					{id: 'remotegraphic', text: _UNO('.uno:InsertGraphic', '', true)}
+				];
+
+				var itemCallback = function(event) {
+					if (event.item.id === 'localgraphic') {
+						L.DomUtil.get('insertgraphic').click();
+					} else if (event.item.id === 'remotegraphic') {
+						builder.map.fire('postMessage', {msgId: 'UI_InsertGraphic'});
 					}
+				};
+
+				$(control.container).w2menu({
+					name: 'insert-graphic-menu',
+					items: menu,
+					onSelect: itemCallback
 				});
+				builder._makeW2MenuFocusable(builder, 'w2ui-overlay-insert-graphic-menu', menu, data.id, itemCallback);
 			} else {
 				L.DomUtil.get('insertgraphic').click();
 			}
@@ -582,14 +967,39 @@ L.Control.NotebookbarBuilder = L.Control.JSDialogBuilder.extend({
 	},
 
 	_clipboardButtonControl: function(parentContainer, data, builder) {
-		var control = builder._unoToolButton(parentContainer, data, builder);
+		var isPaste = data.command === '.uno:Paste';
+		var options = {hasDropdownArrow: isPaste};
+		var control = builder._unoToolButton(parentContainer, data, builder, options);
 
 		if (builder.map._clip) {
-			$(control.container).unbind('click.toolbutton');
-			$(control.container).click(function () {
-				builder.map._clip.filterExecCopyPaste(data.command);
-			});
+			if (isPaste) {
+				var menu = [
+					{text: _UNO('.uno:Paste', 'text'), uno: 'Paste', hint: L.Control.MenubarShortcuts.shortcuts.PASTE},
+					{text: _UNO('.uno:PasteSpecial', 'text'), uno: 'PasteSpecial', hint: L.Control.MenubarShortcuts.shortcuts.PASTE_SPECIAL},
+				];
+
+				var itemCallback = function(event) {
+					if (event.item)
+						builder.map._clip.filterExecCopyPaste('.uno:' + event.item.uno);
+				};
+
+				$(control.container).unbind('click.toolbutton');
+				$(control.container).click(function () {
+					$(control.container).w2menu({
+						name: 'pastemenu',
+						items: menu,
+						onSelect: itemCallback
+					});
+					builder._makeW2MenuFocusable(builder, 'w2ui-overlay-pastemenu', menu, data.id, itemCallback);
+				});
+			} else {
+				$(control.container).unbind('click.toolbutton');
+				$(control.container).click(function () {
+					builder.map._clip.filterExecCopyPaste(data.command);
+				});
+			}
 		}
+
 		builder._preventDocumentLosingFocusOnClick(control.container);
 	},
 
@@ -609,19 +1019,25 @@ L.Control.NotebookbarBuilder = L.Control.JSDialogBuilder.extend({
 					return false;
 			};
 
+			var menu = [
+				{id: 'space1', text: _('Very Tight'), uno: 'Spacing?Spacing:short=-60', checked: isChecked(-60)},
+				{id: 'space1', text: _('Tight'), uno: 'Spacing?Spacing:short=-30', checked: isChecked(-30)},
+				{id: 'space15', text: _('Normal'), uno: 'Spacing?Spacing:short=0', checked: isChecked(0)},
+				{id: 'space2', text: _('Loose'), uno: 'Spacing?Spacing:short=60', checked: isChecked(60)},
+				{id: 'space2', text: _('Very Loose'), uno: 'Spacing?Spacing:short=120', checked: isChecked(120)},
+			];
+
+			var itemCallback = function(event) {
+				builder.map.sendUnoCommand('.uno:' + event.item.uno);
+			};
+
 			$(control.container).w2menu({
-				items: [
-					{id: 'space1', text: _('Very Tight'), uno: 'Spacing?Spacing:short=-60', checked: isChecked(-60)},
-					{id: 'space1', text: _('Tight'), uno: 'Spacing?Spacing:short=-30', checked: isChecked(-30)},
-					{id: 'space15', text: _('Normal'), uno: 'Spacing?Spacing:short=0', checked: isChecked(0)},
-					{id: 'space2', text: _('Loose'), uno: 'Spacing?Spacing:short=60', checked: isChecked(60)},
-					{id: 'space2', text: _('Very Loose'), uno: 'Spacing?Spacing:short=120', checked: isChecked(120)},
-				],
+				name: 'char-space-menu',
+				items: menu,
 				type: 'menu',
-				onSelect: function (event) {
-					builder.map.sendUnoCommand('.uno:' + event.item.uno);
-				}
+				onSelect: itemCallback
 			});
+			builder._makeW2MenuFocusable(builder, 'w2ui-overlay-char-space-menu', menu, data.id, itemCallback);
 		});
 	},
 
@@ -640,40 +1056,26 @@ L.Control.NotebookbarBuilder = L.Control.JSDialogBuilder.extend({
 					return false;
 			};
 
+			var menu = [
+				{id: 'spacepara1', img: 'spacepara1', text: _UNO('.uno:SpacePara1'), uno: 'SpacePara1', checked: isChecked('.uno:SpacePara1')},
+				{id: 'spacepara15', img: 'spacepara15', text: _UNO('.uno:SpacePara15'), uno: 'SpacePara15', checked: isChecked('.uno:SpacePara15')},
+				{id: 'spacepara2', img: 'spacepara2', text: _UNO('.uno:SpacePara2'), uno: 'SpacePara2', checked: isChecked('.uno:SpacePara2')},
+				{type: 'break'},
+				{id: 'paraspaceincrease', img: 'paraspaceincrease', text: _UNO('.uno:ParaspaceIncrease'), uno: 'ParaspaceIncrease'},
+				{id: 'paraspacedecrease', img: 'paraspacedecrease', text: _UNO('.uno:ParaspaceDecrease'), uno: 'ParaspaceDecrease'}
+			];
+
+			var itemCallback = function(event) {
+				builder.map.sendUnoCommand('.uno:' + event.item.uno);
+			};
+
 			$(control.container).w2menu({
-				items: [
-					{id: 'spacepara1', img: 'spacepara1', text: _UNO('.uno:SpacePara1'), uno: 'SpacePara1', checked: isChecked('.uno:SpacePara1')},
-					{id: 'spacepara15', img: 'spacepara15', text: _UNO('.uno:SpacePara15'), uno: 'SpacePara15', checked: isChecked('.uno:SpacePara15')},
-					{id: 'spacepara2', img: 'spacepara2', text: _UNO('.uno:SpacePara2'), uno: 'SpacePara2', checked: isChecked('.uno:SpacePara2')},
-					{type: 'break'},
-					{id: 'paraspaceincrease', img: 'paraspaceincrease', text: _UNO('.uno:ParaspaceIncrease'), uno: 'ParaspaceIncrease'},
-					{id: 'paraspacedecrease', img: 'paraspacedecrease', text: _UNO('.uno:ParaspaceDecrease'), uno: 'ParaspaceDecrease'}
-				],
+				items: menu,
+				name: 'line-spacing-menu',
 				type: 'menu',
-				onSelect: function (event) {
-					builder.map.sendUnoCommand('.uno:' + event.item.uno);
-				}
+				onSelect: itemCallback
 			});
-		});
-		builder._preventDocumentLosingFocusOnClick(control.container);
-	},
-
-	_symbolControl: function(parentContainer, data, builder) {
-		var control = builder._unoToolButton(parentContainer, data, builder);
-
-		$(control.container).unbind('click.toolbutton');
-		$(control.container).click(function () {
-			builder.map.sendUnoCommand('.uno:InsertSymbol');
-		});
-		builder._preventDocumentLosingFocusOnClick(control.container);
-	},
-
-	_startPresentationControl: function(parentContainer, data, builder) {
-		var control = builder._unoToolButton(parentContainer, data, builder);
-
-		$(control.container).unbind('click.toolbutton');
-		$(control.container).click(function () {
-			builder.map.fire('fullscreen');
+			builder._makeW2MenuFocusable(builder, 'w2ui-overlay-line-spacing-menu', menu, data.id, itemCallback);
 		});
 		builder._preventDocumentLosingFocusOnClick(control.container);
 	},
@@ -684,8 +1086,8 @@ L.Control.NotebookbarBuilder = L.Control.JSDialogBuilder.extend({
 		$(control.container).unbind('click.toolbutton');
 		$(control.container).click(function () {
 			// Save only when not read-only.
-			if (!builder.map.isPermissionReadOnly()) {
-				builder.map.fire('postMessage', {msgId: 'UI_Save'});
+			if (!builder.map.isReadOnlyMode()) {
+				builder.map.fire('postMessage', {msgId: 'UI_Save', args: { source: 'notebookbar' }});
 				if (!builder.map._disableDefaultAction['UI_Save']) {
 					builder.map.save(false, false);
 				}
@@ -705,16 +1107,6 @@ L.Control.NotebookbarBuilder = L.Control.JSDialogBuilder.extend({
 		builder._preventDocumentLosingFocusOnClick(control.container);
 	},
 
-	_shareAsControl: function(parentContainer, data, builder) {
-		var control = builder._unoToolButton(parentContainer, data, builder);
-
-		$(control.container).unbind('click.toolbutton');
-		$(control.container).click(function () {
-			builder.map.openShare();
-		});
-		builder._preventDocumentLosingFocusOnClick(control.container);
-	},
-
 	_printControl: function(parentContainer, data, builder) {
 		data.text = data.text.replace('...', '');
 		var control = builder._unoToolButton(parentContainer, data, builder);
@@ -726,178 +1118,12 @@ L.Control.NotebookbarBuilder = L.Control.JSDialogBuilder.extend({
 		builder._preventDocumentLosingFocusOnClick(control.container);
 	},
 
-	_revHistoryControl: function(parentContainer, data, builder) {
-		var control = builder._unoToolButton(parentContainer, data, builder);
-
-		$(control.container).unbind('click.toolbutton');
-		$(control.container).click(function () {
-			builder.map.openRevisionHistory();
-		});
-		builder._preventDocumentLosingFocusOnClick(control.container);
-	},
-
-	_menubarControl: function(parentContainer, data, builder) {
-		var control = builder._unoToolButton(parentContainer, data, builder);
-
-		$(control.container).unbind('click.toolbutton');
-		$(control.container).tooltip({disabled: true});
-		$(control.container).addClass('sm sm-simple lo-menu');
-
-		var disabledMacros = window.enableMacrosExecution === 'false';
-
-		var menu = {
-			text: [
-				{id: 'nb-hamburger', name: _('Menu'), type: 'menu', menu: [
-					{uno: '.uno:SelectAll'},
-				].concat(window.ThisIsAMobileApp ? [] : [
-					{name: _UNO('.uno:FullScreen', 'text'), id: 'fullscreen', type: 'action'},
-				]).concat([
-					{name: _('Show Ruler'), id: 'showruler', type: 'action'},
-					{type: 'separator'},
-					{name: _UNO('.uno:ChangesMenu', 'text'), id: 'changesmenu', type: 'menu', menu: [
-						{uno: '.uno:TrackChanges'},
-						{uno: '.uno:ShowTrackedChanges'},
-						{type: 'separator'},
-						{uno: '.uno:AcceptTrackedChanges'},
-						{uno: '.uno:AcceptAllTrackedChanges'},
-						{uno: '.uno:RejectAllTrackedChanges'},
-						{uno: '.uno:PreviousTrackedChange'},
-						{uno: '.uno:NextTrackedChange'}
-					]},
-					{uno: '.uno:SearchDialog'},
-					{type: 'separator'},
-					{name: _('Repair'), id: 'repair',  type: 'action'},
-					{name: _UNO('.uno:ToolsMenu', 'text'), id: 'tools', type: 'menu', menu: [
-						{uno: '.uno:SpellingAndGrammarDialog'},
-						{uno: '.uno:SpellOnline'},
-						{uno: '.uno:ThesaurusDialog'},
-						{name: _UNO('.uno:LanguageMenu'), type: 'menu', menu: [
-							{name: _UNO('.uno:SetLanguageSelectionMenu', 'text'), type: 'menu', menu: [
-								{name: _('None (Do not check spelling)'), id: 'noneselection', uno: '.uno:LanguageStatus?Language:string=Current_LANGUAGE_NONE'}]},
-							{name: _UNO('.uno:SetLanguageParagraphMenu', 'text'), type: 'menu', menu: [
-								{name: _('None (Do not check spelling)'), id: 'noneparagraph', uno: '.uno:LanguageStatus?Language:string=Paragraph_LANGUAGE_NONE'}]},
-							{name: _UNO('.uno:SetLanguageAllTextMenu', 'text'), type: 'menu', menu: [
-								{name: _('None (Do not check spelling)'), id: 'nonelanguage', uno: '.uno:LanguageStatus?Language:string=Default_LANGUAGE_NONE'}]}
-						]},
-						{uno: '.uno:WordCountDialog'},
-						{uno: '.uno:LineNumberingDialog'},
-						{type: 'separator'},
-						{uno: '.uno:RunMacro', hidden: disabledMacros},
-						{type: 'separator', hidden: disabledMacros},
-						{name: _UNO('.uno:AutoFormatMenu', 'text'), type: 'menu', menu: [
-							{uno: '.uno:OnlineAutoFormat'}]}
-					]}
-				])}
-			],
-			spreadsheet: [
-				{id: 'nb-hamburger', name: _('Menu'), type: 'menu', menu: [
-					{uno: '.uno:SelectAll'},
-					{name: _UNO('.uno:FullScreen', 'spreadsheet'), id: 'fullscreen', type: 'action'},
-					{type: 'separator'},
-					{uno: '.uno:SearchDialog'},
-					{type: 'separator'},
-					{name: _('Repair'), id: 'repair',  type: 'action'},
-					{name: _UNO('.uno:ToolsMenu', 'spreadsheet'), id: 'tools', type: 'menu', menu: [
-						{uno: '.uno:SpellDialog'},
-						{uno: '.uno:SpellOnline'},
-						{name: _UNO('.uno:LanguageMenu'), type: 'menu', menu: [
-							{name: _('None (Do not check spelling)'), id: 'nonelanguage', uno: '.uno:LanguageStatus?Language:string=Default_LANGUAGE_NONE'}]},
-						{uno: '.uno:GoalSeekDialog'},
-						{type: 'separator'},
-						{uno: '.uno:RunMacro', hidden: disabledMacros},
-						{type: 'separator', hidden: disabledMacros},
-						{name: _UNO('.uno:ConditionalFormatMenu', 'spreadsheet'), type: 'menu', menu: [
-							{uno: '.uno:ConditionalFormatDialog'},
-							{uno: '.uno:ColorScaleFormatDialog'},
-							{uno: '.uno:DataBarFormatDialog'},
-							{uno: '.uno:IconSetFormatDialog'},
-							{uno: '.uno:CondDateFormatDialog'},
-							{type: 'separator'},
-							{uno: '.uno:ConditionalFormatManagerDialog'}]}
-					]}
-				]}
-			],
-			presentation: [
-				{id: 'nb-hamburger', name: _('Menu'), type: 'menu', menu: [
-					{uno: '.uno:SelectAll'},
-					{name: _UNO('.uno:FullScreen', 'presentation'), id: 'fullscreen', type: 'action'},
-					{type: 'separator'},
-					{uno: '.uno:SlideMasterPage'},
-					{type: 'separator'},
-					{uno: '.uno:ModifyPage'},
-					{uno: '.uno:SlideChangeWindow'},
-					{uno: '.uno:CustomAnimation'},
-					{uno: '.uno:MasterSlidesPanel'},
-					{type: 'separator'},
-					{uno: '.uno:SearchDialog'},
-					{type: 'separator'},
-					{name: _('Repair'), id: 'repair',  type: 'action'},
-					{name: _UNO('.uno:ToolsMenu', 'presentation'), id: 'tools', type: 'menu', menu: [
-						{uno: '.uno:SpellDialog'},
-						{uno: '.uno:SpellOnline'},
-						{name: _UNO('.uno:LanguageMenu'), type: 'menu', menu: [
-							{name: _('None (Do not check spelling)'), id: 'nonelanguage', uno: '.uno:LanguageStatus?Language:string=Default_LANGUAGE_NONE'}]},
-						{type: 'separator', hidden: disabledMacros},
-						{uno: '.uno:RunMacro', hidden: disabledMacros}
-					]},
-				]}
-			],
-			drawing: [
-				{id: 'nb-hamburger', name: _('Menu'), type: 'menu', menu: [
-					{name: _UNO('.uno:FullScreen', 'presentation'), id: 'fullscreen', type: 'action'},
-					{type: 'separator'},
-					{uno: '.uno:SearchDialog'},
-					{type: 'separator'},
-					{name: _('Repair'), id: 'repair',  type: 'action'},
-					{name: _UNO('.uno:ToolsMenu', 'presentation'), id: 'tools', type: 'menu', menu: [
-						{uno: '.uno:SpellDialog'},
-						{uno: '.uno:SpellOnline'},
-						{name: _UNO('.uno:LanguageMenu'), type: 'menu', menu: [
-							{name: _('None (Do not check spelling)'), id: 'nonelanguage', uno: '.uno:LanguageStatus?Language:string=Default_LANGUAGE_NONE'}]},
-					]},
-				]}
-			]
-		};
-
-		var menubar = L.control.menubar({allowedReadonlyMenus: ['nb-hamburger']});
-		menubar._map = builder.map;
-
-		var docType = builder.map.getDocType();
-		var menuHtml = menubar._createMenu(menu[docType]);
-		document.getElementById('Menubar').setAttribute('role', 'menu');
-
-		$(control.container).html(menuHtml);
-
-		$(control.container).smartmenus({
-			hideOnClick: true,
-			showOnClick: true,
-			hideTimeout: 0,
-			hideDuration: 0,
-			showDuration: 0,
-			showTimeout: 0,
-			collapsibleHideDuration: 0,
-			subIndicatorsPos: 'append',
-			subIndicatorsText: '&#8250;'
-		});
-
-		$(menuHtml[0]).children('a').html('<img class="ui-content unobutton" src="images/lc_hamburger.svg" id="Hamburgerimg" alt="Menu">');
-		$(menuHtml[0]).children('a').click(function () {
-			$(control.container).smartmenus('menuHideAll');
-		});
-
-		$(control.container).bind('beforeshow.smapi', {self: menubar}, menubar._beforeShow);
-		$(control.container).bind('click.smapi', {self: menubar}, menubar._onClicked);
-		$(control.container).bind('select.smapi', {self: menubar}, menubar._onItemSelected);
-		$(control.container).bind('mouseenter.smapi', {self: menubar}, menubar._onMouseEnter);
-		$(control.container).bind('mouseleave.smapi', {self: menubar}, menubar._onMouseLeave);
-		$(control.container).bind('keydown', {self: menubar}, menubar._onKeyDown);
-
-		// initialize languages list
-		builder.map.on('commandvalues', menubar._onInitLanguagesMenu, menubar);
-		app.socket.sendMessage('commandvalues command=.uno:LanguageStatus');
-	},
-
 	buildControl: function(parent, data) {
+		if (!data.length)
+			return;
+
+		data = data[0];
+
 		var type = data.type;
 		var handler = this._controlHandlers[type];
 
@@ -907,7 +1133,7 @@ L.Control.NotebookbarBuilder = L.Control.JSDialogBuilder.extend({
 		if (handler)
 			var processChildren = handler(parent, data, this);
 		else
-			console.warn('NotebookbarBuilder: Unsupported control type: "' + type + '"');
+			window.app.console.warn('NotebookbarBuilder: Unsupported control type: "' + type + '"');
 
 		if (processChildren && data.children != undefined)
 			this.build(parent, data.children, isVertical, hasManyChildren);
@@ -916,6 +1142,11 @@ L.Control.NotebookbarBuilder = L.Control.JSDialogBuilder.extend({
 		}
 
 		this.options.useInLineLabelsForUnoButtons = false;
+	},
+
+	// replaces widget in-place with new instance with updated data
+	updateWidget: function (container, data) {
+		this._updateWidgetImpl(container, data, this.buildControl);
 	},
 
 	build: function(parent, data, hasVerticalParent, parentHasManyChildren) {
@@ -956,11 +1187,12 @@ L.Control.NotebookbarBuilder = L.Control.JSDialogBuilder.extend({
 
 			var hasManyChildren = childData.children && childData.children.length > 1;
 			if (hasManyChildren) {
-				var tableId = childData.id ? 'table-' + childData.id.replace(' ', '') : '';
+				var tableId = childData.id ? childData.id.replace(' ', '') : '';
 				var table = L.DomUtil.createWithId('div', tableId, td);
 				$(table).addClass(this.options.cssClass);
 				$(table).addClass('vertical');
 				var childObject = L.DomUtil.create('div', 'row ' + this.options.cssClass, table);
+				childObject.id = tableId ? tableId + '-row' : '';
 			} else {
 				childObject = td;
 			}
@@ -979,7 +1211,7 @@ L.Control.NotebookbarBuilder = L.Control.JSDialogBuilder.extend({
 					processChildren = handler(childObject, childData, this);
 					this.postProcess(childObject, childData);
 				} else
-					console.warn('NotebookbarBuilder: Unsupported control type: "' + childType + '"');
+					window.app.console.warn('NotebookbarBuilder: Unsupported control type: "' + childType + '"');
 
 				if (childType === 'toolbox' && hasVerticalParent === true && childData.children.length === 1)
 					this.options.useInLineLabelsForUnoButtons = true;

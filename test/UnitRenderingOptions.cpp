@@ -17,19 +17,20 @@
 #include <Util.hpp>
 #include <helpers.hpp>
 
-class COOLWebSocket;
-
 /// Rendering options testcase.
 class UnitRenderingOptions : public UnitWSD
 {
 public:
+    UnitRenderingOptions()
+        : UnitWSD("UnitRenderRenderingOptions")
+    {
+    }
+
     void invokeWSDTest() override;
 };
 
 void UnitRenderingOptions::invokeWSDTest()
 {
-    const char testname[] = "UnitRenderingOptions";
-
     try
     {
         // Load a document and make it empty, then paste some text into it.
@@ -40,18 +41,19 @@ void UnitRenderingOptions::invokeWSDTest()
         const std::string options
             = "{\"rendering\":{\".uno:HideWhitespace\":{\"type\":\"boolean\",\"value\":\"true\"}}}";
 
-        Poco::Net::HTTPRequest request(Poco::Net::HTTPRequest::HTTP_GET, documentURL);
-        Poco::Net::HTTPResponse response;
-        std::shared_ptr<COOLWebSocket> socket = helpers::connectLOKit(
-            Poco::URI(helpers::getTestServerURI()), request, response, testname);
+        std::shared_ptr<SocketPoll> socketPoll = std::make_shared<SocketPoll>("WithoutPasswordPoll");
+        socketPoll->startThread();
 
-        helpers::sendTextFrame(socket, "load url=" + documentURL + " options=" + options);
-        helpers::sendTextFrame(socket, "status");
+        std::shared_ptr<http::WebSocketSession> socket = helpers::connectLOKit(
+            socketPoll, Poco::URI(helpers::getTestServerURI()), documentURL, testname);
+
+        helpers::sendTextFrame(socket, "load url=" + documentURL + " options=" + options, testname);
+        helpers::sendTextFrame(socket, "status", testname);
         const auto status = helpers::assertResponseString(socket, "status:", testname);
 
         // Expected format is something like 'status: type=text parts=2 current=0 width=12808 height=1142'.
 
-        StringVector tokens(Util::tokenize(status, ' '));
+        StringVector tokens(StringVector::tokenize(status, ' '));
         LOK_ASSERT_EQUAL(static_cast<size_t>(8), tokens.size());
 
         const std::string token = tokens[5];

@@ -10,6 +10,7 @@
  */
 
 #include <config.h>
+#include <config_version.h>
 
 #ifndef __FreeBSD__
 #include <sys/capability.h>
@@ -62,6 +63,7 @@ static std::string UserInterface;
 static bool DisplayVersion = false;
 static std::string UnitTestLibrary;
 static std::string LogLevel;
+static std::string LogLevelStartup;
 static std::atomic<unsigned> ForkCounter(0);
 
 /// The [child pid -> jail path] map.
@@ -81,7 +83,8 @@ void dump_forkit_state()
     std::ostringstream oss;
 
     oss << "Forkit: " << ForkCounter << " forks\n"
-        << "  loglevel: " << LogLevel << "\n"
+        << "  LogLevel: " << LogLevel << "\n"
+        << "  LogLevelStartup: " << LogLevelStartup << "\n"
         << "  unit test: " << UnitTestLibrary << "\n"
 #ifndef KIT_IN_PROCESS
         << "  NoCapsForKit: " << NoCapsForKit << "\n"
@@ -125,18 +128,16 @@ protected:
         if (UnitKit::get().filterKitMessage(this, message))
             return;
 #endif
-        StringVector tokens = Util::tokenize(message);
-        Log::StreamLogger logger = Log::debug();
-        if (logger.enabled())
-        {
-            logger << _socketName << ": recv [";
-            for (const auto& token : tokens)
-            {
-                logger << tokens.getParam(token) << ' ';
-            }
+        StringVector tokens = StringVector::tokenize(message);
 
-            LOG_END(logger, true);
-        }
+        LOG_DBG(_socketName << ": recv [" <<
+                [&](auto& log)
+                {
+                    for (const auto& token : tokens)
+                    {
+                        log << tokens.getParam(token) << ' ';
+                    }
+                });
 
         // Note: Syntax or parsing errors here are unexpected and fatal.
         if (SigUtil::getTerminationFlag())
@@ -169,6 +170,14 @@ protected:
             {
                 LOG_ERR("Unknown setconfig command: " << message);
             }
+        }
+        else if (tokens.size() == 2 && tokens.equals(0, "addfont"))
+        {
+            // Tell core to use that font file
+            std::string fontFile = tokens[1];
+
+            assert(loKitPtr);
+            loKitPtr->pClass->setOption(loKitPtr, "addfont", Poco::URI(Poco::Path(fontFile)).toString().c_str());
         }
         else if (tokens.equals(0, "exit"))
         {
@@ -278,6 +287,9 @@ static void cleanupChildren()
     int status = 0;
     int segFaultCount = 0;
 
+    LOG_TRC("cleanupChildren with " << childJails.size()
+                                    << (childJails.size() == 1 ? " child" : " children"));
+
     // Reap quickly without doing slow cleanup so WSD can spawn more rapidly.
     while ((exitedChildPid = waitpid(-1, &status, WUNTRACED | WNOHANG)) > 0)
     {
@@ -302,6 +314,16 @@ static void cleanupChildren()
         {
             LOG_ERR("Unknown child " << exitedChildPid << " has exited");
         }
+    }
+
+    if (Log::traceEnabled())
+    {
+        std::ostringstream oss;
+        for (const auto& pair : childJails)
+            oss << pair.first << ' ';
+
+        LOG_TRC("cleanupChildren reaped " << cleanupJailPaths.size() << " children to have "
+                                          << childJails.size() << " left: " << oss.str());
     }
 
     if (segFaultCount)
@@ -333,7 +355,7 @@ static void cleanupChildren()
     while (i-- > 0)
     {
         const std::string path = cleanupJailPaths[i];
-        JailUtil::removeJail(path);
+        JailUtil::tryRemoveJail(path);
         const FileUtil::Stat st(path);
         if (st.good() && st.isDirectory())
             LOG_DBG("Could not remove jail path [" << path << "]. Will retry later.");
@@ -345,7 +367,6 @@ static void cleanupChildren()
 static int createLibreOfficeKit(const std::string& childRoot,
                                 const std::string& sysTemplate,
                                 const std::string& loTemplate,
-                                const std::string& loSubPath,
                                 bool queryVersion = false)
 {
     // Generate a jail ID to be used for in the jail path.
@@ -359,6 +380,7 @@ static int createLibreOfficeKit(const std::string& childRoot,
     ++spareKitId;
     LOG_DBG("Forking a coolkit process with jailId: " << jailId << " as spare coolkit #"
                                                       << spareKitId << '.');
+    const auto startForkingTime = std::chrono::steady_clock::now();
 
     const pid_t pid = fork();
     if (!pid)
@@ -384,7 +406,7 @@ static int createLibreOfficeKit(const std::string& childRoot,
             }
         }
 
-        lokit_main(childRoot, jailId, sysTemplate, loTemplate, loSubPath, NoCapsForKit, NoSeccomp,
+        lokit_main(childRoot, jailId, sysTemplate, loTemplate, NoCapsForKit, NoSeccomp,
                    queryVersion, DisplayVersion, spareKitId);
     }
     else
@@ -405,15 +427,20 @@ static int createLibreOfficeKit(const std::string& childRoot,
 #endif
     }
 
+    const auto duration = (std::chrono::steady_clock::now() - startForkingTime);
+    const auto durationMs = std::chrono::duration_cast<std::chrono::milliseconds>(duration);
+    LOG_TRC("Forking child took " << durationMs);
+
     return pid;
 }
 
 void forkLibreOfficeKit(const std::string& childRoot,
                         const std::string& sysTemplate,
                         const std::string& loTemplate,
-                        const std::string& loSubPath,
                         int limit)
 {
+    LOG_TRC("forkLibreOfficeKit limit: " << limit);
+
     // Cleanup first, to reduce disk load.
     cleanupChildren();
 
@@ -432,8 +459,7 @@ void forkLibreOfficeKit(const std::string& childRoot,
         const size_t retry = count * 2;
         for (size_t i = 0; ForkCounter > 0 && i < retry; ++i)
         {
-            if (ForkCounter-- <= 0
-                || createLibreOfficeKit(childRoot, sysTemplate, loTemplate, loSubPath) < 0)
+            if (ForkCounter-- <= 0 || createLibreOfficeKit(childRoot, sysTemplate, loTemplate) < 0)
             {
                 LOG_ERR("Failed to create a kit process.");
                 ++ForkCounter;
@@ -520,10 +546,7 @@ int main(int argc, char** argv)
         }
     }
 
-#ifndef FUZZER
     SigUtil::setFatalSignals("forkit startup of " COOLWSD_VERSION " " COOLWSD_VERSION_HASH);
-    SigUtil::setTerminationSignals();
-#endif
 
     Util::setApplicationPath(Poco::Path(argv[0]).parent().toString());
 
@@ -531,6 +554,7 @@ int main(int argc, char** argv)
     const bool logToFile = std::getenv("COOL_LOGFILE");
     const char* logFilename = std::getenv("COOL_LOGFILENAME");
     const char* logLevel = std::getenv("COOL_LOGLEVEL");
+    const char* logLevelStartup = std::getenv("COOL_LOGLEVEL_STARTUP");
     const char* logColor = std::getenv("COOL_LOGCOLOR");
     std::map<std::string, std::string> logProperties;
     if (logToFile && logFilename)
@@ -538,15 +562,17 @@ int main(int argc, char** argv)
         logProperties["path"] = std::string(logFilename);
     }
 
-    Log::initialize("frk", "trace", logColor != nullptr, logToFile, logProperties);
+    LogLevelStartup = logLevelStartup ? logLevelStartup : "trace";
+    Log::initialize("frk", LogLevelStartup, logColor != nullptr, logToFile, logProperties);
+
     LogLevel = logLevel ? logLevel : "trace";
-    if (LogLevel != "trace")
+    if (LogLevel != LogLevelStartup)
     {
-        LOG_INF("Setting log-level to [trace] and delaying setting to configured [" << LogLevel << "] until after Forkit initialization.");
+        LOG_INF("Setting log-level to [" << LogLevelStartup << " and delaying "
+                "setting to configured [" << LogLevel << "] until after Forkit initialization.");
     }
 
     std::string childRoot;
-    std::string loSubPath;
     std::string sysTemplate;
     std::string loTemplate;
 
@@ -554,12 +580,7 @@ int main(int argc, char** argv)
     {
         char *cmd = argv[i];
         char *eq;
-        if (std::strstr(cmd, "--losubpath=") == cmd)
-        {
-            eq = std::strchr(cmd, '=');
-            loSubPath = std::string(eq+1);
-        }
-        else if (std::strstr(cmd, "--systemplate=") == cmd)
+        if (std::strstr(cmd, "--systemplate=") == cmd)
         {
             eq = std::strchr(cmd, '=');
             sysTemplate = std::string(eq+1);
@@ -595,7 +616,7 @@ int main(int argc, char** argv)
         {
             eq = std::strchr(cmd, '=');
             const std::string rlimits = std::string(eq+1);
-            StringVector tokens = Util::tokenize(rlimits, ';');
+            StringVector tokens = StringVector::tokenize(rlimits, ';');
             for (const auto& cmdLimit : tokens)
             {
                 const std::pair<std::string, std::string> pair = Util::split(tokens.getParam(cmdLimit), ':');
@@ -609,6 +630,10 @@ int main(int argc, char** argv)
                 }
             }
         }
+        else if (std::strstr(cmd, "--unattended") == cmd)
+        {
+            SigUtil::setUnattended();
+        }
 #if ENABLE_DEBUG
         // this process has various privileges - don't run arbitrary code.
         else if (std::strstr(cmd, "--unitlib=") == cmd)
@@ -621,7 +646,6 @@ int main(int argc, char** argv)
             SingleKit = true;
         }
 #endif
-
         // we are running in a lower-privilege mode - with no chroot
         else if (std::strstr(cmd, "--nocaps") == cmd)
         {
@@ -645,15 +669,13 @@ int main(int argc, char** argv)
         }
     }
 
-    if (loSubPath.empty() || sysTemplate.empty() ||
-        loTemplate.empty() || childRoot.empty())
+    if (sysTemplate.empty() || loTemplate.empty() || childRoot.empty())
     {
         printArgumentHelp();
         return EX_USAGE;
     }
 
-    if (!UnitBase::init(UnitBase::UnitType::Kit,
-                        UnitTestLibrary))
+    if (!UnitBase::init(UnitBase::UnitType::Kit, UnitTestLibrary))
     {
         LOG_FTL("Failed to load kit unit test library");
         return EX_USAGE;
@@ -676,8 +698,7 @@ int main(int argc, char** argv)
     if (!globalPreinit(loTemplate))
     {
         LOG_FTL("Failed to preinit lokit.");
-        Log::shutdown();
-        std::_Exit(EX_SOFTWARE);
+        Util::forcedExit(EX_SOFTWARE);
     }
 
     if (Util::getProcessThreadCount() != 1)
@@ -693,6 +714,7 @@ int main(int argc, char** argv)
     // Parse the configuration.
     const auto conf = std::getenv("COOL_CONFIG");
     config::initialize(std::string(conf ? conf : std::string()));
+    EnableExperimental = config::getBool("experimental_features", false);
 #endif
 
     Util::setThreadName("forkit");
@@ -702,18 +724,16 @@ int main(int argc, char** argv)
     // We must have at least one child, more are created dynamically.
     // Ask this first child to send version information to master process and trace startup.
     ::setenv("COOL_TRACE_STARTUP", "1", 1);
-    const pid_t forKitPid
-        = createLibreOfficeKit(childRoot, sysTemplate, loTemplate, loSubPath, true);
+    const pid_t forKitPid = createLibreOfficeKit(childRoot, sysTemplate, loTemplate, true);
     if (forKitPid < 0)
     {
         LOG_FTL("Failed to create a kit process.");
-        Log::shutdown();
-        std::_Exit(EX_SOFTWARE);
+        Util::forcedExit(EX_SOFTWARE);
     }
 
     // No need to trace subsequent children.
     ::unsetenv("COOL_TRACE_STARTUP");
-    if (LogLevel != "trace")
+    if (LogLevel != LogLevelStartup)
     {
         LOG_INF("Forkit initialization complete: setting log-level to [" << LogLevel << "] as configured.");
         Log::logger().setLevel(LogLevel);
@@ -725,14 +745,19 @@ int main(int argc, char** argv)
     WSHandler = std::make_shared<ServerWSHandler>("forkit_ws");
 
 #if !MOBILEAPP
-    mainPoll.insertNewUnixSocket(MasterLocation, FORKIT_URI, WSHandler);
+    if (!mainPoll.insertNewUnixSocket(MasterLocation, FORKIT_URI, WSHandler))
+    {
+        LOG_SFL("Failed to connect to WSD. Will exit.");
+        Util::forcedExit(EX_SOFTWARE);
+    }
 #endif
 
     SigUtil::setUserSignals();
 
-    LOG_INF("ForKit process is ready.");
+    const int parentPid = getppid();
+    LOG_INF("ForKit process is ready. Parent: " << parentPid);
 
-    while (!SigUtil::getTerminationFlag())
+    while (!SigUtil::getShutdownRequestFlag() && !SigUtil::getTerminationFlag())
     {
         UnitKit::get().invokeForKitTest();
 
@@ -740,23 +765,23 @@ int main(int argc, char** argv)
 
         SigUtil::checkDumpGlobalState(dump_forkit_state);
 
+        // When our parent exits, we are assigned a new parent (typically init).
+        if (getppid() != parentPid)
+        {
+            LOG_SFL("Parent process has died. Will exit now.");
+            break;
+        }
+
 #if ENABLE_DEBUG
         if (!SingleKit)
 #endif
-            forkLibreOfficeKit(childRoot, sysTemplate, loTemplate, loSubPath);
+            forkLibreOfficeKit(childRoot, sysTemplate, loTemplate);
     }
 
-    int returnValue = EX_OK;
-    UnitKit::get().returnValue(returnValue);
-
-#if 0
-    int status = 0;
-    waitpid(forKitPid, &status, WUNTRACED);
-#endif
+    const int returnValue = UnitBase::uninit();
 
     LOG_INF("ForKit process finished.");
-    Log::shutdown();
-    std::_Exit(returnValue);
+    Util::forcedExit(returnValue);
 }
 #endif
 

@@ -4,236 +4,11 @@
 	100% {
 		opacity: 0; } }
 
-/* Infobar */
-.vex-theme-bottom-right-corner .vex-dialog-message {
-	font-size: 1em;
+#about-dialog {
+	color: var(--color-main-text);
 }
-.vex-dialog-external-url::before {
-	content: 'URL';
-	border-radius: 3px;
-	padding: 1px 2px;
-	margin-right: 2px;
-	font-size: 11px;
-	border: thin solid lightgray;
-	background: var(--gray-light-bg-color);
-	color: gray;
-	box-sizing: border-box;
-	vertical-align: top;
-	font-weight: bold;
-}
-.vex-dialog-external-url {
-	font-size: 16px;
-	font-weight: normal;
-}
-/* Place above statusbar */
-.vex.vex-theme-bottom-right-corner .vex-content {
-	bottom: 40px !important;
-	right: 10px !important;
-}
-
-/* Vex dialogs */
-.vex-open .vex-overlay {
-	/* TODO: remove specific z-index from our codebase
-	so that the following line can also be removed */
-	z-index: 2000;
-	background-color: #1c5fa814;
-	min-height: 100%;
-	min-width: 100%;
-	position: absolute;
-	top: 0px;
-}
-
-.vex-content .vex-footnote {
-	color: var(--gray-light-txt--color) !important;
-	font-size: 0.78em;
-}
-/* dialog shown when user is idle */
-.vex-open .cool-user-idle {
-	background: #ffffffe0 !important;
-	font-size: xx-large !important;
-	color: #7a8592 !important;
-	text-align: center !important;
-}
-.vex-open .cool-user-idle .vex-dialog-buttons {
-	display: none !important;
-}
-.vex-open .loleaflet-user-idle .title {
-	font-size: 2rem;
-	margin: 0;
-}
-.vex-open .loleaflet-user-idle .content {
-	font-size: 20px;
-	margin: 0;
-}
-
-.vex.vex-theme-plain, .vex.vex-theme-bottom-right-corner{
-	z-index: 2001 !important;
-}
-
-.vex.vex-theme-plain .vex-content,
-.vex-dialog-message {
-	font-size: 1.1em;
-}
-
-.vex.vex-theme-plain .vex-content{
-	border: 1px solid #a4a4a4;
-	box-shadow: 0 -1px 2px 0 rgba(0, 0, 0, 0.15), 0 2px 2px 0 rgba(0, 0, 0, 0.1);
-	border-radius: 4px;
-	outline: none;
-}
-
-.vex-selectable {
-	-webkit-touch-callout: text;
-	-webkit-user-select: text;
-	-khtml-user-select: text;
-	-moz-user-select: text;
-	-ms-user-select: text;
-	user-select: text;
-}
-
-.vex.vex-theme-plain .vex-close:before {
-	width: 20px;
-	height: 20px;
-	line-height: 20px;
-}
-
-.vex-closing {
-	-webkit-animation: vex-fadeout .25s forwards;
-	animation: vex-fadeout .25s forwards;
-}
-
-.vex.vex-theme-plain .vex-dialog-form .vex-dialog-input input{
-	border-radius: 3px;
-	box-shadow: inset 0 0 2px 0 lightgray;
-	box-sizing: border-box;
-}
-
-.vex {
-	position: fixed;
-	overflow: auto;
-	left: 0;
-	right: 0;
-	top: 0;
-	bottom: 0;
-}
-
-/* Keyboard input keys */
-kbd,
-.kbd {
-	background-color: #eee;
-	border-radius: 3px;
-	border: 1px solid #dcdcdc;
-	box-shadow: 0 1px 1px 0px rgba(0,0,0,.2), 0 2px 0 0 rgba(255,255,255,.7) inset;
-	color: #555;
-	display: inline-block;
-	font-family: monospace;
-	font-size: .85em;
-	font-weight: 700;
-	line-height: 1;
-	padding: 4px;
-	white-space: nowrap;
-}
-
-.kbd--plus {
-	color: #ccc;
-	padding: 0 2px;
-	font-size: 0.65em;
-}
-
-.warn-copy-paste {
-	width: 100%;
-}
-
-/* Integrator: fremium */
-.vex.vex-theme-plain .vex-content.vex-freemium {
-	width: 652px;
-}
-
-.vex.vex-theme-plain .vex-content.vex-freemium h1 {
-	margin-bottom: .5em;
-	font-size: 1.1em;
-	color: #fda208;
-}
-
-.vex.vex-theme-plain .vex-content.vex-freemium ul {
-	list-style: none;
-	padding: 0;
-	font-size: 0.84em;
-	text-shadow: 1px 1px 12px #ffbf0038, 0 0 0.5px #00000026;
-}
-
-.vex.vex-theme-plain .vex-content.vex-freemium ul li::before {
-	content: '\2022';
-	color: #fda208;
-	font-weight: bold;
-	display: inline-block;
-	width: 0.5em;
-	margin-left: -0.5em;
-}
-
-.vex.vex-theme-plain .vex-content.vex-freemium .container {
-	display: flex;
-	flex-direction: row;
-}
-.vex.vex-theme-plain .vex-content.vex-freemium .container .item {
-	color: #444;
-	flex: 1;
-}
-.vex.vex-theme-plain .vex-content.vex-freemium .container .item.illustration {
-	flex: 1.3;
-	background: transparent url('images/freemium-illustration.svg') no-repeat left 4px /contain;
-	height: 288px;
-}
-
-.vex.vex-theme-plain .vex-content.vex-freemium .vex-dialog-button-primary {
-	background-color: #fda918;
-	color: white;
-	border-color: #cc8202;
-	text-shadow: 0 0 8px #cc8202;
-}
-
-.vex.vex-theme-plain .vex-content.vex-freemium .vex-dialog-button-primary:hover {
-	border-color: #fda918 !important;
-	color: #cc8202 !important;
-	text-shadow: none;
-}
-
-.vex.vex-theme-plain .vex-content.vex-freemium.mobile .container .item p {
-	font-size: 1.1em !important;
-	font-family: var(--jquery-ui-font);
-	margin-left: 5px;
-	margin-right: 5px;
-}
-.vex.vex-theme-plain .vex-content.vex-freemium.mobile .container .item h1 {
-	text-align: center;
-	font-size: 1.4em !important;
-}
-.vex.vex-theme-plain .vex-content.vex-freemium.mobile ul {
-	text-shadow: none;
-	font-size: 1em !important;
-	margin-left: 5px;
-	margin-right: 5px;
-}
-.vex.vex-theme-plain .vex-content.vex-freemium.mobile ul li::before {
-	width: 0.8em;
-	margin-left: 0em;
-}
-.vex.vex-theme-plain .vex-content.vex-freemium.mobile .container {
-	flex-direction: column;
-}
-.vex.vex-theme-plain .vex-content.vex-freemium.mobile .container .item.illustration {
-	flex: 2 1 auto;
-	height: 238px;
-	background-position: center;
-}
-.vex.vex-theme-plain .vex-content.vex-freemium.mobile .vex-dialog-button-primary {
-	background-color: #fda918 !important;
-	border-color: #cc8202 !important;
-	text-shadow: 0 0 0.5px #cc8202;
-}
-.vex.vex-theme-plain .vex-freemium.mobile .vex-dialog-buttons {
-	display: flex;
-	flex-direction: column-reverse;
+#about-dialog hr {
+	border: 1px solid var(--color-border);
 }
 
 .slider, .slides > div {
@@ -279,8 +54,8 @@ kbd,
 	margin-left: 164px;
 }
 .author-info {
-	background: rgba(0, 0, 0, 0.75);
-	color: white;
+	background: var(--color-main-background);
+	color: var(--color-main-text);
 	padding: 0.75rem;
 	text-align: center;
 	position: absolute;
@@ -290,14 +65,15 @@ kbd,
 	margin: 0;
 }
 .author-info a {
-	color: white;
+	background: var(--color-main-background);
+	color: var(--color-main-text);
 }
 
 .slider > [id^='i-slide'] {
 	display: inline-flex;
 	width: 14px;
 	height: 14px;
-	background: linear-gradient(to top, #d6d6d6, #bababa);
+	background: linear-gradient(to top, var(--color-background), var(--color-background-darker));
 	text-decoration: none;
 	align-items: center;
 	justify-content: center;

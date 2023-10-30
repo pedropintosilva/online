@@ -7,6 +7,7 @@
 bool DoInitialization()
 {
     COOLWSD::ChildRoot = "/fuzz/child-root";
+    UnitBase::init(UnitBase::UnitType::Wsd, std::string());
     return true;
 }
 
@@ -39,6 +40,9 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size)
         std::vector<char> lineVector(line.data(), line.data() + line.size());
         session->handleMessage(lineVector);
     }
+
+    // The DocumentBroker dtor grows SocketPoll::_newCallbacks.
+    docBroker.reset();
 
     // Make sure SocketPoll::_newCallbacks does not grow forever, leading to OOM.
     Admin::instance().poll(std::chrono::microseconds(0));

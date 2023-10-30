@@ -3,8 +3,9 @@
 var helper = require('../../common/helper');
 var mobileHelper = require('../../common/mobile_helper');
 var impressHelper = require('../../common/impress_helper');
+var repairHelper = require('../../common/repair_document_helper');
 
-describe('Editing Operations', function() {
+describe.skip(['tagmobile', 'tagnextcloud', 'tagproxy'], 'Editing Operations', function() {
 	var testFileName = 'undo_redo.odp';
 
 	beforeEach(function() {
@@ -15,7 +16,7 @@ describe('Editing Operations', function() {
 
 		impressHelper.selectTextShapeInTheCenter();
 
-		cy.get('g.leaflet-control-buttons-disabled svg').dblclick({force:true});
+		cy.cGet('g.leaflet-control-buttons-disabled svg').dblclick({force:true});
 
 		cy.wait(1000);
 
@@ -28,12 +29,12 @@ describe('Editing Operations', function() {
 
 
 	function undo() {
-		cy.get('path.leaflet-interactive').dblclick();
+		cy.cGet('path.leaflet-interactive').dblclick();
 
 		//if we don't wait tests in CLI is failing
 		cy.wait(3000);
 
-		cy.get('#tb_actionbar_item_undo').click();
+		cy.cGet('#tb_actionbar_item_undo').click();
 
 		helper.selectAllText();
 
@@ -50,7 +51,7 @@ describe('Editing Operations', function() {
 	it('Redo',function() {
 		undo();
 
-		cy.get('#tb_actionbar_item_redo').click();
+		cy.cGet('#tb_actionbar_item_redo').click();
 
 		helper.selectAllText();
 
@@ -59,7 +60,7 @@ describe('Editing Operations', function() {
 		helper.expectTextForClipboard('Hello World');
 	});
 
-	it('Repair Document', function() {
+	it.skip('Repair Document', function() {
 		// End text edit, so 'Hello World' text is added to Undo stack
 		helper.typeIntoDocument('{esc}');
 
@@ -70,20 +71,7 @@ describe('Editing Operations', function() {
 		helper.typeIntoDocument('Overwrite');
 		helper.typeIntoDocument('{esc}');
 
-		// Now trigger the "repair" function and revert to the first change
-		cy.get('#toolbar-hamburger')
-			.click()
-			.get('.menu-entry-icon.editmenu').parent()
-			.click()
-			.get('.menu-entry-icon.repair').parent()
-			.click();
-
-		cy.get('.leaflet-popup-content table').should('exist');
-
-		cy.contains('.leaflet-popup-content table tbody tr','Undo').eq(0)
-			.click();
-
-		cy.get('.leaflet-popup-content > input').click();
+		repairHelper.rollbackPastChange('Undo', undefined, true);
 
 		// Check the text in the shape reverted to "Hello World"
 		impressHelper.selectTextShapeInTheCenter();

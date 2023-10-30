@@ -10,9 +10,18 @@
 #pragma once
 
 #include <string>
+#include <vector>
 
-#include <Poco/Net/HTTPRequest.h>
-#include <Poco/URI.h>
+namespace Poco
+{
+namespace Net
+{
+class HTTPRequest;
+}
+
+class URI;
+
+} // namespace Poco
 
 /// Class to keep the authorization data, which can be either access_token or access_header.
 class Authorization
@@ -20,14 +29,15 @@ class Authorization
 public:
     enum class Type
     {
-        None,
+        None, //< Unlike Expired, this implies no Authorization needed.
         Token,
-        Header
+        Header,
+        Expired //< The server is rejecting the current authorization key.
     };
 
 private:
-    const Type _type;
-    const std::string _data;
+    Type _type;
+    std::string _data;
 
 public:
     Authorization()
@@ -43,11 +53,22 @@ public:
 
     /// Create an Authorization instance from the URI query parameters.
     /// Expects access_token (preferred) or access_header.
-    static Authorization create(const Poco::URI::QueryParameters& queryParams);
-    static Authorization create(const Poco::URI& uri) { return create(uri.getQueryParameters()); }
-    static Authorization create(const std::string& uri) { return create(Poco::URI(uri)); }
+    static Authorization create(const Poco::URI& uri);
+    static Authorization create(const std::string& uri);
 
-    /// Set the access_token parametr to the given uri.
+    void resetAccessToken(std::string accessToken)
+    {
+        _type = Type::Token;
+        _data = std::move(accessToken);
+    }
+
+    /// Expire the Authorization data.
+    void expire() { _type = Type::Expired; }
+
+    /// Returns true iff the Authorization data is invalid.
+    bool isExpired() const { return _type == Type::Expired; }
+
+    /// Set the access_token parameter to the given URI.
     void authorizeURI(Poco::URI& uri) const;
 
     /// Set the Authorization: header in request.

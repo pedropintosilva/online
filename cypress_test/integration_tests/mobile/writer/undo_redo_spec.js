@@ -2,13 +2,13 @@
 
 var helper = require('../../common/helper');
 var mobileHelper = require('../../common/mobile_helper');
+var repairHelper = require('../../common/repair_document_helper');
 
-describe.skip('Editing Operations', function() {
+describe.skip(['tagmobile', 'tagnextcloud', 'tagproxy'], 'Editing Operations', function() {
 	var testFileName = 'undo_redo.odt';
 
 	beforeEach(function() {
 		helper.beforeAll(testFileName, 'writer');
-
 		// Click on edit button
 		mobileHelper.enableEditingMobile();
 	});
@@ -19,15 +19,11 @@ describe.skip('Editing Operations', function() {
 
 	function undo() {
 		helper.typeIntoDocument('Hello World');
-
-		//if we don't wait tests in CLI is failing
+		//if we don't wait tests in CI is failing
 		cy.wait(1000);
-
-		cy.get('#tb_actionbar_item_undo').click();
-
+		cy.cGet('#tb_actionbar_item_undo').click();
 		helper.selectAllText();
-
-		helper.expectTextForClipboard('\nHello Worl');
+		helper.expectTextForClipboard('Hello \n');
 	}
 
 	it('Undo', function() {
@@ -36,33 +32,15 @@ describe.skip('Editing Operations', function() {
 
 	it('Redo',function() {
 		undo();
-
-		cy.get('#tb_actionbar_item_redo').click();
-
+		cy.cGet('#tb_actionbar_item_redo').click();
 		helper.selectAllText();
-
-		helper.expectTextForClipboard('\nHello World');
+		helper.expectTextForClipboard('Hello World');
 	});
 
 	it('Repair Document', function() {
 		helper.typeIntoDocument('Hello World');
-
-		cy.get('#toolbar-hamburger')
-			.click()
-			.get('.menu-entry-icon.editmenu').parent()
-			.click()
-			.get('.menu-entry-icon.repair').parent()
-			.click();
-
-		cy.get('.leaflet-popup-content table').should('exist');
-
-		cy.contains('.leaflet-popup-content table tbody tr','Typing: “d”')
-			.click();
-
-		cy.get('.leaflet-popup-content > input').click();
-
+		repairHelper.rollbackPastChange('Typing: “World”', undefined, true);
 		helper.selectAllText();
-
-		helper.expectTextForClipboard('\nHello Worl');
+		helper.expectTextForClipboard('Hello \n');
 	});
 });

@@ -6,40 +6,25 @@ declare var $: any;
 declare var Hammer: any;
 declare var app: any;
 
-class TilesSection {
-	context: CanvasRenderingContext2D = null;
-	myTopLeft: Array<number> = null;
-	documentTopLeft: Array<number> = null;
-	containerObject: any = null;
-	dpiScale: number = null;
-	name: string = null;
-	backgroundColor: string = null;
-	borderColor: string = null;
-	boundToSection: string = null;
-	anchor: Array<any> = new Array(0);
-	position: Array<number> = new Array(0);
-	size: Array<number> = new Array(0);
-	expand: Array<string> = new Array(0);
-	isLocated: boolean = false;
-	processingOrder: number = null;
-	drawingOrder: number = null;
-	zIndex: number = null;
-	interactable: boolean = true;
-	sectionProperties: any = {};
+class TilesSection extends CanvasSectionObject {
 	map: any;
-	offscreenCanvases: Array<any> = new Array(0);
-	oscCtxs: Array<any> = new Array(0);
+	isJSDOM: boolean = false; // testing
+	checkpattern: any;
 
 	constructor () {
-		this.name = L.CSections.Tiles.name;
-		// Below anchor list may be expanded. For example, Writer may have ruler section. Then ruler section should also be added here.
-		this.anchor = [[L.CSections.ColumnHeader.name, 'bottom', 'top'], [L.CSections.RowHeader.name, 'right', 'left']];
-		this.position = [0, 0]; // This section's myTopLeft will be anchored to other sections^. No initial position is needed.
-		this.size = [0, 0]; // Going to be expanded, no initial width or height is necessary.
-		this.expand = ['top', 'left', 'bottom', 'right'];
-		this.processingOrder = L.CSections.Tiles.processingOrder;
-		this.drawingOrder = L.CSections.Tiles.drawingOrder;
-		this.zIndex = L.CSections.Tiles.zIndex;
+		super({
+			name: L.CSections.Tiles.name,
+			// Below anchor list may be expanded. For example, Writer may have ruler section. Then ruler section should also be added here.
+			anchor: [[L.CSections.ColumnHeader.name, 'bottom', 'top'], [L.CSections.RowHeader.name, 'right', 'left']],
+			position: [0, 0], // This section's myTopLeft will be anchored to other sections^. No initial position is needed.
+			size: [0, 0], // Going to be expanded, no initial width or height is necessary.
+			expand: 'top left bottom right',
+			processingOrder: L.CSections.Tiles.processingOrder,
+			drawingOrder: L.CSections.Tiles.drawingOrder,
+			zIndex: L.CSections.Tiles.zIndex,
+			interactable: true,
+			sectionProperties: {},
+		});
 
 		this.map = L.Map.THIS;
 
@@ -47,55 +32,43 @@ class TilesSection {
 		this.sectionProperties.tsManager = this.sectionProperties.docLayer._painter;
 		this.sectionProperties.pageBackgroundInnerMargin = 0; // In core pixels. We don't want backgrounds to have exact same borders with tiles for not making them visible when tiles are rendered.
 		this.sectionProperties.pageBackgroundBorderColor = 'lightgrey';
-		this.sectionProperties.pageBackgroundFillColorWriter = 'white';
 		this.sectionProperties.pageBackgroundTextColor = 'grey';
 		this.sectionProperties.pageBackgroundFont = String(40 * app.roundedDpiScale) + 'px Arial';
+
+		this.isJSDOM = typeof window === 'object' && window.name === 'nodejs';
+
+		this.checkpattern = this.makeCheckPattern();
+	}
+
+	private makeCheckPattern() {
+		var canvas = document.createElement('canvas');
+		canvas.width = 256;
+		canvas.height = 256;
+		var drawctx = canvas.getContext('2d');
+		var patternOn = true;
+		for (var y = 0; y < 256; y+=32) {
+			for (var x = 0; x < 256; x+=32) {
+				if (patternOn)
+					drawctx.fillStyle = 'darkgray';
+				else
+					drawctx.fillStyle = 'gray';
+				patternOn = !patternOn;
+				drawctx.fillRect(x, y, 32, 32);
+			}
+			patternOn = !patternOn;
+		}
+		return canvas;
 	}
 
 	public onInitialize () {
-		for (var i = 0; i < 4; i++) {
-			this.offscreenCanvases.push(document.createElement('canvas'));
-			this.oscCtxs.push(this.offscreenCanvases[i].getContext('2d', { alpha: false }));
-		}
 		this.onResize();
 	}
 
 	public onResize () {
-		var tileSize = this.sectionProperties.docLayer._getTileSize();
-		var borderSize = 3;
-		this.sectionProperties.osCanvasExtraSize = 2 * borderSize * tileSize;
-		for (var i = 0; i < 4; ++i) {
-			this.offscreenCanvases[i].width = this.size[0] + this.sectionProperties.osCanvasExtraSize;
-			this.offscreenCanvases[i].height = this.size[1] + this.sectionProperties.osCanvasExtraSize;
-		}
+		// empty: probably safe to remove this method and use parent CanvasSectionObject::onResize
 	}
 
-	extendedPaneBounds (paneBounds: any) {
-		var extendedBounds = paneBounds.clone();
-		var halfExtraSize = this.sectionProperties.osCanvasExtraSize / 2; // This is always an integer.
-		var spCxt = this.sectionProperties.docLayer.getSplitPanesContext();
-		if (spCxt) {
-			var splitPos = spCxt.getSplitPos().multiplyBy(app.dpiScale);
-			if (paneBounds.min.x) { // pane can move in x direction.
-				extendedBounds.min.x = Math.max(splitPos.x, extendedBounds.min.x - halfExtraSize);
-				extendedBounds.max.x += halfExtraSize;
-			}
-			if (paneBounds.min.y) { // pane can move in y direction.
-				extendedBounds.min.y = Math.max(splitPos.y, extendedBounds.min.y - halfExtraSize);
-				extendedBounds.max.y += halfExtraSize;
-			}
-		}
-		else {
-			extendedBounds.min.x -= halfExtraSize;
-			extendedBounds.max.x += halfExtraSize;
-			extendedBounds.min.y -= halfExtraSize;
-			extendedBounds.max.y += halfExtraSize;
-		}
-
-		return extendedBounds;
-	}
-
-	paintWithPanes (tile: any, ctx: any, async: boolean) {
+	paintWithPanes (tile: any, ctx: any, async: boolean, now: Date) {
 		var tileTopLeft = tile.coords.getPos();
 		var tileBounds = new L.Bounds(tileTopLeft, tileTopLeft.add(ctx.tileSize));
 
@@ -104,13 +77,10 @@ class TilesSection {
 			var paneBounds = ctx.paneBoundsList[i];
 			// co-ordinates of the main-(bottom right) pane in core document pixels
 			var viewBounds = ctx.viewBounds;
-			// Extended pane bounds
-			var extendedBounds = this.extendedPaneBounds(paneBounds);
 
 			// into real pixel-land ...
 			paneBounds.round();
 			viewBounds.round();
-			extendedBounds.round();
 
 			if (paneBounds.intersects(tileBounds)) {
 				var paneOffset = paneBounds.getTopLeft(); // allocates
@@ -118,17 +88,28 @@ class TilesSection {
 				paneOffset.x = Math.min(paneOffset.x, viewBounds.min.x);
 				paneOffset.y = Math.min(paneOffset.y, viewBounds.min.y);
 
-				this.drawTileInPane(tile, tileBounds, paneBounds, paneOffset, this.context, async);
-			}
-
-			if (extendedBounds.intersects(tileBounds)) {
-				var offset = extendedBounds.getTopLeft();
-				this.drawTileInPane(tile, tileBounds, extendedBounds, offset, this.oscCtxs[i], async);
+				this.drawTileInPane(tile, tileBounds, paneBounds, paneOffset, this.context, async, now);
 			}
 		}
 	}
 
-	drawTileInPane (tile: any, tileBounds: any, paneBounds: any, paneOffset: any, canvasCtx: any, clearBackground: boolean) {
+	private beforeDraw(canvasCtx: CanvasRenderingContext2D): void {
+		const mirrorTile: boolean = this.isCalcRTL();
+		if (mirrorTile) {
+			canvasCtx.save();
+			canvasCtx.translate(this.size[0], 0);
+			canvasCtx.scale(-1, 1);
+		}
+	}
+
+	private afterDraw(canvasCtx: CanvasRenderingContext2D): void {
+		const mirrorTile: boolean = this.isCalcRTL();
+		if (mirrorTile) {
+			canvasCtx.restore();
+		}
+	}
+
+	drawTileInPane (tile: any, tileBounds: any, paneBounds: any, paneOffset: any, canvasCtx: CanvasRenderingContext2D, clearBackground: boolean, now: Date) {
 		// intersect - to avoid state thrash through clipping
 		var crop = new L.Bounds(tileBounds.min, tileBounds.max);
 		crop.min.x = Math.max(paneBounds.min.x, tileBounds.min.x);
@@ -143,26 +124,25 @@ class TilesSection {
 			if (clearBackground || this.containerObject.isZoomChanged() || canvasCtx !== this.context) {
 				// Whole canvas is not cleared after zoom has changed, so clear it per tile as they arrive.
 				canvasCtx.fillStyle = this.containerObject.getClearColor();
+				this.beforeDraw(canvasCtx);
 				canvasCtx.fillRect(
 					crop.min.x - paneOffset.x,
 					crop.min.y - paneOffset.y,
 					cropWidth, cropHeight);
+				this.afterDraw(canvasCtx);
 				var gridSection = this.containerObject.getSectionWithName(L.CSections.CalcGrid.name);
 				gridSection.onDrawArea(crop, paneOffset, canvasCtx);
 			}
-			canvasCtx.drawImage(tile.el,
-				crop.min.x - tileBounds.min.x,
-				crop.min.y - tileBounds.min.y,
-				cropWidth, cropHeight,
-				crop.min.x - paneOffset.x,
-				crop.min.y - paneOffset.y,
-				cropWidth, cropHeight);
-		}
 
-		if (this.sectionProperties.docLayer._debug)
-		{
-			canvasCtx.strokeStyle = 'rgba(255, 0, 0, 0.5)';
-			canvasCtx.strokeRect(tile.coords.x - paneBounds.min.x, tile.coords.y - paneBounds.min.y, 256, 256);
+			this.beforeDraw(canvasCtx);
+			this.drawTileToCanvasCrop(tile, now, canvasCtx,
+									  crop.min.x - tileBounds.min.x,
+									  crop.min.y - tileBounds.min.y,
+									  cropWidth, cropHeight,
+									  crop.min.x - paneOffset.x,
+									  crop.min.y - paneOffset.y,
+									  cropWidth, cropHeight);
+			this.afterDraw(canvasCtx);
 		}
 	}
 
@@ -171,14 +151,12 @@ class TilesSection {
 		this.context.strokeRect(offset.x, offset.y, tileSize, tileSize);
 		this.context.font = '20px Verdana';
 		this.context.fillStyle = 'black';
-		this.context.fillText(tile.coords.x + ' ' + tile.coords.y + ' ' + tile.coords.part + ' ' + (tile.loaded ? 'y': 'n'), Math.round(offset.x + tileSize * 0.5), Math.round(offset.y + tileSize * 0.5));
+		this.context.fillText(tile.coords.x + ' ' + tile.coords.y + ' ' + tile.coords.part, Math.round(offset.x + tileSize * 0.5), Math.round(offset.y + tileSize * 0.5));
 	}
 
-	paintSimple (tile: any, ctx: any, async: boolean) {
+	paintSimple (tile: any, ctx: any, async: boolean, now: Date) {
 		ctx.viewBounds.round();
 		var offset = new L.Point(tile.coords.getPos().x - ctx.viewBounds.min.x, tile.coords.getPos().y - ctx.viewBounds.min.y);
-		var halfExtraSize = this.sectionProperties.osCanvasExtraSize / 2;
-		var extendedOffset = offset.add(new L.Point(halfExtraSize, halfExtraSize));
 
 		if ((async || this.containerObject.isZoomChanged()) && !app.file.fileBasedView) {
 			// Non Calc tiles(handled by paintSimple) can have transparent pixels,
@@ -189,25 +167,23 @@ class TilesSection {
 			this.context.fillRect(offset.x, offset.y, ctx.tileSize.x, ctx.tileSize.y);
 		}
 
+		var tileSizeX;
+		var tileSizeY;
 		if (app.file.fileBasedView) {
-			var tileSize = this.sectionProperties.docLayer._tileSize;
-			var ratio = tileSize / this.sectionProperties.docLayer._tileHeightTwips;
+			tileSizeX = tileSizeY = this.sectionProperties.docLayer._tileSize;
+			var ratio = tileSizeX / this.sectionProperties.docLayer._tileHeightTwips;
 			var partHeightPixels = Math.round((this.sectionProperties.docLayer._partHeightTwips + this.sectionProperties.docLayer._spaceBetweenParts) * ratio);
 
 			offset.y = tile.coords.part * partHeightPixels + tile.coords.y - this.documentTopLeft[1];
-			extendedOffset.y = offset.y + halfExtraSize;
+		} else {
+			tileSizeX = ctx.tileSize.x;
+			tileSizeY = ctx.tileSize.y;
+		}
 
-			this.context.drawImage(tile.el, offset.x, offset.y, tileSize, tileSize);
-			this.oscCtxs[0].drawImage(tile.el, extendedOffset.x, extendedOffset.y, tileSize, tileSize);
-			//this.pdfViewDrawTileBorders(tile, offset, tileSize);
-		}
-		else {
-			this.context.drawImage(tile.el, offset.x, offset.y, ctx.tileSize.x, ctx.tileSize.y);
-			this.oscCtxs[0].drawImage(tile.el, extendedOffset.x, extendedOffset.y, ctx.tileSize.x, ctx.tileSize.y);
-		}
+		this.drawTileToCanvas(tile, now, this.context, offset.x, offset.y, tileSizeX, tileSizeY);
 	}
 
-	public paint (tile: any, ctx: any, async: boolean = false) {
+	public paint (tile: any, ctx: any, async: boolean, now: Date) {
 		if (this.containerObject.isInZoomAnimation() || this.sectionProperties.tsManager.waitForTiles())
 			return;
 
@@ -217,12 +193,12 @@ class TilesSection {
 		this.containerObject.setPenPosition(this);
 
 		if (ctx.paneBoundsActive === true)
-			this.paintWithPanes(tile, ctx, async);
+			this.paintWithPanes(tile, ctx, async, now);
 		else
-			this.paintSimple(tile, ctx, async);
+			this.paintSimple(tile, ctx, async, now);
 	}
 
-	private forEachTileInView(zoom: number, part: number, ctx: any,
+	private forEachTileInView(zoom: number, part: number, mode: number, ctx: any,
 		callback: (tile: any, coords: any) => boolean) {
 		var docLayer = this.sectionProperties.docLayer;
 		var tileRanges = ctx.paneBoundsList.map(docLayer._pxBoundsToTileRange, docLayer);
@@ -246,7 +222,8 @@ class TilesSection {
 							i * ctx.tileSize.x,
 							j * ctx.tileSize.y,
 							zoom,
-							part);
+							part,
+							mode);
 
 						var key = coords.key();
 						var tile = docLayer._tiles[key];
@@ -259,28 +236,28 @@ class TilesSection {
 		}
 	}
 
-	public haveAllTilesInView(zoom?: number, part?: number, ctx?: any): boolean {
+	public haveAllTilesInView(zoom?: number, part?: number, mode?: number, ctx?: any): boolean {
 		zoom = zoom || Math.round(this.map.getZoom());
 		part = part || this.sectionProperties.docLayer._selectedPart;
 		ctx = ctx || this.sectionProperties.tsManager._paintContext();
 
-		var allTilesLoaded = true;
-		this.forEachTileInView(zoom, part, ctx, function (tile: any): boolean {
-			// Ensure tile is loaded.
-			if (!tile || !tile.loaded) {
-				allTilesLoaded = false;
+		var allTilesFetched = true;
+		this.forEachTileInView(zoom, part, mode, ctx, function (tile: any): boolean {
+			// Ensure all tile are available.
+			if (!tile || tile.needsFetch()) {
+				allTilesFetched = false;
 				return false; // stop search.
 			}
 			return true; // continue checking remaining tiles.
 		});
 
-		return allTilesLoaded;
+		return allTilesFetched;
 	}
 
 	private drawPageBackgroundWriter (ctx: any, rectangle: any, pageNumber: number) {
 		rectangle = [Math.round(rectangle[0] * app.twipsToPixels), Math.round(rectangle[1] * app.twipsToPixels), Math.round(rectangle[2] * app.twipsToPixels), Math.round(rectangle[3] * app.twipsToPixels)];
 
-		this.context.fillStyle = this.sectionProperties.pageBackgroundFillColorWriter;
+		this.context.fillStyle = this.containerObject.getDocumentBackgroundColor(); // used to be pageBackgroundFillColorWriter (see below)
 		this.context.fillRect(rectangle[0] - ctx.viewBounds.min.x + this.sectionProperties.pageBackgroundInnerMargin,
 			rectangle[1] - ctx.viewBounds.min.y + this.sectionProperties.pageBackgroundInnerMargin,
 			rectangle[2] - this.sectionProperties.pageBackgroundInnerMargin,
@@ -376,12 +353,13 @@ class TilesSection {
 
 		var zoom = Math.round(this.map.getZoom());
 		var part = this.sectionProperties.docLayer._selectedPart;
+		var mode = this.sectionProperties.docLayer._selectedMode;
 
 		// Calculate all this here intead of doing it per tile.
 		var ctx = this.sectionProperties.tsManager._paintContext();
 
 		if (this.sectionProperties.tsManager.waitForTiles()) {
-			if (!this.haveAllTilesInView(zoom, part, ctx))
+			if (!this.haveAllTilesInView(zoom, part, mode, ctx))
 				return;
 		} else if (!this.containerObject.isZoomChanged()) {
 			// Don't show page border and page numbers (drawn by drawPageBackgrounds) if zoom is changing
@@ -389,24 +367,39 @@ class TilesSection {
 			this.drawPageBackgrounds(ctx);
 		}
 
-		for (var i = 0; i < ctx.paneBoundsList.length; ++i) {
-			this.oscCtxs[i].fillStyle = this.containerObject.getClearColor();
-			this.oscCtxs[i].fillRect(0, 0, this.offscreenCanvases[i].width, this.offscreenCanvases[i].height);
-		}
-
 		var docLayer = this.sectionProperties.docLayer;
 		var doneTiles = new Set();
-		this.forEachTileInView(zoom, part, ctx, function (tile: any, coords: any): boolean {
+		var now = new Date();
+		var debugForcePaint = this.sectionProperties.docLayer._debug;
+		this.forEachTileInView(zoom, part, mode, ctx, function (tile: any, coords: any): boolean {
 			if (doneTiles.has(coords.key()))
 				return true;
 
-			// Ensure tile is loaded and is within document bounds.
-			if (tile && tile.loaded && docLayer._isValidTile(coords)) {
-				this.paint(tile, ctx, false /* async? */);
+			// Ensure tile is within document bounds.
+			if (tile && docLayer._isValidTile(coords)) {
+				if (!this.isJSDOM) { // perf-test code
+					if (tile.hasContent() || debugForcePaint) { // Ensure tile is loaded
+						this.paint(tile, ctx, false /* async? */, now);
+					}
+					else if (this.sectionProperties.docLayer._debug) {
+						// when debugging draw a checkerboard for the missing tile
+						var oldcanvas = tile.canvas;
+						tile.canvas = this.checkpattern;
+						this.paint(tile, ctx, false /* async? */, now);
+						tile.canvas = oldcanvas;
+					}
+				}
 			}
 			doneTiles.add(coords.key());
 			return true; // continue with remaining tiles.
 		}.bind(this));
+	}
+
+	public onClick(point: Array<number>, e: MouseEvent) {
+		// Slides pane is not focusable, we are using a variable to follow its focused state.
+		// Until the pane is focusable, we will need to keep below check here.
+		if (this.map._docLayer._docType === 'presentation' || this.map._docLayer._docType === 'drawing')
+			this.map._docLayer._preview.partsFocused = false; // Parts (slide preview pane) is no longer focused, we need to set this here to avoid unwanted behavior.
 	}
 
 	// Return the fraction of intersection area with area1.
@@ -429,8 +422,8 @@ class TilesSection {
 		return Math.max(0, interSize.x) * Math.max(0, interSize.y) / (size.x * size.y);
 	}
 
-	private forEachTileInArea(area: any, zoom: number, part: number, ctx: any,
-		callback: (tile: any, coords: any) => boolean) {
+	private forEachTileInArea(area: any, zoom: number, part: number, mode: number, ctx: any,
+		callback: (tile: any, coords: any, section: TilesSection) => boolean) {
 		var docLayer = this.sectionProperties.docLayer;
 
 		if (app.file.fileBasedView) {
@@ -440,12 +433,8 @@ class TilesSection {
 				var coords = coordList[k];
 				var key = coords.key();
 				var tile = docLayer._tiles[key];
-				if (!tile) {
-					var img = docLayer._tileCache[key];
-					if (img)
-						tile = { el: img, loaded: true, coords: coords };
-				}
-				callback(tile, coords);
+				if (tile)
+					callback(tile, coords, this);
 			}
 
 			return;
@@ -459,16 +448,13 @@ class TilesSection {
 					i * ctx.tileSize.x,
 					j * ctx.tileSize.y,
 					zoom,
-					part);
+					part,
+					mode);
 
 				var key = coords.key();
 				var tile = docLayer._tiles[key];
-				if (!tile) {
-					var img = docLayer._tileCache[key];
-					if (img)
-						tile = { el: img, loaded: true, coords: coords };
-				}
-				callback(tile, coords);
+				if (tile)
+					callback(tile, coords, this);
 			}
 		}
 	}
@@ -483,7 +469,7 @@ class TilesSection {
 	 * @returns the zoom-level with maximum tile content.
 	 */
 	private zoomLevelWithMaxContentInArea(area: any,
-		areaZoom: number, part: number, ctx: any): number {
+		areaZoom: number, part: number, mode: number, ctx: any): number {
 
 		var frameScale = this.sectionProperties.tsManager._zoomFrameScale;
 		var docLayer = this.sectionProperties.docLayer;
@@ -511,8 +497,8 @@ class TilesSection {
 			//console.log('DEBUG:: areaAtZoom = ' + areaAtZoom);
 			var relScale = this.map.getZoomScale(zoom, areaZoom);
 
-			this.forEachTileInArea(areaAtZoom, zoom, part, ctx, function(tile, coords) {
-				if (tile && tile.el) {
+			this.forEachTileInArea(areaAtZoom, zoom, part, mode, ctx, function(tile, coords, section) {
+				if (tile && tile.canvas) {
 					var tilePos = coords.getPos();
 
 					if (app.file.fileBasedView) {
@@ -551,6 +537,141 @@ class TilesSection {
 		return bestZoomLevel;
 	}
 
+	public ensureCanvas(tile: any, now: Date)
+	{
+		this.sectionProperties.docLayer.ensureCanvas(tile, now);
+	}
+
+	public drawTileToCanvas(tile: any, now: Date, canvas: CanvasRenderingContext2D,
+							dx: number, dy: number, dWidth: number, dHeight: number)
+	{
+		this.ensureCanvas(tile, now);
+		this.drawTileToCanvasCrop(tile, now, canvas,
+								  0, 0, tile.canvas.width, tile.canvas.height,
+								  dx, dy, dWidth, dHeight);
+	}
+
+	private drawDebugHistogram(canvas: CanvasRenderingContext2D, x: number, y: number, value: number, offset: number)
+	{
+			const tSize = 256;
+			const deltaSize = 4;
+			var maxDeltas = (tSize - 16) / deltaSize;
+
+			// offset vertically down to 'offset'
+			const yoff = Math.floor(offset / maxDeltas);
+			y += yoff * deltaSize;
+			offset -= yoff * maxDeltas;
+
+			var firstRowFill = Math.min(value, maxDeltas - offset);
+
+			// fill first row from offset
+			if (firstRowFill > 0)
+				canvas.fillRect(x + offset * deltaSize, y, firstRowFill * deltaSize, deltaSize);
+
+			// render the rest:
+			value = value - firstRowFill;
+
+			// central rectangle
+			var rowBlock = Math.floor(value / maxDeltas);
+
+			if (rowBlock > 0)
+				canvas.fillRect(x, y + deltaSize, maxDeltas * deltaSize, rowBlock * deltaSize);
+
+			// Fill last row
+			var rowLeft = value % maxDeltas;
+			if (rowLeft > 0)
+				canvas.fillRect(x, y + rowBlock * deltaSize + deltaSize, rowLeft * deltaSize, deltaSize);
+	}
+
+	public drawTileToCanvasCrop(tile: any, now: Date, canvas: CanvasRenderingContext2D,
+								sx: number, sy: number, sWidth: number, sHeight: number,
+								dx: number, dy: number, dWidth: number, dHeight: number)
+	{
+		this.ensureCanvas(tile, now);
+
+		/* if (!(tile.wireId % 4)) // great for debugging tile grid alignment.
+				canvas.drawImage(this.checkpattern, sx, sy, sWidth, sHeight, dx, dy, dWidth, dHeight);
+		else */
+		canvas.drawImage(tile.canvas, sx, sy, sWidth, sHeight, dx, dy, dWidth, dHeight);
+
+		if (this.sectionProperties.docLayer._debug)
+		{
+			this.beforeDraw(canvas);
+
+			// clipping push - normally we avoid clipping for perf.
+			canvas.save();
+			const clipRegion = new Path2D();
+			clipRegion.rect(dx, dy, dWidth, dHeight);
+			canvas.clip(clipRegion);
+
+			// want to render our bits 'inside' the tile - but we may have only part of it.
+			// so offset our rendering and rely on clipping to help.
+			const ox = -sx;
+			const oy = -sy;
+			const tSize = 256;
+
+			// blue boundary line on tiles
+			canvas.lineWidth = 1;
+			canvas.strokeStyle = 'rgba(0, 0, 255, 0.8)';
+			canvas.beginPath();
+			canvas.moveTo(ox + dx + 0.5, oy + dy + 0.5);
+			canvas.lineTo(ox + dx + 0.5, oy + dy + tSize + 0.5);
+			canvas.lineTo(ox + dx + tSize + 0.5, oy + dy + tSize + 0.5);
+			canvas.lineTo(ox + dx + tSize + 0.5, oy + dy + 0.5);
+			canvas.lineTo(ox + dx + 0.5, oy + dy + 0.5);
+			canvas.stroke();
+
+			// state of the tile
+			if (!tile.hasContent())
+				canvas.fillStyle = 'rgba(255, 0, 0, 0.8)';   // red
+			else if (tile.needsFetch())
+				canvas.fillStyle = 'rgba(255, 255, 0, 0.8)'; // yellow
+			else // present
+				canvas.fillStyle = 'rgba(0, 255, 0, 0.5)';   // green
+			canvas.fillRect(ox + dx + 1.5, oy + dy + 1.5, 12, 12);
+
+			// deltas graph
+			if (tile.deltaCount)
+			{
+				// blue/grey deltas
+				canvas.fillStyle = 'rgba(0, 0, 256, 0.3)';
+				this.drawDebugHistogram(canvas, ox + dx + 1.5 + 14, oy + dy + 1.5, tile.deltaCount, 0);
+				// yellow/grey deltas
+				canvas.fillStyle = 'rgba(256, 256, 0, 0.3)';
+				this.drawDebugHistogram(canvas, ox + dx + 1.5 + 14, oy + dy + 1.5, tile.updateCount, tile.deltaCount);
+			}
+
+			// Metrics on-top of the tile:
+			var lines = [
+				'wireId: ' + tile.wireId,
+				'invalidFrom: ' + tile.invalidFrom,
+				'nviewid: ' + tile.viewId,
+				'invalidates: ' + tile.invalidateCount,
+				'tile: ' + tile.loadCount + ' \u0394: ' + tile.deltaCount + ' upd: ' + tile.updateCount,
+				'misses: ' + tile.missingContent + ' gce: ' + tile.gcErrors,
+				'dlta size/kB: ' + ((tile.rawDeltas ? tile.rawDeltas.length : 0)/1024).toFixed(2)
+			];
+// FIXME: generate metrics of how long a tile has been visible & invalid for.
+//			if (tile._debugTime && tile._debugTime.date !== 0)
+//					lines.push(this.sectionProperties.docLayer._debugSetTimes(tile._debugTime, +new Date() - tile._debugTime.date));
+
+			const startY = tSize - 12 * lines.length;
+
+			// background
+			canvas.fillStyle = 'rgba(220, 220, 220, 0.5)'; // greyish
+			canvas.fillRect(ox + dx + 1.5, oy + dy + startY - 12.0, 100, 12 * lines.length + 8.0);
+
+			canvas.font = '12px sans';
+			canvas.fillStyle = 'rgba(0, 0, 0, 1.0)';   // black
+			canvas.textAlign = 'left';
+			for (var i = 0 ; i < lines.length; ++i)
+					canvas.fillText(lines[i], ox + dx + 5.5, oy + dy + startY + i*12);
+
+			canvas.restore();
+			this.afterDraw(canvas);
+		}
+	}
+
 	// Called by tsManager to draw a zoom animation frame.
 	public drawZoomFrame(ctx?: any) {
 		var tsManager = this.sectionProperties.tsManager;
@@ -565,6 +686,7 @@ class TilesSection {
 		var docLayer = this.sectionProperties.docLayer;
 		var zoom = Math.round(this.map.getZoom());
 		var part = docLayer._selectedPart;
+		var mode = docLayer._selectedMode;
 		var splitPos = ctx.splitPos;
 
 		this.containerObject.setPenPosition(this);
@@ -615,18 +737,17 @@ class TilesSection {
 			var useSheetGeometry = false;
 			if (scale < 1.0) {
 				useSheetGeometry = !!sheetGeometry;
-				bestZoomSrc = this.zoomLevelWithMaxContentInArea(docRange, zoom, part, ctx);
+				bestZoomSrc = this.zoomLevelWithMaxContentInArea(docRange, zoom, part, mode, ctx);
 			}
 
 			var docRangeScaled = (bestZoomSrc == zoom) ? docRange : this.scaleBoundsForZoom(docRange, bestZoomSrc, zoom);
 			var destPosScaled = (bestZoomSrc == zoom) ? destPos : this.scalePosForZoom(destPos, bestZoomSrc, zoom);
 			var relScale = (bestZoomSrc == zoom) ? 1 : this.map.getZoomScale(bestZoomSrc, zoom);
 
-			var toScaleAbs = relScale * docLayer._tileSize * 15.0 / docLayer._tileWidthTwips;
-			toScaleAbs = docLayer._tileSize * 15.0 / Math.round(15.0 * docLayer._tileSize / toScaleAbs);
-
-			this.forEachTileInArea(docRangeScaled, bestZoomSrc, part, ctx, function (tile: any, coords: any): boolean {
-				if (!tile || !tile.loaded || !docLayer._isValidTile(coords))
+			this.beforeDraw(canvasContext);
+			var now = new Date();
+			this.forEachTileInArea(docRangeScaled, bestZoomSrc, part, mode, ctx, function (tile, coords, section): boolean {
+				if (!tile || !tile.hasContent() || !docLayer._isValidTile(coords))
 					return false;
 
 				var tileCoords = tile.coords.getPos();
@@ -649,19 +770,20 @@ class TilesSection {
 				var tileOffset = crop.min.subtract(tileBounds.min);
 				var paneOffset = crop.min.subtract(docRangeScaled.min.subtract(destPosScaled));
 				if (cropWidth && cropHeight) {
-					canvasContext.drawImage(tile.el,
-						tileOffset.x, tileOffset.y, // source x, y
-						cropWidth, cropHeight, // source size
-						// Destination x, y, w, h (In non-Chrome browsers it leaves lines without the 0.5 correction).
-						Math.floor(paneOffset.x / relScale * scale) + 0.5, // Destination x
-						Math.floor(paneOffset.y / relScale * scale) + 0.5, // Destination y
-
-						Math.floor((cropWidth / relScale) * scale) + 1.5,    // Destination width
-						Math.floor((cropHeight / relScale) * scale) + 1.5);    // Destination height
+						section.drawTileToCanvasCrop(
+								tile, now, canvasContext,
+								tileOffset.x, tileOffset.y, // source x, y
+								cropWidth, cropHeight, // source size
+								// Destination x, y, w, h (In non-Chrome browsers it leaves lines without the 0.5 correction).
+								Math.floor(paneOffset.x / relScale * scale) + 0.5, // Destination x
+								Math.floor(paneOffset.y / relScale * scale) + 0.5, // Destination y
+								Math.floor((cropWidth / relScale) * scale) + 1.5,    // Destination width
+								Math.floor((cropHeight / relScale) * scale) + 1.5);    // Destination height
 				}
 
 				return true;
 			}); // end of forEachTileInArea call.
+			this.afterDraw(canvasContext);
 
 		} // End of pane bounds list loop.
 
@@ -700,21 +822,6 @@ class TilesSection {
 			corePxBounds.max.multiplyBy(convScale)
 		);
 	}
-
-	public onMouseWheel () { return; }
-	public onMouseMove () { return; }
-	public onMouseDown () { return; }
-	public onMouseUp () { return; }
-	public onMouseEnter () { return; }
-	public onMouseLeave () { return; }
-	public onClick () { return; }
-	public onDoubleClick () { return; }
-	public onContextMenu () { return; }
-	public onLongPress () { return; }
-	public onMultiTouchStart () { return; }
-	public onMultiTouchMove () { return; }
-	public onMultiTouchEnd () { return; }
-	public onNewDocumentTopLeft () { return; }
 }
 
 L.getNewTilesSection = function () {

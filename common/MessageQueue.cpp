@@ -24,39 +24,7 @@ void TileQueue::put_impl(const Payload& value)
 {
     const std::string firstToken = COOLProtocol::getFirstToken(value);
 
-    if (firstToken == "canceltiles")
-    {
-        const std::string msg = std::string(value.data(), value.size());
-        LOG_TRC("Processing [" << COOLProtocol::getAbbreviatedMessage(msg)
-                               << "]. Before canceltiles have " << getQueue().size()
-                               << " in queue.");
-        const std::string seqs = msg.substr(12);
-        StringVector tokens(Util::tokenize(seqs, ','));
-        getQueue().erase(std::remove_if(getQueue().begin(), getQueue().end(),
-                [&tokens](const Payload& v)
-                {
-                    const std::string s(v.data(), v.size());
-                    // Tile is for a thumbnail, don't cancel it
-                    if (s.find("id=") != std::string::npos)
-                        return false;
-                    for (size_t i = 0; i < tokens.size(); ++i)
-                    {
-                        if (s.find("ver=" + tokens[i]) != std::string::npos)
-                        {
-                            LOG_TRC("Matched " << tokens[i] << ", Removing [" << s << ']');
-                            return true;
-                        }
-                    }
-
-                    return false;
-
-                }), getQueue().end());
-
-        // Don't push canceltiles into the queue.
-        LOG_TRC("After canceltiles have " << getQueue().size() << " in queue.");
-        return;
-    }
-    else if (firstToken == "tilecombine")
+    if (firstToken == "tilecombine")
     {
         // Breakup tilecombine and deduplicate (we are re-combining the tiles
         // in the get_impl() again)
@@ -152,14 +120,27 @@ std::string extractUnoCommand(const std::string& command)
     return command;
 }
 
+bool containsUnoCommand(const std::string_view token, const std::string_view command)
+{
+    if (!COOLProtocol::matchPrefix(".uno:", token))
+        return false;
+
+    size_t equalPos = token.find('=');
+    if (equalPos != std::string::npos)
+        return token.substr(0, equalPos) == command;
+
+    return token == command;
+}
+
 /// Extract rectangle from the invalidation callback
-bool extractRectangle(const StringVector& tokens, int& x, int& y, int& w, int& h, int& part)
+bool extractRectangle(const StringVector& tokens, int& x, int& y, int& w, int& h, int& part, int& mode)
 {
     x = 0;
     y = 0;
     w = INT_MAX;
     h = INT_MAX;
     part = 0;
+    mode = 0;
 
     if (tokens.size() < 5)
         return false;
@@ -179,8 +160,56 @@ bool extractRectangle(const StringVector& tokens, int& x, int& y, int& w, int& h
     h = std::atoi(tokens[6].c_str());
     part = std::atoi(tokens[7].c_str());
 
+    if (tokens.size() == 9)
+        mode = std::atoi(tokens[8].c_str());
+
     return true;
 }
+
+class isDuplicateCommand
+{
+private:
+    const std::string& m_unoCommand;
+    const StringVector& m_tokens;
+    bool m_is_duplicate_command;
+public:
+    isDuplicateCommand(const std::string& unoCommand, const StringVector& tokens)
+        : m_unoCommand(unoCommand)
+        , m_tokens(tokens)
+        , m_is_duplicate_command(false)
+    {
+    }
+
+    bool get_is_duplicate_command() const
+    {
+        return m_is_duplicate_command;
+    }
+
+    void reset()
+    {
+        m_is_duplicate_command = false;
+    }
+
+    bool operator()(size_t nIndex, std::string_view token)
+    {
+        switch (nIndex)
+        {
+            case 0:
+            case 1:
+            case 2:
+                // returns true to end tokenization as one of first 3 token doesn't match
+                return token != m_tokens[nIndex];
+            case 3:
+                // callback, the same target, state changed; now check it's
+                // the same .uno: command
+                m_is_duplicate_command = containsUnoCommand(token, m_unoCommand);
+                // returns true to end tokenization as 4 is all we need
+                return true;
+            break;
+        }
+        return false;
+    };
+};
 
 }
 
@@ -188,7 +217,7 @@ std::string TileQueue::removeCallbackDuplicate(const std::string& callbackMsg)
 {
     assert(COOLProtocol::matchPrefix("callback", callbackMsg, /*ignoreWhitespace*/ true));
 
-    StringVector tokens = Util::tokenize(callbackMsg);
+    StringVector tokens = StringVector::tokenize(callbackMsg);
 
     if (tokens.size() < 3)
         return std::string();
@@ -204,9 +233,9 @@ std::string TileQueue::removeCallbackDuplicate(const std::string& callbackMsg)
     {
         case LOK_CALLBACK_INVALIDATE_TILES: // invalidation
         {
-            int msgX, msgY, msgW, msgH, msgPart;
+            int msgX, msgY, msgW, msgH, msgPart, msgMode;
 
-            if (!extractRectangle(tokens, msgX, msgY, msgW, msgH, msgPart))
+            if (!extractRectangle(tokens, msgX, msgY, msgW, msgH, msgPart, msgMode))
                 return std::string();
 
             bool performedMerge = false;
@@ -217,7 +246,7 @@ std::string TileQueue::removeCallbackDuplicate(const std::string& callbackMsg)
             {
                 auto& it = getQueue()[i];
 
-                StringVector queuedTokens = Util::tokenize(it.data(), it.size());
+                StringVector queuedTokens = StringVector::tokenize(it.data(), it.size());
                 if (queuedTokens.size() < 3)
                 {
                     ++i;
@@ -232,15 +261,21 @@ std::string TileQueue::removeCallbackDuplicate(const std::string& callbackMsg)
                     continue;
                 }
 
-                int queuedX, queuedY, queuedW, queuedH, queuedPart;
+                int queuedX, queuedY, queuedW, queuedH, queuedPart, queuedMode;
 
-                if (!extractRectangle(queuedTokens, queuedX, queuedY, queuedW, queuedH, queuedPart))
+                if (!extractRectangle(queuedTokens, queuedX, queuedY, queuedW, queuedH, queuedPart, queuedMode))
                 {
                     ++i;
                     continue;
                 }
 
                 if (msgPart != queuedPart)
+                {
+                    ++i;
+                    continue;
+                }
+
+                if (msgMode != queuedMode)
                 {
                     ++i;
                     continue;
@@ -254,7 +289,7 @@ std::string TileQueue::removeCallbackDuplicate(const std::string& callbackMsg)
                     LOG_TRC("Removing smaller invalidation: "
                             << std::string(it.data(), it.size()) << " -> " << tokens[0] << ' '
                             << tokens[1] << ' ' << tokens[2] << ' ' << msgX << ' ' << msgY << ' '
-                            << msgW << ' ' << msgH << ' ' << msgPart);
+                            << msgW << ' ' << msgH << ' ' << msgPart << ' ' << msgMode);
 
                     // remove from the queue
                     getQueue().erase(getQueue().begin() + i);
@@ -280,11 +315,13 @@ std::string TileQueue::removeCallbackDuplicate(const std::string& callbackMsg)
                     }
 
                     LOG_TRC("Merging invalidations: "
-                            << std::string(it.data(), it.size()) << " and " << tokens[0] << ' '
-                            << tokens[1] << ' ' << tokens[2] << ' ' << msgX << ' ' << msgY << ' '
-                            << msgW << ' ' << msgH << ' ' << msgPart << " -> " << tokens[0] << ' '
-                            << tokens[1] << ' ' << tokens[2] << ' ' << joinX << ' ' << joinY << ' '
-                            << joinW << ' ' << joinH << ' ' << msgPart);
+                            << std::string(it.data(), it.size()) << " and "
+                            << tokens[0] << ' ' << tokens[1] << ' ' << tokens[2] << ' '
+                            << msgX << ' ' << msgY << ' ' << msgW << ' ' << msgH << ' '
+                            << msgPart << ' ' << msgMode << " -> "
+                            << tokens[0] << ' ' << tokens[1] << ' ' << tokens[2] << ' '
+                            << joinX << ' ' << joinY << ' ' << joinW << ' ' << joinH << ' '
+                            << msgPart << ' ' << msgMode);
 
                     msgX = joinX;
                     msgY = joinY;
@@ -331,26 +368,18 @@ std::string TileQueue::removeCallbackDuplicate(const std::string& callbackMsg)
             if (unoCommand == ".uno:ModifiedStatus")
                 return std::string();
 
+            if (getQueue().empty())
+                return std::string();
+
             // remove obsolete states of the same .uno: command
+            isDuplicateCommand functor(unoCommand, tokens);
             for (std::size_t i = 0; i < getQueue().size(); ++i)
             {
                 auto& it = getQueue()[i];
 
-                StringVector queuedTokens = Util::tokenize(it.data(), it.size());
-                if (queuedTokens.size() < 4)
-                    continue;
+                StringVector::tokenize_foreach(functor, it.data(), it.size());
 
-                if (queuedTokens[0] != tokens[0] || queuedTokens[1] != tokens[1]
-                    || queuedTokens[2] != tokens[2])
-                    continue;
-
-                // callback, the same target, state changed; now check it's
-                // the same .uno: command
-                std::string queuedUnoCommand = extractUnoCommand(queuedTokens[3]);
-                if (queuedUnoCommand.empty())
-                    continue;
-
-                if (unoCommand == queuedUnoCommand)
+                if (functor.get_is_duplicate_command())
                 {
                     LOG_TRC("Remove obsolete uno command: "
                             << std::string(it.data(), it.size()) << " -> "
@@ -358,6 +387,7 @@ std::string TileQueue::removeCallbackDuplicate(const std::string& callbackMsg)
                     getQueue().erase(getQueue().begin() + i);
                     break;
                 }
+                functor.reset();
             }
         }
         break;
@@ -386,7 +416,7 @@ std::string TileQueue::removeCallbackDuplicate(const std::string& callbackMsg)
                 if (!COOLProtocol::matchPrefix("callback", it))
                     continue;
 
-                StringVector queuedTokens = Util::tokenize(it.data(), it.size());
+                StringVector queuedTokens = StringVector::tokenize(it.data(), it.size());
                 if (queuedTokens.size() < 3)
                     continue;
 
@@ -565,34 +595,62 @@ TileQueue::Payload TileQueue::get_impl()
         return Payload(msg.data(), msg.data() + msg.size());
     }
 
-    std::string tileCombined = TileCombined::create(tiles).serialize("tilecombine");
+    // n^2 but lists are short.
+    for (size_t i = 0; i < tiles.size() - 1; ++i)
+    {
+        const auto &a = tiles[i];
+        for (size_t j = i + 1; j < tiles.size();)
+        {
+            const auto &b = tiles[j];
+            assert(a.getPart() == b.getPart());
+            assert(a.getEditMode() == b.getEditMode());
+            assert(a.getWidth() == b.getWidth());
+            assert(a.getHeight() == b.getHeight());
+            assert(a.getTileWidth() == b.getTileWidth());
+            assert(a.getTileHeight() == b.getTileHeight());
+            if (a.getTilePosX() == b.getTilePosX() &&
+                a.getTilePosY() == b.getTilePosY())
+            {
+                LOG_TRC("MessageQueue: dropping duplicate tile: " <<
+                        j << " vs. " << i << " at: " <<
+                        a.getTilePosX() << "," << b.getTilePosY());
+                tiles.erase(tiles.begin() + j);
+            }
+            else
+                j++;
+        }
+    }
+
+    TileCombined combined = TileCombined::create(tiles);
+    assert(!combined.hasDuplicates());
+    std::string tileCombined = combined.serialize("tilecombine");
     LOG_TRC("MessageQueue res: " << COOLProtocol::getAbbreviatedMessage(tileCombined));
     return Payload(tileCombined.data(), tileCombined.data() + tileCombined.size());
 }
 
 void TileQueue::dumpState(std::ostream& oss)
 {
-oss << "\ttileQueue:"
-    << "\n\t\tcursorPositions:";
-for (const auto &it : _cursorPositions)
-{
-    oss << "\n\t\t\tviewId: "
-    << it.first
-    << " part: " << it.second.getPart()
-    << " x: " << it.second.getX()
-    << " y: " << it.second.getY()
-    << " width: " << it.second.getWidth()
-    << " height: " << it.second.getHeight();
-}
+    oss << "\ttileQueue:"
+        << "\n\t\tcursorPositions:";
+    for (const auto &it : _cursorPositions)
+    {
+        oss << "\n\t\t\tviewId: "
+            << it.first
+            << " part: " << it.second.getPart()
+            << " x: " << it.second.getX()
+            << " y: " << it.second.getY()
+            << " width: " << it.second.getWidth()
+            << " height: " << it.second.getHeight();
+    }
 
-oss << "\n\t\tviewOrder: [";
-std::string separator;
-for (const auto& viewId : _viewOrder)
-{
-    oss << separator << viewId;
-    separator = ", ";
-}
-oss << "]\n";
+    oss << "\n\t\tviewOrder: [";
+    std::string separator;
+    for (const auto& viewId : _viewOrder)
+    {
+        oss << separator << viewId;
+        separator = ", ";
+    }
+    oss << "]\n";
 }
 
 /* vim:set shiftwidth=4 softtabstop=4 expandtab: */

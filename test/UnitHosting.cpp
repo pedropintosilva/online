@@ -18,16 +18,11 @@
 #include <Poco/DOM/DOMParser.h>
 #include <Poco/DOM/Document.h>
 #include <Poco/DOM/NodeList.h>
-#include <Poco/Exception.h>
-#include <Poco/RegularExpression.h>
-#include <Poco/URI.h>
 #include <test/lokassert.hpp>
 
 #include <Png.hpp>
 #include <Unit.hpp>
 #include <helpers.hpp>
-
-class COOLWebSocket;
 
 /// Test suite for /hosting, etc.
 class UnitHosting : public UnitWSD
@@ -55,7 +50,7 @@ UnitBase::TestResult UnitHosting::testDiscovery()
 
     LOK_ASSERT(!httpResponse->statusLine().httpVersion().empty());
     LOK_ASSERT(!httpResponse->statusLine().reasonPhrase().empty());
-    LOK_ASSERT_EQUAL(200U, httpResponse->statusLine().statusCode());
+    LOK_ASSERT_EQUAL(http::StatusCode::OK, httpResponse->statusLine().statusCode());
     LOK_ASSERT(httpResponse->statusLine().statusCategory()
                == http::StatusLine::StatusCodeClass::Successful);
     LOK_ASSERT_EQUAL(std::string("HTTP/1.1"), httpResponse->statusLine().httpVersion());
@@ -72,7 +67,7 @@ UnitBase::TestResult UnitHosting::testDiscovery()
 
     LOK_ASSERT(!httpResponse2->statusLine().httpVersion().empty());
     LOK_ASSERT(!httpResponse2->statusLine().reasonPhrase().empty());
-    LOK_ASSERT_EQUAL(200U, httpResponse2->statusLine().statusCode());
+    LOK_ASSERT_EQUAL(http::StatusCode::OK, httpResponse2->statusLine().statusCode());
     LOK_ASSERT(httpResponse2->statusLine().statusCategory()
                == http::StatusLine::StatusCodeClass::Successful);
     LOK_ASSERT_EQUAL(std::string("HTTP/1.1"), httpResponse2->statusLine().httpVersion());
@@ -97,7 +92,7 @@ UnitBase::TestResult UnitHosting::testCapabilities()
     // Get discovery first and extract the urlsrc of the capabilities end point
     std::string capabilitiesURI;
     {
-        LOK_ASSERT_EQUAL(200U, httpResponse->statusLine().statusCode());
+        LOK_ASSERT_EQUAL(http::StatusCode::OK, httpResponse->statusLine().statusCode());
         LOK_ASSERT_EQUAL(std::string("text/xml"), httpResponse->header().getContentType());
 
         const std::string discoveryXML = httpResponse->getBody();
@@ -131,7 +126,7 @@ UnitBase::TestResult UnitHosting::testCapabilities()
         LOK_ASSERT(httpResponse->done());
         LOK_ASSERT(httpResponse->state() == http::Response::State::Complete);
 
-        LOK_ASSERT_EQUAL(200U, httpResponse->statusLine().statusCode());
+        LOK_ASSERT_EQUAL(http::StatusCode::OK, httpResponse->statusLine().statusCode());
         LOK_ASSERT_EQUAL(std::string("application/json"), httpResponse->header().getContentType());
 
         const std::string responseString = httpResponse->getBody();
@@ -145,7 +140,7 @@ UnitBase::TestResult UnitHosting::testCapabilities()
         Poco::JSON::Object::Ptr convert_to
             = features->get("convert-to").extract<Poco::JSON::Object::Ptr>();
         LOK_ASSERT(convert_to->has("available"));
-        LOK_ASSERT(convert_to->get("available"));
+        LOK_ASSERT(convert_to->get("available").convert<bool>());
     }
     return TestResult::Ok;
 }

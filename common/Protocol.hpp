@@ -15,8 +15,10 @@
 #include <regex>
 #include <sstream>
 #include <string>
+#include <string_view>
 #include <vector>
 
+#include <StringVector.hpp>
 #include <Util.hpp>
 
 #define LOK_USE_UNSTABLE_API
@@ -74,15 +76,15 @@ namespace COOLProtocol
         return false;
     }
 
-    bool getTokenInteger(const std::string& token, const std::string& name, int& value);
-    bool getTokenUInt32(const std::string& token, const std::string& name, uint32_t& value);
-    bool getTokenUInt64(const std::string& token, const std::string& name, uint64_t& value);
-    bool getTokenString(const std::string& token, const std::string& name, std::string& value);
-    bool getTokenKeyword(const std::string& token, const std::string& name, const std::map<std::string, int>& map, int& value);
+    bool getTokenInteger(const std::string& token, const std::string_view name, int& value);
+    bool getTokenUInt32(const std::string& token, const std::string_view name, uint32_t& value);
+    bool getTokenUInt64(const std::string& token, const std::string_view name, uint64_t& value);
+    bool getTokenString(const std::string& token, const std::string_view name, std::string& value);
+    bool getTokenKeyword(const std::string& token, const std::string_view name, const std::map<std::string, int>& map, int& value);
 
-    bool getTokenKeyword(const StringVector& tokens, const std::string& name, const std::map<std::string, int>& map, int& value);
+    bool getTokenKeyword(const StringVector& tokens, const std::string_view name, const std::map<std::string, int>& map, int& value);
 
-    bool getTokenInteger(const StringVector& tokens, const std::string& name, int& value);
+    bool getTokenInteger(const StringVector& tokens, const std::string_view name, int& value);
 
     /// Literal-string token names.
     template <std::size_t N>
@@ -101,8 +103,15 @@ namespace COOLProtocol
         return false;
     }
 
+    /// Extracts a name and value from token. Returns true if value is a non-negative integer.
+    template <std::size_t N>
+    inline bool getNonNegTokenInteger(const std::string& token, const char (&name)[N], int& value)
+    {
+        return getTokenInteger(token, name, value) && value >= 0;
+    }
+
     inline bool getTokenString(const StringVector& tokens,
-                               const std::string& name,
+                               const std::string_view name,
                                std::string& value)
     {
         for (const auto& token : tokens)
@@ -116,8 +125,8 @@ namespace COOLProtocol
         return false;
     }
 
-    bool getTokenStringFromMessage(const std::string& message, const std::string& name, std::string& value);
-    bool getTokenKeywordFromMessage(const std::string& message, const std::string& name, const std::map<std::string, int>& map, int& value);
+    bool getTokenStringFromMessage(const std::string& message, const std::string_view name, std::string& value);
+    bool getTokenKeywordFromMessage(const std::string& message, const std::string_view name, const std::map<std::string, int>& map, int& value);
 
     inline
     std::vector<int> tokenizeInts(const char* data, const size_t size, const char delimiter = ',')
@@ -153,9 +162,9 @@ namespace COOLProtocol
         return tokenizeInts(s.data(), s.size(), delimiter);
     }
 
-    inline bool getTokenIntegerFromMessage(const std::string& message, const std::string& name, int& value)
+    inline bool getTokenIntegerFromMessage(const std::string& message, const std::string_view name, int& value)
     {
-        return getTokenInteger(Util::tokenize(message), name, value);
+        return getTokenInteger(StringVector::tokenize(message), name, value);
     }
 
     /// Returns the first token of a message.
@@ -172,21 +181,21 @@ namespace COOLProtocol
     }
 
     inline
-    bool matchPrefix(const std::string& prefix, const std::string& message)
+    bool matchPrefix(const std::string_view prefix, const std::string_view message)
     {
         return (message.size() >= prefix.size() &&
                 message.compare(0, prefix.size(), prefix) == 0);
     }
 
     inline
-    bool matchPrefix(const std::string& prefix, const std::vector<char>& message)
+    bool matchPrefix(const std::string_view prefix, const std::vector<char>& message)
     {
         return (message.size() >= prefix.size() &&
                 prefix.compare(0, prefix.size(), message.data(), prefix.size()) == 0);
     }
 
     inline
-    bool matchPrefix(const std::string& prefix, const std::string& message, const bool ignoreWhitespace)
+    bool matchPrefix(const std::string_view prefix, const std::string_view message, const bool ignoreWhitespace)
     {
         if (ignoreWhitespace)
         {
@@ -207,9 +216,9 @@ namespace COOLProtocol
     /// Notice that this doesn't guarantee editing activity,
     /// rather just user interaction with the UI.
     inline
-    bool tokenIndicatesUserInteraction(const std::string& token)
+    bool tokenIndicatesUserInteraction(const std::string_view token)
     {
-        // Exclude tokens that include these keywords, such as canceltiles statusindicator.
+        // Exclude tokens that include these keywords, such as statusindicator.
 
         // FIXME: This is wrong. That the token happens to contain (or not) a certain substring is
         // no guarantee that it "indicates user interaction". It might be like that at the moment,
@@ -220,6 +229,36 @@ namespace COOLProtocol
                 token.find("status") == std::string::npos &&
                 token.find("state") == std::string::npos &&
                 token != "userinactive");
+    }
+
+    /// Returns true if the token is a likely document modifying command.
+    /// This is never 100% accurate, but it is needed to filter out tokens
+    /// that certainly do not modify the document, such as 'load' and 'save'
+    /// commands. Some commands are certainly modifying, e.g. 'key', others
+    /// can only potentially be modifying, e.g. 'mouse' while dragging.
+    /// Note: this is only used when we don't have the modified flag from
+    /// Core so we flag the document as user-modified more accurately.
+    inline bool tokenIndicatesDocumentModification(const StringVector& tokens)
+    {
+        // These keywords are chosen to cover the largest set of
+        // commands that may potentially modify the document.
+        // We need to assume modification rather than not.
+        if (tokens.equals(0, "key") || tokens.equals(0, "outlinestate") ||
+            tokens.equals(0, "paste") || tokens.equals(0, "insertfile") ||
+            tokens.equals(0, "textinput") || tokens.equals(0, "windowkey") ||
+            tokens.equals(0, "windowmouse") || tokens.equals(0, "windowgesture"))
+        {
+            return true;
+        }
+
+        if (tokens.size() > 1 && tokens.equals(0, "uno"))
+        {
+            // By default, all uno commands are modifying, unless we are certain they don't.
+            return !tokens.equals(1, ".uno:SidebarHide") && !tokens.equals(1, ".uno:SidebarShow") &&
+                   !tokens.equals(1, ".uno:Copy") && !tokens.equals(1, ".uno:Save");
+        }
+
+        return false;
     }
 
     /// Returns the first line of a message.

@@ -70,6 +70,17 @@ public:
     virtual void alertAllUsers(const std::string& cmd, const std::string& kind) = 0;
 
     virtual unsigned getMobileAppDocId() const = 0;
+
+    /// See if we should clear out our memory
+    virtual void trimIfInactive() = 0;
+
+    virtual bool isDocPasswordProtected() const = 0;
+
+    virtual bool haveDocPassword() const = 0;
+
+    virtual std::string getDocPassword() const = 0;
+
+    virtual DocumentPasswordType getDocPasswordType() const = 0;
 };
 
 struct RecordedEvent
@@ -186,22 +197,6 @@ public:
     }
 };
 
-class UnoCommandsRecorder
-{
-public:
-    static const int NUM_UNO_COMMANDS = 4;
-
-    UnoCommandsRecorder();
-
-    void addUnoCommandInfo(const std::string& unoCommandInfo);
-    std::atomic<char*>* getRecordedCommands();
-
-private:
-    std::atomic<char*> _unocommands[NUM_UNO_COMMANDS];
-    std::atomic<unsigned long long> _currentpos;
-
-};
-
 /// Represents a session to the WSD process, in a Kit process. Note that this is not a singleton.
 class ChildSession final : public Session
 {
@@ -219,12 +214,13 @@ public:
         DocumentManagerInterface& docManager);
     virtual ~ChildSession();
 
-    bool getStatus(const char* buffer, int length);
+    bool getStatus();
     int getViewId() const { return _viewId; }
     void setViewId(const int viewId) { _viewId = viewId; }
     const std::string& getViewUserId() const { return getUserId(); }
     const std::string& getViewUserName() const { return getUserName(); }
     const std::string& getViewUserExtraInfo() const { return getUserExtraInfo(); }
+    const std::string& getViewUserPrivateInfo() const { return getUserPrivateInfo(); }
     void updateSpeed();
     int getSpeed();
 
@@ -236,8 +232,8 @@ public:
     {
         if (hasWatermark())
         {
-            _docWatermark.reset(
-                new Watermark(getLOKitDocument(), getWatermarkText(), getWatermarkOpacity()));
+            _docWatermark = std::make_shared<Watermark>(getLOKitDocument(), getWatermarkText(),
+                                                        getWatermarkOpacity());
         }
 
         return _docWatermark != nullptr;
@@ -269,7 +265,7 @@ public:
 
     using Session::sendTextFrame;
 
-    bool getClipboard(const char* buffer, int length, const StringVector& tokens);
+    bool getClipboard(const StringVector& tokens);
 
     void resetDocManager()
     {
@@ -277,53 +273,68 @@ public:
         _docManager = nullptr;
     }
 
+    // Only called by kit.
+    void setCanonicalViewId(int viewId) { _canonicalViewId = viewId; }
+
+    int  getCanonicalViewId() { return _canonicalViewId; }
+
+    void setViewRenderState(const std::string& state) { _viewRenderState = state; }
+
+    bool getDumpTiles() { return _isDumpingTiles; }
+
+    void setDumpTiles(bool dumpTiles) { _isDumpingTiles = dumpTiles; }
+
+    std::string getViewRenderState() { return _viewRenderState; }
 private:
-    bool loadDocument(const char* buffer, int length, const StringVector& tokens);
+    bool loadDocument(const StringVector& tokens);
 
-    bool sendFontRendering(const char* buffer, int length, const StringVector& tokens);
-    bool getCommandValues(const char* buffer, int length, const StringVector& tokens);
+    bool sendFontRendering(const StringVector& tokens);
+    bool getCommandValues(const StringVector& tokens);
 
-    bool clientZoom(const char* buffer, int length, const StringVector& tokens);
-    bool clientVisibleArea(const char* buffer, int length, const StringVector& tokens);
-    bool outlineState(const char* buffer, int length, const StringVector& tokens);
-    bool downloadAs(const char* buffer, int length, const StringVector& tokens);
+    bool clientZoom(const StringVector& tokens);
+    bool clientVisibleArea(const StringVector& tokens);
+    bool outlineState(const StringVector& tokens);
+    bool downloadAs(const StringVector& tokens);
     bool getChildId();
-    bool getTextSelection(const char* buffer, int length, const StringVector& tokens);
+    bool getTextSelection(const StringVector& tokens);
     bool setClipboard(const char* buffer, int length, const StringVector& tokens);
     std::string getTextSelectionInternal(const std::string& mimeType);
     bool paste(const char* buffer, int length, const StringVector& tokens);
-    bool insertFile(const char* buffer, int length, const StringVector& tokens);
-    bool keyEvent(const char* buffer, int length, const StringVector& tokens, const LokEventTargetEnum target);
-    bool extTextInputEvent(const char* /*buffer*/, int /*length*/, const StringVector& tokens);
+    bool insertFile(const StringVector& tokens);
+    bool keyEvent(const StringVector& tokens, const LokEventTargetEnum target);
+    bool extTextInputEvent(const StringVector& tokens);
     bool dialogKeyEvent(const char* buffer, int length, const std::vector<std::string>& tokens);
-    bool mouseEvent(const char* buffer, int length, const StringVector& tokens, const LokEventTargetEnum target);
-    bool gestureEvent(const char* buffer, int length, const StringVector& tokens);
-    bool dialogEvent(const char* buffer, int length, const StringVector& tokens);
-    bool completeFunction(const char* buffer, int length, const StringVector& tokens);
-    bool unoCommand(const char* buffer, int length, const StringVector& tokens);
-    bool selectText(const char* buffer, int length, const StringVector& tokens, const LokEventTargetEnum target);
-    bool selectGraphic(const char* buffer, int length, const StringVector& tokens);
-    bool renderWindow(const char* buffer, int length, const StringVector& tokens);
-    bool resizeWindow(const char* buffer, int length, const StringVector& tokens);
-    bool resetSelection(const char* buffer, int length, const StringVector& tokens);
-    bool saveAs(const char* buffer, int length, const StringVector& tokens);
-    bool setClientPart(const char* buffer, int length, const StringVector& tokens);
-    bool selectClientPart(const char* buffer, int length, const StringVector& tokens);
-    bool moveSelectedClientParts(const char* buffer, int length, const StringVector& tokens);
-    bool setPage(const char* buffer, int length, const StringVector& tokens);
-    bool sendWindowCommand(const char* buffer, int length, const StringVector& tokens);
-    bool signDocumentContent(const char* buffer, int length, const StringVector& tokens);
+    bool mouseEvent(const StringVector& tokens, const LokEventTargetEnum target);
+    bool gestureEvent(const StringVector& tokens);
+    bool dialogEvent(const StringVector& tokens);
+    bool completeFunction(const StringVector& tokens);
+    bool unoCommand(const StringVector& tokens);
+    bool selectText(const StringVector& tokens, const LokEventTargetEnum target);
+    bool selectGraphic(const StringVector& tokens);
+    bool renderWindow(const StringVector& tokens);
+    bool resizeWindow(const StringVector& tokens);
+    bool resetSelection(const StringVector& tokens);
+    bool saveAs(const StringVector& tokens);
+    bool exportAs(const StringVector& tokens);
+    bool setClientPart(const StringVector& tokens);
+    bool selectClientPart(const StringVector& tokens);
+    bool moveSelectedClientParts(const StringVector& tokens);
+    bool setPage(const StringVector& tokens);
+    bool sendWindowCommand(const StringVector& tokens);
     bool askSignatureStatus(const char* buffer, int length, const StringVector& tokens);
-    bool uploadSignedDocument(const char* buffer, int length, const StringVector& tokens);
-    bool exportSignAndUploadDocument(const char* buffer, int length, const StringVector& tokens);
-    bool renderShapeSelection(const char* buffer, int length, const StringVector& tokens);
-    bool removeTextContext(const char* /*buffer*/, int /*length*/, const StringVector& tokens);
-#if defined(ENABLE_FREEMIUM) || defined(ENABLE_FEATURE_RESTRICTION)
-    bool updateBlockingCommandStatus(const char* buffer, int length, const StringVector& tokens);
+    bool renderShapeSelection(const StringVector& tokens);
+    bool removeTextContext(const StringVector& tokens);
+#if ENABLE_FEATURE_LOCK || ENABLE_FEATURE_RESTRICTION
+    bool updateBlockingCommandStatus(const StringVector& tokens);
     std::string getBlockedCommandType(std::string command);
 #endif
+    bool handleZoteroMessage(const StringVector& tokens);
     bool formFieldEvent(const char* buffer, int length, const StringVector& tokens);
+    bool contentControlEvent(const StringVector& tokens);
     bool renderSearchResult(const char* buffer, int length, const StringVector& tokens);
+    bool setAccessibilityState(bool enable);
+    bool getA11yFocusedParagraph();
+    bool getA11yCaretPosition();
 
     void rememberEventsForInactiveUser(const int type, const std::string& payload);
 
@@ -386,7 +397,20 @@ private:
 
     std::vector<uint64_t> _pixmapCache;
 
-    static UnoCommandsRecorder unoCommandsRecorder;
+    /// How many sessions / clients we have
+    static size_t NumSessions;
+
+    /// stores wopi url for export as operation
+    std::string _exportAsWopiUrl;
+
+    /// stores info about the view
+    std::string _viewRenderState;
+
+    /// the canonical id unique to the set of rendering properties of this session
+    int _canonicalViewId;
+
+    /// whether we are dumping tiles as they are being drawn
+    bool _isDumpingTiles;
 };
 
 /* vim:set shiftwidth=4 softtabstop=4 expandtab: */

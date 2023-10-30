@@ -3,7 +3,8 @@
  * L.Control.LokDialog used for displaying LOK dialogs
  */
 
-/* global app $ L Hammer w2ui brandProductName */
+/* global app $ L Hammer w2ui brandProductName UNOModifier */
+
 L.WinUtil = {
 
 };
@@ -130,16 +131,16 @@ L.Control.LokDialog = L.Control.extend({
 	},
 
 	_dialogs: {},
-	_calcInputBar: null, // The Formula-Bar.
 
 	hasOpenedDialog: function() {
-		var nonDialogEntries = 0;
-		for (var index in this._dialogs) {
-			if (this._dialogs[index].isCalcInputBar)
-				nonDialogEntries++;
-		}
+		return Object.keys(this._dialogs).length > 0;
+	},
 
-		return Object.keys(this._dialogs).length > nonDialogEntries;
+	getCurrentDialogContainer: function() {
+		if (this._currentId)
+			return document.getElementById(this._dialogs[this._currentId].strId);
+		else
+			return null;
 	},
 
 	// method used to warn user about dialog modality
@@ -152,7 +153,7 @@ L.Control.LokDialog = L.Control.extend({
 
 	_docLoaded: function(e) {
 		if (!e.status) {
-			$('.lokdialog_container').remove();
+			$('.lokdialog_container:not(.jsdialog-container)').remove();
 			$('.lokdialogchild-canvas').remove();
 		}
 	},
@@ -172,10 +173,6 @@ L.Control.LokDialog = L.Control.extend({
 			$('#' + this._toStrId(id)).length > 0;
 	},
 
-	isCalcInputBar: function(id) {
-		return (id in this._dialogs) && this._dialogs[id].isCalcInputBar;
-	},
-
 	isCursorVisible: function(id) {
 		return (id in this._dialogs) && this._dialogs[id].cursorVisible;
 	},
@@ -183,15 +180,6 @@ L.Control.LokDialog = L.Control.extend({
 	_isSelectionHandle: function(el) {
 		return L.DomUtil.hasClass(el, 'leaflet-selection-marker-start')	||
 			L.DomUtil.hasClass(el, 'leaflet-selection-marker-end');
-	},
-
-	_isSelectionHandleDragged: function() {
-		if (this._calcInputBar) {
-			var selectionInfo = this._calcInputBar.textSelection;
-			return (selectionInfo.startHandle && selectionInfo.startHandle.isDragged) ||
-				(selectionInfo.endHandle && selectionInfo.endHandle.isDragged);
-		}
-		return false;
 	},
 
 	// Given a prefixed dialog id like 'lokdialog-323', gives a raw id, 323.
@@ -251,7 +239,7 @@ L.Control.LokDialog = L.Control.extend({
 		if (!rectangle)
 			return; // Don't request rendering an empty area.
 
-		//console.log('_sendPaintWindow: rectangle: ' + rectangle + ', dpiscale: ' + dpiscale);
+		//window.app.console.log('_sendPaintWindow: rectangle: ' + rectangle + ', dpiscale: ' + dpiscale);
 		app.socket.sendMessage('paintwindow ' + id + ' rectangle=' + rectangle + ' dpiscale=' + app.roundedDpiScale);
 
 		if (this._map._docLayer && this._map._docLayer._debug)
@@ -263,7 +251,7 @@ L.Control.LokDialog = L.Control.extend({
 		// CSV and Macro Security Warning Dialogs are shown before the document load
 		// In that state the document is not really loaded and closing or cancelling it
 		// returns docnotloaded error. Instead of this we can return to the integration
-		if (!this._map._docLoaded) {
+		if (!this._map._docLoaded && !window._firstDialogHandled) {
 			window.onClose();
 		}
 	},
@@ -275,13 +263,14 @@ L.Control.LokDialog = L.Control.extend({
 	},
 
 	_onDialogMsg: function(e) {
-		// console.log('onDialogMsg: id: ' + e.id + ', winType: ' + e.winType + ', action: ' + e.action + ', size: ' + e.size + ', rectangle: ' + e.rectangle);
+		// window.app.console.log('onDialogMsg: id: ' + e.id + ', winType: ' + e.winType + ', action: ' + e.action + ', size: ' + e.size + ', rectangle: ' + e.rectangle);
 		if (e.winType != undefined &&
 		    e.winType !== 'dialog' &&
 		    e.winType !== 'calc-input-win' &&
 		    e.winType !== 'child' &&
 		    e.winType !== 'deck' &&
-		    e.winType !== 'tooltip') {
+		    e.winType !== 'tooltip' &&
+		    e.winType !== 'dropdown') {
 			return;
 		}
 
@@ -302,19 +291,14 @@ L.Control.LokDialog = L.Control.extend({
 			top = parseInt(e.position.split(',')[1]);
 		}
 
-		var lines = 0;
-
 		if (e.title && typeof brandProductName !== 'undefined') {
 			e.title = e.title.replace('Collabora Office', brandProductName);
 		}
 
 		if (e.action === 'created') {
-			if (e.winType === 'dialog' && !window.mode.isMobile()) {
+			if ((e.winType === 'dialog' || e.winType === 'dropdown') && !window.mode.isMobile()) {
 				// When left/top are invalid, the dialog shows in the center.
-				this._launchDialog(e.id, left, top, width, height, e.title);
-			} else if (e.winType === 'calc-input-win') {
-				lines = parseInt(e.lines);
-				this._launchCalcInputBar(e.id, left, top, width, height, lines);
+				this._launchDialog(e.id, left, top, width, height, e.title, null, e.unique_id);
 			} else if (e.winType === 'child' || e.winType === 'tooltip') {
 				var parentId = parseInt(e.parentId);
 				if (!this._isOpen(parentId))
@@ -352,13 +336,13 @@ L.Control.LokDialog = L.Control.extend({
 		if (!(this._isOpen(e.id) || this._getParentId(e.id))) {
 			if (e.action == 'close' && window.mobileDialogId == e.id) {
 				window.mobileDialogId = undefined;
-				this._map.fire('closemobilewizard');
+				//this._map.fire('closemobilewizard');
 			}
 			return;
 		}
 
 		// We don't want dialogs on smartphones, only calc input window is allowed
-		if (window.mode.isMobile() && e.winType !== 'calc-input-win' && !this.isCalcInputBar(e.id))
+		if (window.mode.isMobile())
 			return;
 
 		if (e.action === 'invalidate') {
@@ -398,16 +382,8 @@ L.Control.LokDialog = L.Control.extend({
 		} else if (e.action === 'size_changed') {
 			// FIXME: we don't really have to destroy and launch the dialog again but do it for
 			// now because the size sent to us previously in 'created' cb is not correct
-			if (e.winType === 'calc-input-win' || this.isCalcInputBar(e.id)) {
-				lines = parseInt(e.lines);
-				left = left || this._calcInputBar.left;
-				top = top || this._calcInputBar.top;
-				this._launchCalcInputBar(e.id, left, top, width, height, lines);
-			}
-			else {
-				$('#' + strId).remove();
-				this._launchDialog(e.id, null, null, width, height, this._dialogs[parseInt(e.id)].title);
-			}
+			$('#' + strId).remove();
+			this._launchDialog(e.id, null, null, width, height, this._dialogs[parseInt(e.id)].title, null, e.unique_id);
 			if (this._map._docLayer && this._map._docLayer._docType === 'spreadsheet') {
 				if (this._map._docLayer._painter._sectionContainer.doesSectionExist(L.CSections.RowHeader.name)) {
 					this._map._docLayer._painter._sectionContainer.getSectionWithName(L.CSections.RowHeader.name)._updateCanvas();
@@ -470,8 +446,6 @@ L.Control.LokDialog = L.Control.extend({
 			parent = this._getParentId(e.id);
 			if (parent)
 				this._onDialogChildClose(parent);
-			else if (this.isCalcInputBar(e.id))
-				this._onCalcInputBarClose(e.id);
 			else
 				this._onDialogClose(e.id, false);
 		} else if (e.action === 'hide') {
@@ -569,7 +543,7 @@ L.Control.LokDialog = L.Control.extend({
 		if (startHandle && handles.draggingStopped) {
 			if (!handles.start)
 				handles.start = handles.appendChild(startHandle);
-			// console.log('lokdialog: _updateTextSelection: startPos: x: ' + startPos.x + ', y: ' + startPos.y);
+			// window.app.console.log('lokdialog: _updateTextSelection: startPos: x: ' + startPos.x + ', y: ' + startPos.y);
 			startHandle.pos = startPos;
 			L.DomUtil.setStyle(startHandle, 'left',  startPos.x + 'px');
 			L.DomUtil.setStyle(startHandle, 'top', startPos.y + 'px');
@@ -578,159 +552,14 @@ L.Control.LokDialog = L.Control.extend({
 		if (endHandle && handles.draggingStopped) {
 			if (!handles.end)
 				handles.end = handles.appendChild(endHandle);
-			// console.log('lokdialog: _updateTextSelection: endPos: x: ' + endPos.x + ', y: ' + endPos.y);
+			// window.app.console.log('lokdialog: _updateTextSelection: endPos: x: ' + endPos.x + ', y: ' + endPos.y);
 			endHandle.pos = endPos;
 			L.DomUtil.setStyle(endHandle, 'left',  endPos.x + 'px');
 			L.DomUtil.setStyle(endHandle, 'top', endPos.y + 'px');
 		}
 	},
 
-	_onSelectionHandleDragStart: function (e) {
-		L.DomEvent.stop(e);
-		var handles = e.target.parentNode;
-		var mousePos = L.DomEvent.getMousePosition(e.pointers ? e.srcEvent : e, handles);
-		e.target.isDragged = true;
-		e.target.dragStartPos = mousePos;
-
-		// single input line: check if after moving to a new line the handles have swapped position
-		if (handles.scrollDir !== 0 && handles.start && handles.end) {
-			var startDX = Math.abs(handles.beforeScrollingPosX - handles.start.pos.x);
-			var endDX = Math.abs(handles.beforeScrollingPosX - handles.end.pos.x);
-			if (handles.scrollDir === -1 && handles.lastDraggedHandle === 'end' && startDX < endDX) {
-				handles.lastDraggedHandle = 'start';
-			} else if (handles.scrollDir === 1 && handles.lastDraggedHandle === 'start' && endDX < startDX) {
-				handles.lastDraggedHandle = 'end';
-			}
-		}
-
-		handles.scrollDir = 0;
-		handles.beforeScrollingPosX = 0;
-		handles.draggingStopped = false;
-		if (!handles.lastDraggedHandle)
-			handles.lastDraggedHandle = 'end';
-		var swap = handles.lastDraggedHandle !== e.target.type;
-		// check if we need to notify the lok core of swapping the mark/cursor roles
-		if (swap) {
-			handles.lastDraggedHandle = e.target.type;
-			var pos = e.target.pos;
-			app.socket.sendMessage('windowselecttext id=' + e.target.dialogId +
-				                          ' swap=true x=' + pos.x + ' y=' + pos.y);
-		}
-	},
-
-	_onSelectionHandleDrag: function (e) {
-		var handles = this._calcInputBar.textSelection.handles;
-		var startHandle = handles.start;
-		var endHandle = handles.end;
-
-		var dragEnd = e.type === 'mouseup' || e.type === 'panend';
-		// when stopDragging is true we do not update the text selection
-		// further even if the dragging action is not over
-		var stopDragging = dragEnd || e.type === 'mouseout';
-
-		// single input line: dragging with no text selected -> move to previous/next line
-		var keyCode = 0;
-		if (dragEnd && (!startHandle || !startHandle.isDragged) && (!endHandle || !endHandle.isDragged)) {
-			if (e.deltaX > 30 || e.deltaY > 20)
-				keyCode = 1025; // ArrowUp
-			else if (e.deltaX < -30 || e.deltaY < -20)
-				keyCode = 1024; // ArrowDown
-			if (keyCode) {
-				this._map._docLayer.postKeyboardEvent('input', 0, keyCode);
-				this._map._textInput._emptyArea();
-				this._map._docLayer.postKeyboardEvent('up', 0, keyCode);
-			}
-			return;
-		}
-
-		var draggedHandle;
-		if (startHandle && startHandle.isDragged)
-			draggedHandle = startHandle;
-		else if (endHandle && endHandle.isDragged)
-			draggedHandle = endHandle;
-		if (!draggedHandle)
-			return;
-		if (dragEnd)
-			draggedHandle.isDragged = false;
-		if (handles.draggingStopped)
-			return;
-		if (stopDragging)
-			handles.draggingStopped = true;
-
-		var mousePos = L.DomEvent.getMousePosition(e.pointers ? e.srcEvent : e, handles);
-		var pos = draggedHandle.pos.add(mousePos.subtract(draggedHandle.dragStartPos));
-
-		// try to avoid unpleasant small vertical bouncing when dragging the handle horizontally
-		if (Math.abs(pos.y - draggedHandle.lastPos.y) < 6) {
-			pos.y = draggedHandle.lastPos.y;
-		}
-
-		// try to avoid to swap the handles position when they are both visible
-		if (startHandle && draggedHandle.type === 'end') {
-			if (startHandle.pos.y - pos.y > 2)
-				pos.y = draggedHandle.lastPos.y;
-			if (startHandle.pos.y - pos.y > -2 && pos.x - startHandle.pos.x < 2)
-				pos = draggedHandle.lastPos;
-		}
-		if (endHandle && draggedHandle.type === 'start') {
-			if (pos.y - endHandle.pos.y > 2)
-				pos.y = draggedHandle.lastPos.y;
-			if (pos.y - endHandle.pos.y > -endHandle.rowHeight && endHandle.pos.x - pos.x < 2)
-				pos = draggedHandle.lastPos;
-		}
-
-		var dragAreaWidth = parseInt(handles.style.width);
-		var dragAreaHeight = parseInt(handles.style.height);
-		var maxX = dragAreaWidth - 5;
-		var maxY = dragAreaHeight - 5;
-
-		// handle cases where the handle is dragged out of the input area
-		if (pos.x < handles.offsetX)
-			pos.x = stopDragging ? draggedHandle.lastPos.x : handles.offsetX;
-		else if (pos.x > maxX)
-			pos.x = stopDragging ? draggedHandle.lastPos.x : maxX;
-
-		if (pos.y < handles.offsetY) {
-			handles.scrollDir = -1;
-			keyCode = 5121; // Shift + ArrowUp
-			pos.y = stopDragging ? draggedHandle.lastPos.y : handles.offsetY;
-		}
-		else if (pos.y > maxY) {
-			if (pos.y > dragAreaHeight - 1 || e.type === 'mouseout') { // on desktop mouseout works better
-				handles.scrollDir = 1;
-				keyCode = 5120; // Shift + ArrowDown
-			}
-			pos.y = stopDragging ? draggedHandle.lastPos.y : maxY;
-		}
-
-		if (keyCode)
-			handles.draggingStopped = true;
-
-		var handlePos = pos;
-		if (stopDragging) {
-			handlePos = draggedHandle.lastPos;
-			draggedHandle.pos = pos;
-		}
-
-		L.DomUtil.setStyle(draggedHandle, 'left', handlePos.x + 'px');
-		L.DomUtil.setStyle(draggedHandle, 'top', handlePos.y + 'px');
-		app.socket.sendMessage('windowselecttext id=' + draggedHandle.dialogId +
-			                          ' swap=false x=' + pos.x + ' y=' + pos.y);
-
-		// check if we need to move to previous/next line
-		if (keyCode) {
-			handles.beforeScrollingPosX = pos.x;
-			this._map._docLayer.postKeyboardEvent('input', 0, keyCode);
-			this._map._textInput._emptyArea();
-			this._map._docLayer.postKeyboardEvent('up', 0, keyCode);
-		}
-	},
-
 	focus: function(dlgId, acceptInput) {
-		if (this.isCalcInputBar(dlgId) && (!this._isOpen(dlgId) || !this.isCursorVisible(dlgId))) {
-			return;
-		}
-
 		this._map.setWinId(dlgId);
 		if (dlgId in this._dialogs) {
 			this._map.focus(acceptInput);
@@ -755,7 +584,7 @@ L.Control.LokDialog = L.Control.extend({
 		return changed;
 	},
 
-	_launchDialog: function(id, leftTwips, topTwips, width, height, title) {
+	_launchDialog: function(id, leftTwips, topTwips, width, height, title, type, uniqueId) {
 		if (window.ThisIsTheiOSApp) {
 			if (w2ui['editbar'])
 				w2ui['editbar'].disable('closemobile');
@@ -768,6 +597,8 @@ L.Control.LokDialog = L.Control.extend({
 
 		var strId = this._toStrId(id);
 		dialogContainer.id = strId;
+		if (uniqueId)
+			dialogContainer.dataset.uniqueId = uniqueId;
 
 		var dialogCanvas = L.DomUtil.create('canvas', 'lokdialog_canvas', dialogContainer);
 		this._setCanvasWidthHeight(dialogCanvas, width, height);
@@ -806,7 +637,11 @@ L.Control.LokDialog = L.Control.extend({
 			var top = pixels.y + panePos.y - origin.y;
 
 			if (left >= 0 && top >= 0) {
-				$(dialogContainer).dialog('option', 'position', { my: 'left top', at: 'left+' + left + ' top+' + top, of: '#document-container' });
+				$(dialogContainer).dialog('option', 'position',
+							  { my: 'left top',
+							    at: 'left+' + left + ' top+' + top,
+							    of: type === 'dropdown' ? '#map' :
+							    '#document-container' });
 			}
 		}
 
@@ -819,7 +654,6 @@ L.Control.LokDialog = L.Control.extend({
 		this._dialogs[id] = {
 			id: id,
 			strId: strId,
-			isCalcInputBar: false,
 			width: width,
 			height: height,
 			cursor: null,
@@ -837,135 +671,8 @@ L.Control.LokDialog = L.Control.extend({
 		this._sendPaintWindow(id, this._createRectStr(id));
 	},
 
-	_launchCalcInputBar: function(id, left, top, width, height, textLines) {
-		// console.log('_launchCalcInputBar: start: id: ' + id + ', left: ' + left + ', top: ' + top
-		// 	+ ', width: ' + width + ', height: ' + height + ', textLines: ' + textLines);
-		if (!this._calcInputBar || this._calcInputBar.id !== id) {
-			if (this._calcInputBar)
-				$('#' + this._calcInputBar.strId).remove();
-			this._createCalcInputbar(id, left, top, width, height, textLines);
-		} else {
-			// Update in-place. We will resize during rendering.
-			this._adjustCalcInputBar(id, left, top, width, height, textLines);
-		}
-
-		// console.log('_launchCalcInputBar: end');
-	},
-
-	_adjustCalcInputBar: function(id, left, top, width, height, textLines) {
-		if (this._calcInputBar) {
-			var oldHeight = this._calcInputBar.height;
-			var oldX = this._calcInputBar.left;
-			var oldY = this._calcInputBar.top;
-			var delta = height - oldHeight;
-			if (delta !== 0 || oldX !== left || oldY !== top) {
-				// console.log('_adjustCalcInputBar: start: id: ' + id + ', height: ' + oldHeight + ' -> ' + height);
-
-				// Recreate the input-bar.
-				$('#' + this._calcInputBar.strId).remove();
-				this._createCalcInputbar(id, left, top, width, height, textLines);
-
-				// console.log('_adjustCalcInputBarHeight: end');
-			}
-
-			var oldWidth = this._calcInputBar.width;
-			delta = width - oldWidth;
-			if (delta !== 0) {
-				// console.log('_adjustCalcInputBar: start: id: ' + id + ', width: ' + oldWidth + ' -> ' + width);
-
-				var strId = this._toStrId(id);
-
-				var canvas = document.getElementById(strId + '-canvas');
-				this._setCanvasWidthHeight(canvas, width, height);
-
-				var handles = document.getElementById(strId + '-selection_handles');
-				this._setCanvasWidthHeight(handles, width, height);
-
-				this._calcInputBar.width = width;
-			}
-		}
-	},
-
-	_createCalcInputbar: function(id, left, top, width, height, textLines) {
-		// console.log('_createCalcInputBar: start: id: ' + id + ', width: ' + width + ', height: ' + height + ', textLines: ' + textLines);
-		var strId = this._toStrId(id);
-
-		$('#calc-inputbar-wrapper').css({display: 'block'});
-
-		var container = L.DomUtil.create('div', 'inputbar_container', L.DomUtil.get('calc-inputbar'));
-		container.id = strId;
-		L.DomUtil.setStyle(container, 'width', '100%');
-		L.DomUtil.setStyle(container, 'height', height + 'px');
-
-		if (textLines > 1) {
-			$('#formulabar').addClass('inputbar_multiline');
-		} else {
-			$('#formulabar').removeClass('inputbar_multiline');
-		}
-
-		//var eventLayer = L.DomUtil.create('div', '', container);
-		// Create the canvas.
-		var canvas = L.DomUtil.create('canvas', 'inputbar_canvas', container);
-		L.DomUtil.setStyle(canvas, 'position', 'absolute');
-		this._setCanvasWidthHeight(canvas, width, height);
-		canvas.id = strId + '-canvas';
-
-		// create the text selections layer
-		var textSelectionLayer = L.DomUtil.create('div', 'inputbar_selection_layer', container);
-		var selections =  L.DomUtil.create('div', 'inputbar_selections', textSelectionLayer);
-
-		// create text selection handles
-		var handles =  L.DomUtil.create('div', 'inputbar_selection_handles', textSelectionLayer);
-		handles.id = strId + '-selection_handles';
-		L.DomUtil.setStyle(handles, 'position', 'absolute');
-		L.DomUtil.setStyle(handles, 'background', 'transparent');
-		this._setCanvasWidthHeight(handles, width, height);
-		handles.draggingStopped = true;
-		handles.scrollDir = 0;
-		handles.offsetX = window.mode.isMobile() ? 0 : 48; // 48 with sigma and equal buttons
-		handles.offsetY = 0;
-		var startHandle = document.createElement('div');
-		L.DomUtil.addClass(startHandle, 'leaflet-selection-marker-start');
-		startHandle.dialogId = id;
-		startHandle.type = 'start';
-		L.DomEvent.on(startHandle, 'mousedown', this._onSelectionHandleDragStart, this);
-		var endHandle = document.createElement('div');
-		L.DomUtil.addClass(endHandle, 'leaflet-selection-marker-end');
-		endHandle.dialogId = id;
-		endHandle.type = 'end';
-		L.DomEvent.on(endHandle, 'mousedown', this._onSelectionHandleDragStart, this);
-
-		// Don't show the inputbar until we get the contents.
-		$(container).parent().hide();
-
-		this._dialogs[id] = {
-			open: true,
-			id: id,
-			strId: strId,
-			isCalcInputBar: true,
-			left: left,
-			top: top,
-			width: width,
-			height: height,
-			textLines: textLines,
-			cursor: null,
-			textSelection: {rectangles: selections, handles: handles, startHandle: startHandle, endHandle: endHandle},
-			child: null, // never used for inputbar
-			title: null  // never used for inputbar
-		};
-
-		this._calcInputBar = this._dialogs[id];
-
-		this._createDialogCursor(strId);
-
-		this._postLaunch(id, container, handles);
-		this._setupCalcInputBarGestures(id, handles, startHandle, endHandle);
-
-		// console.log('_createCalcInputBar: end');
-	},
-
 	_postLaunch: function(id, panelContainer, panelCanvas) {
-		if (!this.isCalcInputBar(id) || window.mode.isDesktop()) {
+		if (window.mode.isDesktop()) {
 			this._setupWindowEvents(id, panelCanvas/*, dlgInput*/);
 		}
 
@@ -976,23 +683,8 @@ L.Control.LokDialog = L.Control.extend({
 	_setupWindowEvents: function(id, canvas/*, dlgInput*/) {
 		L.DomEvent.on(canvas, 'contextmenu', L.DomEvent.preventDefault);
 		L.DomEvent.on(canvas, 'mousemove', function(e) {
-			if (this._isSelectionHandleDragged()) {
-				this._onSelectionHandleDrag(e);
-				return;
-			}
-
 			var pos = this._isSelectionHandle(e.target) ? L.DomEvent.getMousePosition(e, canvas) : {x: e.offsetX, y: e.offsetY};
-			if (this.isCalcInputBar(id)) {
-				pos.x += this._calcInputBar.left;
-				pos.y += this._calcInputBar.top;
-			}
 			this._postWindowMouseEvent('move', id, pos.x, pos.y, 1, 0, 0);
-		}, this);
-
-		L.DomEvent.on(canvas, 'mouseleave', function(e) {
-			if (this._isSelectionHandleDragged()) {
-				this._onSelectionHandleDrag(e);
-			}
 		}, this);
 
 		L.DomEvent.on(canvas, 'mousedown mouseup', function(e) {
@@ -1000,16 +692,6 @@ L.Control.LokDialog = L.Control.extend({
 
 			if (this._map.uiManager.isUIBlocked())
 				return;
-
-			if (this.isCalcInputBar(id) && this.hasOpenedDialog()) {
-				this.blinkOpenDialog();
-				return;
-			}
-
-			if (this._isSelectionHandleDragged() && e.type === 'mouseup') {
-				this._onSelectionHandleDrag(e);
-				return;
-			}
 
 			if (canvas.lastDraggedHandle)
 				canvas.lastDraggedHandle = null;
@@ -1024,19 +706,15 @@ L.Control.LokDialog = L.Control.extend({
 			}
 
 			var modifier = 0;
-			var shift = e.shiftKey ? this._map.keyboard.keyModifier.shift : 0;
-			var ctrl = e.ctrlKey ? this._map.keyboard.keyModifier.ctrl : 0;
-			var alt = e.altKey ? this._map.keyboard.keyModifier.alt : 0;
-			var cmd = e.metaKey ? this._map.keyboard.keyModifier.ctrlMac : 0;
+			var shift = e.shiftKey ? UNOModifier.SHIFT : 0;
+			var ctrl = e.ctrlKey ? UNOModifier.CTRL : 0;
+			var alt = e.altKey ? UNOModifier.ALT : 0;
+			var cmd = e.metaKey ? UNOModifier.CTRLMAC : 0;
 			modifier = shift | ctrl | alt | cmd;
 
 			// 'mousedown' -> 'buttondown'
 			var lokEventType = e.type.replace('mouse', 'button');
 			var pos = this._isSelectionHandle(e.target) ? L.DomEvent.getMousePosition(e, canvas) : {x: e.offsetX, y: e.offsetY};
-			if (this.isCalcInputBar(id)) {
-				pos.x += this._calcInputBar.left;
-				pos.y += this._calcInputBar.top;
-			}
 			this._postWindowMouseEvent(lokEventType, id, pos.x, pos.y, 1, buttons, modifier);
 			this._map.setWinId(id);
 			//dlgInput.focus();
@@ -1047,50 +725,6 @@ L.Control.LokDialog = L.Control.extend({
 			// focus change - therefore the event is stopped and preventDefault()ed.
 			L.DomEvent.stop(ev);
 		});
-	},
-
-	_setupCalcInputBarGestures: function(id, canvas, startHandle, endHandle) {
-		if (window.mode.isDesktop())
-			return;
-
-		var hammerContent = new Hammer.Manager(canvas, {});
-		var that = this;
-		var singleTap = new Hammer.Tap({event: 'singletap' });
-		var doubleTap = new Hammer.Tap({event: 'doubletap', taps: 2 });
-		var pan = new Hammer.Pan({event: 'pan' });
-		hammerContent.add([doubleTap, singleTap, pan]);
-		singleTap.requireFailure(doubleTap);
-
-
-		hammerContent.on('singletap doubletap', function(ev) {
-			var handles = that._calcInputBar.textSelection.handles;
-			handles.lastDraggedHandle = null;
-			var startHandle = handles.children[0];
-			var endHandle = handles.children[1];
-			if (startHandle)
-				startHandle.isDragged = false;
-			if (endHandle)
-				endHandle.isDragged = false;
-
-			var point = L.DomEvent.getMousePosition(ev.srcEvent, handles);
-			point.x += that._calcInputBar.left;
-			point.y += that._calcInputBar.top;
-
-			that._postWindowMouseEvent('buttondown', id, point.x, point.y, 1, 1, 0);
-			that._postWindowMouseEvent('buttonup', id, point.x, point.y, 1, 1, 0);
-			if (ev.type === 'doubletap') {
-				that._postWindowMouseEvent('buttondown', id, point.x, point.y, 1, 1, 0);
-				that._postWindowMouseEvent('buttonup', id, point.x, point.y, 1, 1, 0);
-			}
-		});
-
-		hammerContent.on('panmove panend', L.bind(this._onSelectionHandleDrag, this));
-
-		var hammerEndHandle = new Hammer.Manager(endHandle, {recognizers:[[Hammer.Pan]]});
-		hammerEndHandle.on('panstart',  L.bind(this._onSelectionHandleDragStart, this));
-
-		var hammerStartHandle = new Hammer.Manager(startHandle, {recognizers:[[Hammer.Pan]]});
-		hammerStartHandle.on('panstart',  L.bind(this._onSelectionHandleDragStart, this));
 	},
 
 	_setupGestures: function(dialogContainer, id, canvas) {
@@ -1197,27 +831,12 @@ L.Control.LokDialog = L.Control.extend({
 		app.socket.sendMessage('windowmouse id=' + winid +  ' type=' + type +
 		                              ' x=' + x + ' y=' + y + ' count=' + count +
 		                              ' buttons=' + buttons + ' modifier=' + modifier);
-		// Keep map active while user is playing with dialog.
-		this._map.lastActiveTime = Date.now();
 	},
 
 	_postWindowGestureEvent: function(winid, type, x, y, offset) {
-		// console.log('x ' + x + ' y ' + y + ' o ' + offset);
+		// window.app.console.log('x ' + x + ' y ' + y + ' o ' + offset);
 		app.socket.sendMessage('windowgesture id=' + winid +  ' type=' + type +
 		                              ' x=' + x + ' y=' + y + ' offset=' + offset);
-		// Keep map active while user is playing with dialog.
-		this._map.lastActiveTime = Date.now();
-	},
-
-	_onCalcInputBarClose: function(dialogId) {
-		// console.log('_onCalcInputBarClose: start: id: ' + dialogId);
-		$('#' + this._calcInputBar.strId).remove();
-		this._map.focus();
-		delete this._dialogs[dialogId];
-		this._calcInputBar = null;
-
-		$('#calc-inputbar-wrapper').css({display: ''});
-		// console.log('_onCalcInputBarClose: end');
 	},
 
 	_closeChildWindows: function(dialogId) {
@@ -1226,7 +845,7 @@ L.Control.LokDialog = L.Control.extend({
 		var foundCurrent = false;
 
 		Object.keys(this._dialogs).forEach(function(id) {
-			if (foundCurrent && !that._isCalcInputBar(id))
+			if (foundCurrent)
 				that._onDialogClose(id, true);
 
 			if (id == dialogId)
@@ -1258,9 +877,7 @@ L.Control.LokDialog = L.Control.extend({
 
 	_onClosePopups: function() {
 		for (var dialogId in this._dialogs) {
-			if (!this.isCalcInputBar(dialogId)) {
-				this._onDialogClose(dialogId, true);
-			}
+			this._onDialogClose(dialogId, true);
 		}
 		if (this.hasDialogInMobilePanelOpened()) {
 			this._onDialogClose(window.mobileDialogId, true);
@@ -1270,7 +887,7 @@ L.Control.LokDialog = L.Control.extend({
 	onCloseCurrentPopUp: function() {
 		// for title-less dialog only (context menu, pop-up)
 		if (this._currentId && this._isOpen(this._currentId) &&
-			!this._dialogs[this._currentId].title && !this.isCalcInputBar(this._currentId))
+			!this._dialogs[this._currentId].title)
 			this._onDialogClose(this._currentId, true);
 	},
 
@@ -1288,7 +905,8 @@ L.Control.LokDialog = L.Control.extend({
 			this._onEditorGotFocus();
 		} else {
 			this.focus(e.winId, e.acceptInput);
-			this._map.onFormulaBarFocus();
+			if (this._map.formulabar)
+				this._map.onFormulaBarFocus();
 		}
 	},
 
@@ -1310,34 +928,7 @@ L.Control.LokDialog = L.Control.extend({
 			y = parseInt(rectangle[1]);
 		}
 
-		// calc input bar find out their size on first paint call
-		var isCalcInputBar = that.isCalcInputBar(parentId);
 		var container = L.DomUtil.get(strId);
-		if (isCalcInputBar && container) {
-			// console.log2('_paintDialog: calc input bar: width: ' + that._calcInputBar.width);
-			var canvas = L.DomUtil.get(that._calcInputBar.strId + '-canvas');
-			var changed = that._setCanvasWidthHeight(canvas, that._calcInputBar.width, that._calcInputBar.height);
-			$(container).parent().show(); // show or width is 0
-			var deckOffset = 0;
-			var sidebar = $('#sidebar-dock-wrapper');
-			if (sidebar) {
-				deckOffset = sidebar.get(0).clientWidth;
-			}
-			var correctWidth = container.clientWidth - deckOffset;
-
-			// only touch styles & doc-layer sizing when absolutely necessary
-			if (changed)
-				that._map._docLayer._syncTileContainerSize();
-
-			// resize the input bar to the correct size
-			// the input bar is rendered only if when the size is the expected one
-			if (correctWidth !== 0 && that._calcInputBar.width !== correctWidth) {
-				// console.log('_paintDialog: correct width: ' + correctWidth + ', _calcInputBar width: ' + that._calcInputBar.width);
-				that._dialogs[parentId].isPainting = false;
-				app.socket.sendMessage('resizewindow ' + parentId + ' size=' + correctWidth + ',' + that._calcInputBar.height);
-				return;
-			}
-		}
 
 		ctx.drawImage(img, x, y);
 
@@ -1348,8 +939,7 @@ L.Control.LokDialog = L.Control.extend({
 		if (parentId in that._dialogs) {
 			// We might have closed the dialog by the time we render.
 			that._dialogs[parentId].isPainting = false;
-			if (!isCalcInputBar)
-				that._map.fire('changefocuswidget', {winId: parentId, dialog: that});
+			that._map.fire('changefocuswidget', {winId: parentId, dialog: that});
 		}
 	},
 
@@ -1401,37 +991,19 @@ L.Control.LokDialog = L.Control.extend({
 		$(canvas).show();
 	},
 
-	_resizeCalcInputBar: function() {
-		if (this._calcInputBar && !this._calcInputBar.isPainting) {
-			var id = this._calcInputBar.id;
-			var calcInputbar = L.DomUtil.get('calc-inputbar');
-			if (calcInputbar) {
-				var calcInputbarContainer = calcInputbar.children[0];
-				if (calcInputbarContainer) {
-					var width = calcInputbarContainer.clientWidth;
-					var height = calcInputbarContainer.clientHeight;
-					if (width !== 0 && height !== 0) {
-						// console.log('_resizeCalcInputBar: id: ' + id + ', width: ' + width + ', height: ' + height);
-						app.socket.sendMessage('resizewindow ' + id + ' size=' + width + ',' + height);
-					}
-				}
-			}
-		}
-	},
-
 	_onDialogChildClose: function(dialogId) {
 		$('#' + this._toStrId(dialogId) + '-floating').remove();
-		if (!this.isCalcInputBar(dialogId)) {
-			// Remove any extra height allocated for the parent container (only for floating dialogs).
-			var canvas = document.getElementById(dialogId + '-canvas');
-			if (!canvas) {
-				canvas = document.getElementById(this._toStrId(dialogId) + '-canvas');
-				if (!canvas)
-					return;
-			}
-			var canvasHeight = canvas.height;
-			$('#' + dialogId).height(canvasHeight + 'px');
+
+		// Remove any extra height allocated for the parent container (only for floating dialogs).
+		var canvas = document.getElementById(dialogId + '-canvas');
+		if (!canvas) {
+			canvas = document.getElementById(this._toStrId(dialogId) + '-canvas');
+			if (!canvas)
+				return;
 		}
+		var canvasHeight = canvas.height;
+		$('#' + dialogId).height(canvasHeight + 'px');
+
 		this._dialogs[dialogId].childid = undefined;
 		this._dialogs[dialogId].childx = undefined;
 		this._dialogs[dialogId].childy = undefined;
@@ -1461,20 +1033,11 @@ L.Control.LokDialog = L.Control.extend({
 				* Modal windows' child positions are relative to page borders.
 				* So this code adapts to it.
 		*/
-		var containerTop = dialogContainer.getBoundingClientRect().top + dialogContainer.ownerDocument.defaultView.pageYOffset;
-		var containerLeft = dialogContainer.getBoundingClientRect().left + dialogContainer.ownerDocument.defaultView.pageXOffset;
-		var grandParentID = dialogContainer.parentNode.id;
 
-		if (grandParentID.indexOf('calc-inputbar') >= 0) {
-			// This is the calculator input bar.
-			L.DomUtil.setStyle(floatingCanvas, 'left', (containerLeft + left) + 'px');
-			L.DomUtil.setStyle(floatingCanvas, 'top', (containerTop + 20) + 'px');
-		} else {
-			// Add header height..
-			var addition = 40;
-			L.DomUtil.setStyle(floatingCanvas, 'left', left + 'px');
-			L.DomUtil.setStyle(floatingCanvas, 'top', (top + addition) + 'px');
-		}
+		// Add header height..
+		var addition = 40;
+		L.DomUtil.setStyle(floatingCanvas, 'margin-inline-start', left + 'px');
+		L.DomUtil.setStyle(floatingCanvas, 'top', (top + addition) + 'px');
 
 		// attach events
 		this._setupChildEvents(childId, floatingCanvas);

@@ -9,20 +9,6 @@
 
 #include "Session.hpp"
 
-#include <sys/types.h>
-#include <ftw.h>
-#include <utime.h>
-
-#include <cassert>
-#include <cstring>
-#include <fstream>
-#include <iostream>
-#include <iterator>
-#include <map>
-#include <memory>
-#include <mutex>
-#include <set>
-
 #include <Poco/Exception.h>
 #include <Poco/Path.h>
 #include <Poco/String.h>
@@ -31,9 +17,7 @@
 #include "Common.hpp"
 #include "Protocol.hpp"
 #include "Log.hpp"
-#include <TileCache.hpp>
 #include "Util.hpp"
-#include "Unit.hpp"
 
 using namespace COOLProtocol;
 
@@ -48,11 +32,13 @@ Session::Session(const std::shared_ptr<ProtocolHandlerInterface> &protocol,
     _isActive(true),
     _lastActivityTime(std::chrono::steady_clock::now()),
     _isCloseFrame(false),
+    _isWritable(readOnly),
     _isReadOnly(readOnly),
     _isAllowChangeComments(false),
     _haveDocPassword(false),
     _isDocPasswordProtected(false),
-    _watermarkOpacity(0.2)
+    _watermarkOpacity(0.2),
+    _accessibilityState(false)
 {
 }
 
@@ -64,11 +50,12 @@ bool Session::sendTextFrame(const char* buffer, const int length)
 {
     if (!_protocol)
     {
-        LOG_TRC("ERR - missing protocol " << getName() << ": Send: [" << getAbbreviatedMessage(buffer, length) << "].");
+        LOG_TRC("ERR - missing protocol " << getName() << ": Send: ["
+                                          << getAbbreviatedMessage(buffer, length) << ']');
         return false;
     }
 
-    LOG_TRC(getName() << ": Send: [" << getAbbreviatedMessage(buffer, length) << "].");
+    LOG_TRC("Send: [" << getAbbreviatedMessage(buffer, length) << ']');
     return _protocol->sendTextMessage(buffer, length) >= length;
 }
 
@@ -76,11 +63,12 @@ bool Session::sendBinaryFrame(const char *buffer, int length)
 {
     if (!_protocol)
     {
-        LOG_TRC("ERR - missing protocol " << getName() << ": Send: " << std::to_string(length) << " binary bytes.");
+        LOG_TRC("ERR - missing protocol " << getName() << ": Send: " << std::to_string(length)
+                                          << " binary bytes");
         return false;
     }
 
-    LOG_TRC(getName() << ": Send: " << std::to_string(length) << " binary bytes.");
+    LOG_TRC("Send: " << std::to_string(length) << " binary bytes");
     return _protocol->sendBinaryMessage(buffer, length) >= length;
 }
 
@@ -144,6 +132,11 @@ void Session::parseDocOptions(const StringVector& tokens, int& part, std::string
             Poco::URI::decode(value, _userExtraInfo);
             ++offset;
         }
+        else if (name == "authorprivateinfo")
+        {
+            Poco::URI::decode(value, _userPrivateInfo);
+            ++offset;
+        }
         else if (name == "readonly")
         {
             _isReadOnly = value != "0";
@@ -157,7 +150,15 @@ void Session::parseDocOptions(const StringVector& tokens, int& part, std::string
         }
         else if (name == "lang")
         {
-            _lang = value;
+            if (value == "en")
+                _lang = "en-US";
+            else
+                _lang = value;
+            ++offset;
+        }
+        else if (name == "timezone")
+        {
+            _timezone= value;
             ++offset;
         }
         else if (name == "watermarkText")
@@ -205,6 +206,11 @@ void Session::parseDocOptions(const StringVector& tokens, int& part, std::string
             _macroSecurityLevel = value;
             ++offset;
         }
+        else if (name == "accessibilityState")
+        {
+            _accessibilityState = value == "true";
+            ++offset;
+        }
     }
 
     Util::mapAnonymized(_userId, _userIdAnonym);
@@ -232,9 +238,8 @@ void Session::disconnect()
 
 void Session::shutdown(bool goingAway, const std::string& statusMessage)
 {
-    LOG_TRC("Shutting down WS [" << getName() << "] " <<
-            (goingAway ? "going" : "normal") <<
-            " and reason [" << statusMessage << "].");
+    LOG_TRC("Shutting down WS [" << getName() << "] " << (goingAway ? "going" : "normal")
+                                 << " and reason [" << statusMessage << ']');
 
     // See protocol.txt for this application-level close frame.
     if (_protocol)
@@ -251,7 +256,7 @@ void Session::handleMessage(const std::vector<char> &data)
     try
     {
         std::unique_ptr< std::vector<char> > replace;
-        if (!Util::isFuzzing() && UnitBase::get().filterSessionInput(this, &data[0], data.size(), replace))
+        if (UnitBase::isUnitTesting() && !Util::isFuzzing() && UnitBase::get().filterSessionInput(this, &data[0], data.size(), replace))
         {
             if (!replace || replace->empty())
                 _handleInput(replace->data(), replace->size());
@@ -263,15 +268,13 @@ void Session::handleMessage(const std::vector<char> &data)
     }
     catch (const Exception& exc)
     {
-        LOG_ERR("Session::handleInput: Exception while handling [" <<
-                getAbbreviatedMessage(data) <<
-                "] in " << getName() << ": " << exc.displayText() <<
-                (exc.nested() ? " (" + exc.nested()->displayText() + ')' : ""));
+        LOG_ERR("Exception while handling ["
+                << getAbbreviatedMessage(data) << "] in " << getName() << ": " << exc.displayText()
+                << (exc.nested() ? " (" + exc.nested()->displayText() + ')' : ""));
     }
     catch (const std::exception& exc)
     {
-        LOG_ERR("Session::handleInput: Exception while handling [" <<
-                getAbbreviatedMessage(data) << "]: " << exc.what());
+        LOG_ERR("Exception while handling [" << getAbbreviatedMessage(data) << "]: " << exc.what());
     }
 }
 
@@ -289,12 +292,15 @@ void Session::getIOStats(uint64_t &sent, uint64_t &recv)
 
 void Session::dumpState(std::ostream& os)
 {
-    os << "\t\tid: " << _id
+    os << "\n\t\tid: " << _id
        << "\n\t\tname: " << _name
        << "\n\t\tdisconnected: " << _disconnected
        << "\n\t\tisActive: " << _isActive
        << "\n\t\tisCloseFrame: " << _isCloseFrame
+       << "\n\t\tisWritable: " << _isWritable
        << "\n\t\tisReadOnly: " << _isReadOnly
+       << "\n\t\tisAllowChangeComments: " << _isAllowChangeComments
+       << "\n\t\tisEditable: " << isEditable()
        << "\n\t\tdocURL: " << _docURL
        << "\n\t\tjailedFilePath: " << _jailedFilePath
        << "\n\t\tdocPwd: " << _docPassword
@@ -304,6 +310,7 @@ void Session::dumpState(std::ostream& os)
        << "\n\t\tuserId: " << _userId
        << "\n\t\tuserName: " << _userName
        << "\n\t\tlang: " << _lang
+       << "\n\t\ttimezone: " << _timezone
        << '\n';
 }
 

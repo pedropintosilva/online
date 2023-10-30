@@ -11,7 +11,10 @@
 
 /* Whether to compile in some extra debugging support code and disable some
    security pieces */
+/* When building with Xcode we define ENABLE_DEBUG when debugging, but not otherwise */
+#if !defined ENABLE_DEBUG
 #define ENABLE_DEBUG 0
+#endif
 
 /* Whether to enable SSL */
 #define ENABLE_SSL 0
@@ -21,7 +24,7 @@
 
 /* Should the Release notes message on startup should be enabled be default?
    */
-#define ENABLE_WELCOME_MESSAGE "false"
+#define ENABLE_WELCOME_MESSAGE 0
 
 /* Should the Release notes message on startup have a dismiss button instead of an x button to close by default?
    */
@@ -120,9 +123,6 @@
 
 /* Define to 1 if you have the ANSI C header files. */
 #define STDC_HEADERS 1
-
-/* Default value of per_documents.document_signing_url */
-#define VEREIGN_URL ""
 
 /* Version number of package */
 /* #undef VERSION */

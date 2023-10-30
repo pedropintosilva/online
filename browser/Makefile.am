@@ -38,7 +38,7 @@ JQUERY_LIGHTNESS_IMAGE_PATH = $(srcdir)/images/jquery-ui-lightness
 JQUERY_LIGHTNESS_IMAGES = $(wildcard $(JQUERY_LIGHTNESS_IMAGE_PATH)/*.png)
 JQUERY_LIGHTNESS_DIST_IMAGES = $(patsubst $(JQUERY_LIGHTNESS_IMAGE_PATH)/%.png,$(DIST_FOLDER)/images/%.png,$(JQUERY_LIGHTNESS_IMAGES))
 
-JQUERY_MINIFIED_IMAGE_PATH = node_modules/jquery-ui-dist/images
+JQUERY_MINIFIED_IMAGE_PATH = node_modules/jquery-ui/themes/base/images
 JQUERY_MINIFIED_IMAGES = $(wildcard $(JQUERY_MINIFIED_IMAGE_PATH)/*.png)
 JQUERY_MINIFIED_DIST_IMAGES = $(patsubst $(JQUERY_MINIFIED_IMAGE_PATH)/%.png,$(DIST_FOLDER)/images/%.png,$(JQUERY_MINIFIED_IMAGES))
 
@@ -54,8 +54,10 @@ endif
 COOL_HTML_SRC = $(shell find $(srcdir)/html -name '*.html')
 COOL_HTML_DST = $(patsubst $(srcdir)/html/%.html,$(DIST_FOLDER)/%.html,$(COOL_HTML_SRC))
 
-COOL_WELCOME_SRC = $(shell find $(srcdir)/welcome -name '*.html')
-COOL_WELCOME_DST = $(patsubst $(srcdir)/welcome/%.html,$(DIST_FOLDER)/welcome/%.html,$(COOL_WELCOME_SRC))
+if ENABLE_WELCOME_MESSAGE
+COOL_WELCOME_SRC = $(shell find $(srcdir)/welcome -name '*')
+COOL_WELCOME_DST = $(patsubst $(srcdir)/welcome/%,$(DIST_FOLDER)/welcome/%,$(COOL_WELCOME_SRC))
+endif
 
 COOL_ADMIN_SRC = $(shell find $(srcdir)/admin -name '*.html' -or -name '*.css' -or -name '*.ttf' -or -name 'OFL.txt' -or -name '*.svg')
 COOL_ADMIN_ALL = $(shell find $(srcdir)/admin -name '*')
@@ -103,15 +105,15 @@ COOL_ADMIN_JS =\
 	admin/src/AdminSocketAnalytics.js \
 	admin/src/AdminSocketSettings.js \
 	admin/src/AdminSocketHistory.js \
-	admin/src/AdminSocketLog.js
+	admin/src/AdminSocketLog.js \
+	admin/src/AdminClusterOverview.js
 
 NODE_MODULES_SRC =\
 	autolinker@3.14.1 \
 	json-js@1.1.2 \
 	select2@4.0.13 \
-	vex-js@4.1.0 \
 	l10n-for-node@0.0.1 \
-	@braintree/sanitize-url@4.0.1
+	@braintree/sanitize-url@6.0.0
 
 COOL_CSS_LST =\
 	$(builddir)/node_modules/select2/dist/css/select2.css \
@@ -120,34 +122,31 @@ COOL_CSS_LST =\
 	$(srcdir)/css/leaflet-spinner.css \
 	$(srcdir)/css/selectionMarkers.css \
 	$(srcdir)/css/color-palette.css \
+	$(srcdir)/css/color-palette-dark.css \
 	$(srcdir)/css/cool.css \
 	$(srcdir)/css/toolbar.css \
-	$(srcdir)/css/toolbar-mobile.css \
 	$(srcdir)/css/partsPreviewControl.css \
 	$(srcdir)/css/searchControl.css \
 	$(srcdir)/css/impress.css \
 	$(srcdir)/css/impress-mobile.css \
 	$(srcdir)/css/spreadsheet.css \
 	$(srcdir)/css/writer-mobile.css \
+	$(srcdir)/css/writer.css \
 	$(srcdir)/css/editor.css \
+	$(srcdir)/css/iframedialog.css \
 	$(builddir)/node_modules/jquery-contextmenu/dist/jquery.contextMenu.css \
-	$(builddir)/node_modules/vex-js/dist/css/vex.css \
-	$(builddir)/node_modules/vex-js/dist/css/vex-theme-plain.css \
-	$(builddir)/node_modules/vex-js/dist/css/vex-theme-bottom-right-corner.css \
 	$(builddir)/node_modules/smartmenus/dist/css/sm-core-css.css \
 	$(builddir)/node_modules/smartmenus/dist/css/sm-simple/sm-simple.css \
+	$(srcdir)/css/welcome.css \
 	$(srcdir)/css/menubar.css \
 	$(srcdir)/css/mobilewizard.css \
 	$(srcdir)/css/jsdialogs.css \
 	$(srcdir)/css/btns.css \
 	$(srcdir)/css/notebookbar.css \
 	$(srcdir)/css/jssidebar.css \
-	$(srcdir)/css/override-vex.css \
-	$(srcdir)/css/jquery-ui-lightness.css
-
-if ENABLE_FEEDBACK
-COOL_CSS_LST += $(srcdir)/css/iframedialog.css
-endif
+	$(srcdir)/css/override-smartmenus.css \
+	$(srcdir)/css/jquery-ui-lightness.css \
+	$(srcdir)/css/infobar.css
 
 COOL_CSS = $(filter %,$(COOL_CSS_LST))
 
@@ -161,15 +160,16 @@ NODE_MODULES_JS =\
 	node_modules/jquery/dist/jquery.js \
 	node_modules/jquery-mousewheel/jquery.mousewheel.js \
 	node_modules/jquery-contextmenu/dist/jquery.contextMenu.js \
-	node_modules/jquery-ui-dist/jquery-ui.js \
-	node_modules/smartmenus/dist/jquery.smartmenus.js
+	node_modules/jquery-ui/dist/jquery-ui.js \
+	$(shell find node_modules/jquery-ui/ui/i18n -name '*.js') \
+	node_modules/smartmenus/dist/jquery.smartmenus.js \
+	node_modules/pako/dist/pako_inflate.es5.js \
+	node_modules/fzstd/umd/index.js
 
 COOL_LIBS_JS =\
 	ResizeObserverPolyfill.js \
 	Autolinker.js \
-	json2.js \
 	select2.js \
-	vex.combined.js \
 	sanitize-url.js
 
 if !ENABLE_MOBILEAPP
@@ -191,26 +191,32 @@ COOL_LIBS_JS_DST = $(patsubst %.js,$(DIST_FOLDER)/%.js,$(COOL_LIBS_JS))
 # this list includes both Javascript and Typescript generated files
 # in a rather precise order.
 COOL_JS_LST =\
+	src/docstate.js \
 	src/Leaflet.js \
 	src/errormessages.js \
 	src/unocommands.js \
+	src/UNO/Key.js \
 	src/core/Log.js \
 	src/core/Util.js \
 	src/core/LOUtil.js \
+	src/core/Rectangle.ts \
 	src/core/Class.js \
 	src/core/Events.js \
 	src/core/Socket.js \
 	src/core/Matrix.js \
 	src/geometry/Point.ts \
 	src/geometry/Bounds.ts \
-	src/geometry/Transformation.js \
+	src/geometry/Transformation.ts \
 	src/dom/DomUtil.js src/geo/LatLng.js \
 	src/geo/LatLngBounds.js \
 	src/geo/projection/Projection.LonLat.js \
 	src/geo/crs/CRS.js \
 	src/geo/crs/CRS.Simple.js \
+	src/control/IFrameDialog.js \
 	src/map/Map.js \
+	src/control/Control.IdleHandler.ts \
 	src/map/Clipboard.js \
+	src/layer/tile/SheetSwitch.ts \
 	src/layer/Layer.js \
 	src/layer/tile/SheetGeometry.ts \
 	src/layer/tile/CanvasSectionProps.js \
@@ -232,17 +238,19 @@ COOL_JS_LST =\
 	src/layer/vector/CanvasOverlay.ts \
 	src/layer/tile/ScrollSection.ts \
 	src/layer/tile/CanvasTileLayer.js \
+	src/layer/vector/CDarkOverlay.ts \
 	src/layer/SplitPanesContext.ts \
 	src/layer/CalcSplitPanesContext.ts \
 	src/layer/tile/TileLayer.TableOverlay.js \
-	src/layer/ObjectFocusDarkOverlay.js \
 	src/layer/tile/WriterTileLayer.js \
 	src/layer/tile/ImpressTileLayer.js \
 	src/layer/tile/CalcTileLayer.js \
+	src/layer/tile/ContentControlSection.ts \
 	src/layer/BackgroundColor.js \
 	src/layer/ImageOverlay.js \
 	src/layer/marker/ProgressOverlay.js \
 	src/layer/marker/TextInput.js \
+	src/layer/marker/A11yTextInput.js \
 	src/layer/marker/Icon.js \
 	src/layer/marker/Icon.Default.js \
 	src/layer/marker/Marker.js \
@@ -279,13 +287,17 @@ COOL_JS_LST =\
 	src/layer/FormFieldButtonLayer.js \
 	src/dom/DomEvent.js \
 	src/dom/Draggable.js \
+	src/dom/NotebookbarAccessibilityDefinitions.js \
+	src/dom/NotebookbarAccessibility.js \
 	src/map/handler/Map.Drag.js \
 	src/map/handler/Map.Scroll.js \
 	src/map/handler/Map.DoubleClickZoom.js \
 	src/dom/DomEvent.Pointer.js \
 	src/map/handler/Map.TouchGesture.js \
-	src/map/handler/Map.BoxZoom.js \
 	src/map/handler/Map.Keyboard.js \
+	src/map/handler/Map.Welcome.js \
+	src/map/handler/Map.Feedback.js \
+	src/map/handler/Map.VersionBar.js \
 	src/dom/DomEvent.MultiClick.js \
 	src/map/handler/Map.Mouse.js \
 	src/map/handler/Map.Print.js \
@@ -298,14 +310,14 @@ COOL_JS_LST =\
 	src/control/Control.Command.js \
 	src/control/Control.js \
 	src/control/Control.PartsPreview.js \
-	src/control/Control.GroupBase.js \
-	src/control/Control.CornerGroup.js \
-	src/control/Control.RowGroup.js \
-	src/control/Control.ColumnGroup.js \
-	src/control/Control.CornerHeader.js \
-	src/control/Control.Header.js \
-	src/control/Control.ColumnHeader.js \
-	src/control/Control.RowHeader.js \
+	src/control/Control.GroupBase.ts \
+	src/control/Control.CornerGroup.ts \
+	src/control/Control.RowGroup.ts \
+	src/control/Control.ColumnGroup.ts \
+	src/control/Control.CornerHeader.ts \
+	src/control/Control.Header.ts \
+	src/control/Control.ColumnHeader.ts \
+	src/control/Control.RowHeader.ts \
 	src/control/Control.DocumentRepair.js \
 	src/control/Control.DownloadProgress.js \
 	src/control/Control.ContextMenu.js \
@@ -315,10 +327,21 @@ COOL_JS_LST =\
 	src/control/Control.Selection.js \
 	src/control/Control.LokDialog.js \
 	src/control/Control.AlertDialog.js \
-	src/control/Control.Infobar.js src/control/ColorPicker.js \
+	src/control/ColorPicker.js \
+	src/control/jsdialog/Util.FocusCycle.js \
+	src/control/jsdialog/Widget.Calendar.js \
+	src/control/jsdialog/Widget.DrawingArea.js \
+	src/control/jsdialog/Widget.FormulabarEdit.js \
+	src/control/jsdialog/Widget.LanguageSelector.js \
+	src/control/jsdialog/Widget.MenuButton.js \
+	src/control/jsdialog/Widget.MobileTabControl.js \
+	src/control/jsdialog/Widget.MultilineEdit.js \
+	src/control/jsdialog/Widget.ScrolledWindow.js \
+	src/control/jsdialog/Widget.TreeView.js \
 	src/control/Control.JSDialog.js \
 	src/control/Control.JSDialogBuilder.js \
 	src/control/Control.MobileWizardBuilder.js \
+	src/control/Control.MobileWizardWindow.js \
 	src/control/Control.MobileWizard.js \
 	src/control/Control.MobileWizardPopup.js \
 	src/control/Control.LanguageDialog.js \
@@ -331,9 +354,9 @@ COOL_JS_LST =\
 	src/control/Control.MobileBottomBar.js \
 	src/control/Control.UserList.js \
 	src/control/Control.FormulaBar.js \
+	src/control/Control.FormulaBarJSDialog.js \
 	src/control/Control.SheetsBar.js \
 	src/control/Control.PresentationBar.js \
-	src/control/Control.SigningBar.js \
 	src/control/Control.TopToolbar.js \
 	src/control/Control.UIManager.js \
 	src/control/Control.DocumentNameInput.js \
@@ -343,9 +366,10 @@ COOL_JS_LST =\
 	src/control/Control.NotebookbarImpress.js \
 	src/control/Control.NotebookbarDraw.js \
 	src/control/Control.NotebookbarBuilder.js \
-	src/control/Control.AutofilterDropdown.js \
 	src/control/Control.Layers.js \
 	src/control/Control.Sidebar.js \
+	src/control/Control.Mention.js \
+	src/control/Control.Zotero.js \
 	src/control/Search.js \
 	src/control/Permission.js \
 	src/control/Toolbar.js \
@@ -358,15 +382,6 @@ COOL_JS_LST =\
 	src/map/anim/Map.PanAnimation.js \
 	src/dom/PosAnimation.Timer.js \
 	src/control/Control.Scroll.Annotation.js \
-	src/layer/marker/DivOverlay.js
-
-if ENABLE_FEEDBACK
-COOL_JS_LST +=\
-	src/control/IFrameDialog.js \
-	src/map/handler/Map.Feedback.js
-endif
-
-COOL_JS_LST +=\
 	src/main.js
 
 COOL_JS_WEBORDER = $(filter %,$(COOL_JS_LST))
@@ -388,6 +403,8 @@ INTERMEDIATE_DIR ?= $(if $(IS_SEPARATE),$(abs_builddir)/debug,$(abs_builddir)/re
 
 EXTRA_DIST = $(shell find . -type f -not -path './.git/*' -not -path './node_modules/*' | sed 's/.\///')
 
+COOL_JS_BUNDLE = $(patsubst %.ts,%.js,$(COOL_JS_WEBORDER))
+
 define bundle_cool
 	$(if $(IS_SEPARATE),\
 		@touch $@,
@@ -397,7 +414,7 @@ define bundle_cool
 			-DMOBILEAPPNAME="$(APP_NAME)" \
 			-DVERSION=$(COOL_VERSION) \
 			-DCOPYRIGHT=$(srcdir)/src/copyright.js \
-			-DCOOL_JS=$(subst $(SPACE),$(COMMA),$(patsubst src/%.ts,$(DIST_FOLDER)/src/%.js,$(COOL_JS_WEBORDER))) \
+			-DCOOL_JS=$(subst $(SPACE),$(COMMA),$(patsubst src/%,$(DIST_FOLDER)/src/%,$(COOL_JS_BUNDLE))) \
 			$(srcdir)/cool-src.js.m4 > $@)
 endef
 
@@ -426,6 +443,7 @@ define bundle_all
 			-DCOOL_JS=$(INTERMEDIATE_DIR)/cool-src.js \
 			$(srcdir)/bundle.js.m4 > $(INTERMEDIATE_DIR)/bundle.js
 		@$(NODE) node_modules/uglify-js/bin/uglifyjs \
+			-O max_line_len=100 \
 			$(INTERMEDIATE_DIR)/bundle.js \
 			--output $@)
 endef
@@ -450,6 +468,25 @@ if !ENABLE_MOBILEAPP
 ADMIN_BUNDLE = $(DIST_FOLDER)/admin-bundle.js
 endif
 
+if ENABLE_WASM
+$(DIST_FOLDER)/online%: $(abs_top_builddir)/wasm/online%
+	@mkdir -p $(dir $@)
+	@cp $< $@
+
+$(DIST_FOLDER)/soffice%: $(abs_top_builddir)/wasm/soffice%
+	@mkdir -p $(dir $@)
+	@cp $< $@
+
+WASM_FILES= \
+	$(DIST_FOLDER)/online.data \
+	$(DIST_FOLDER)/online.js \
+	$(DIST_FOLDER)/online.wasm \
+	$(DIST_FOLDER)/online.wasm.debug.wasm \
+	$(DIST_FOLDER)/online.worker.js \
+	$(DIST_FOLDER)/soffice.data \
+	$(DIST_FOLDER)/soffice.data.js.metadata
+endif
+
 $(TYPESCRIPT_JS_DIR)/%.js: $(srcdir)/%.ts
 	@mkdir -p $(dir $@)
 	$(builddir)/node_modules/typescript/bin/tsc --outFile $@ $<
@@ -468,7 +505,8 @@ build-cool: \
 	$(DIST_FOLDER)/device-tablet.css \
 	$(DIST_FOLDER)/device-desktop.css \
 	$(DIST_FOLDER)/bundle.js \
-	$(DIST_FOLDER)/cool.html
+	$(DIST_FOLDER)/cool.html \
+	$(WASM_FILES)
 	@echo "build cool completed"
 if ENABLE_ANDROIDAPP
 	@if test -d "$(APP_BRANDING_DIR)" ; then cp -a "$(APP_BRANDING_DIR)/branding.css" "$(APP_BRANDING_DIR)/branding.js" $(DIST_FOLDER)/ ; else touch $(DIST_FOLDER)/branding.css ; fi
@@ -526,10 +564,11 @@ $(DIST_FOLDER)/cool.html: $(srcdir)/html/cool.html.m4 \
 	$(DIST_FOLDER)/bundle.js
 	@echo "Generating cool.html..."
 	m4 -PE -DBUNDLE=$(IS_BUNDLE) \
-		-DENABLE_FEEDBACK=$(ENABLE_FEEDBACK) \
 		-DIOSAPP=$(ENABLE_IOSAPP) \
 		-DGTKAPP=$(ENABLE_GTKAPP) \
+		-DDEBUG=$(ENABLE_DEBUG) \
 		-DANDROIDAPP=$(ENABLE_ANDROIDAPP) \
+		-DEMSCRIPTENAPP=$(ENABLE_EMSCRIPTENAPP) \
 		-DMOBILEAPPNAME="$(APP_NAME)" \
 		-DCOOL_CSS="$(subst $(SPACE),$(COMMA),$(COOL_CSS_M4))" \
 		-DGLOBAL_JS="$(DIST_FOLDER)/global.js" \
@@ -575,16 +614,22 @@ $(DIST_FOLDER)/%.html: $(srcdir)/html/%.html
 		`ln -sf $(abs_srcdir)/$< $@`; \
 	fi
 
-$(DIST_FOLDER)/welcome/%.html: $(srcdir)/welcome/%.html
+if ENABLE_WELCOME_MESSAGE
+$(DIST_FOLDER)/welcome/%: $(srcdir)/welcome/%
 	@mkdir -p $(dir $@)
 	@if test -z '$(ENABLE_BROWSERSYNC)'; then \
 		`cp $< $@`; \
 	else \
 		`ln -sf $(abs_srcdir)/$< $@`; \
 	fi
+endif
+
+if ENABLE_DEBUG
+SourceMap=--allowJs true --sourceMap true --inlineSources true
+endif
 
 tscompile.done: $(COOL_JS_SRC) $(COOL_TS_SRC)
-	$(builddir)/node_modules/typescript/bin/tsc --typeRoots $(builddir)/node_modules/@types --outDir $(DIST_FOLDER)/src --rootDir $(srcdir)/src --checkJs false --project $(srcdir)/tsconfig.json
+	$(builddir)/node_modules/typescript/bin/tsc --typeRoots $(builddir)/node_modules/@types --outDir $(DIST_FOLDER)/src --rootDir $(srcdir)/src --checkJs false --project $(srcdir)/tsconfig.json $(SourceMap)
 	@touch $@
 
 $(COOL_TS_JS_DST): tscompile.done
@@ -640,7 +685,7 @@ $(DIST_FOLDER)/admin/%: $(srcdir)/admin/%
 
 install-data-hook:
 	mkdir -p $(DESTDIR)$(pkgdatadir)/browser; \
-	cp -ar dist/ $(DESTDIR)$(pkgdatadir)/browser/;
+	cp -a dist/ $(DESTDIR)$(pkgdatadir)/browser/;
 
 libs:
 	@mkdir -p $(abs_srcdir)/libs
@@ -655,19 +700,25 @@ pot:
 		admin/src/AdminSocketOverview.js \
 		admin/src/AdminSocketSettings.js \
 		admin/src/Util.js \
+		js/w2ui-1.5.rc1.js \
 		src/control/ColorPicker.js \
 		src/control/Control.AlertDialog.js \
 		src/control/Control.Command.js \
 		src/control/Control.ContextMenu.js \
+		src/control/Control.DocumentNameInput.js \
 		src/control/Control.DocumentRepair.js \
 		src/control/Control.DownloadProgress.js \
 		src/control/Control.FormulaBar.js \
+		src/control/Control.FormulaBarJSDialog.js \
 		src/control/Control.JSDialogBuilder.js \
 		src/control/Control.LanguageDialog.js \
 		src/control/Control.Menubar.js \
 		src/control/Control.MobileBottomBar.js \
 		src/control/Control.MobileTopBar.js \
 		src/control/Control.MobileWizardBuilder.js \
+		src/control/Control.MobileWizardWindow.js \
+		src/control/Control.MobileWizard.js \
+		src/control/Control.MobileWizardPopup.js \
 		src/control/Control.Notebookbar.js \
 		src/control/Control.NotebookbarBuilder.js \
 		src/control/Control.NotebookbarCalc.js \
@@ -684,11 +735,13 @@ pot:
 		src/control/Control.Toolbar.js \
 		src/control/Control.TopToolbar.js \
 		src/control/Control.UserList.js \
+		src/control/Control.Zotero.js \
 		src/control/Parts.js \
 		src/control/Permission.js \
 		src/control/Ruler.js \
 		src/control/Signing.js \
 		src/control/Toolbar.js \
+		src/control/jsdialog/Widget.TreeView.js \
 		src/core/Socket.js \
 		src/errormessages.js \
 		src/layer/tile/CanvasTileLayer.js \
@@ -697,11 +750,16 @@ pot:
 		src/main.js \
 		src/map/Clipboard.js \
 		src/map/Map.js \
+		src/map/handler/Map.Feedback.js \
 		src/map/handler/Map.FileInserter.js \
 		src/map/handler/Map.Keyboard.js \
 		src/map/handler/Map.WOPI.js
 
 	html2po --pot --input=html/cool-help.html --output=po/templates/cool-help.pot --duplicates=merge
+	html2po --pot --input=welcome/welcome.html --output=po/templates/welcome.pot --duplicates=merge
+	$(srcdir)/util/appendwelcome.py po/templates/welcome.pot po/templates/cool-ui.pot
+	rm po/templates/welcome.pot
+	msguniq -w 78 -t UTF-8 po/templates/cool-ui.pot > po/templates/cool-ui.pot.new; mv po/templates/cool-ui.pot.new po/templates/cool-ui.pot
 
 l10n: pot
 	for i in po/ui-*.po; do pot2po --input=po/templates/cool-ui.pot --template=$$i --output=$$i.new; mv $$i.new $$i;done
@@ -736,23 +794,28 @@ jsconfig: $(abs_srcdir)/jsconfig.json $(abs_srcdir)/admin/jsconfig.json
 build-tests: $(MOCHA_TS_JS_FILES)
 	@echo "Build of mocha test finished."
 
+MOCHA_TEST_LOG = "`pwd`/mocha.log"
 check-local: $(MOCHA_TS_JS_FILES)
 	@echo "Running mocha tests..."
-	@$(NODE) node_modules/mocha/bin/mocha "$(srcdir)/mocha_tests/**/*.js"
+	@echo > ${MOCHA_TEST_LOG}
+	@if npm test 2> ${MOCHA_TEST_LOG} 1>&2; then \
+		echo "Mocha tests finished successfully. Results in ${MOCHA_TEST_LOG}"; \
+	else \
+		cat ${MOCHA_TEST_LOG}; \
+		exit 1; \
+	fi
 
-SSL_FLAG = `xmllint --xpath 'string(/config/ssl/enable)' $(abs_top_builddir)/coolwsd.xml`
-
-# the delay (in miliseconds) between each emulated key stroke for each view
+# the delay (in milliseconds) between each emulated key stroke for each view
 typing_speed=100
-# The duration of the typing (in miliseconds)
-typing_duration=30000
+# The duration of the typing (in milliseconds)
+typing_duration=60000
 # By default 6 views are spawned in the document.
 single_view="false"
 # --inspect flag for the first view. Ideally should be used with single_view=true
 node_inspect="false"
 # Record tile stats and dump it into the file "test/tilestats.txt"
 # Pipe it with | grep "tilestats"
-record_stats="false"
+record_stats="true"
 perf-test:
 	@echo "Running perf tests..."
 	@mkdir -p $(abs_top_builddir)/test/data
@@ -760,6 +823,6 @@ perf-test:
 		echo 'Making fresh copy of the perf-test-edit.odt document'; \
 		cp $(abs_top_srcdir)/test/data/perf-test.odt $(abs_top_builddir)/test/data/perf-test-edit.odt; \
 	fi
-	$(NODE) $(abs_srcdir)/test/bootstrap.js $(SSL_FLAG) $(abs_top_builddir) $(abs_srcdir) $(typing_speed) $(single_view) $(typing_duration) $(node_inspect) ${record_stats}
+	$(NODE) $(abs_srcdir)/test/bootstrap.js $(abs_top_builddir) $(abs_srcdir) $(typing_speed) $(single_view) $(typing_duration) $(node_inspect) ${record_stats}
 # for now - unwinding ts and js deps for different targets is a real pain.
 .NOTPARALLEL:

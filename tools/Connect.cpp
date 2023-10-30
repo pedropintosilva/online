@@ -88,7 +88,7 @@ public:
                     }
 
                     std::string firstLine = getFirstLine(buffer, n);
-                    StringVector tokens(Util::tokenize(firstLine, ' '));
+                    StringVector tokens(StringVector::tokenize(firstLine, ' '));
 
                     if (std::getenv("DISPLAY") != nullptr && tokens.equals(0, "tile:"))
                     {
@@ -111,7 +111,7 @@ public:
                 std::cout << "CLOSE frame received" << std::endl;
             }
             if (!closeExpected)
-                std::_Exit(EX_SOFTWARE);
+                Util::forcedExit(EX_SOFTWARE);
         }
         catch (WebSocketException& exc)
         {

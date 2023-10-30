@@ -41,43 +41,24 @@ public:
                                    std::shared_ptr<StreamSocket>& socket) override
     {
         const Poco::URI uriReq(request.getURI());
-        LOG_TST("Fake wopi host " << request.getMethod() << " request: " << uriReq.toString());
+        LOG_TST("FakeWOPIHost: " << request.getMethod() << " request: " << uriReq.toString());
 
         // CheckFileInfo
         if (request.getMethod() == "GET" && uriReq.getPath() == "/wopi/files/10")
         {
-            LOG_TST("Fake wopi host request, handling CheckFileInfo: " << uriReq.getPath());
+            LOG_TST("FakeWOPIHost: Handling CheckFileInfo: " << uriReq.getPath());
 
-            Poco::JSON::Object::Ptr fileInfo = new Poco::JSON::Object();
+            Poco::JSON::Object::Ptr fileInfo = getDefaultCheckFileInfoPayload(uriReq);
             fileInfo->set("BaseFileName", "test.odt");
             fileInfo->set("TemplateSource", helpers::getTestServerURI() + "/test.ott");
-            fileInfo->set("Size", getFileContent().size());
-            fileInfo->set("Version", "1.0");
-            fileInfo->set("OwnerId", "test");
-            fileInfo->set("UserId", "test");
-            fileInfo->set("UserFriendlyName", "test");
-            fileInfo->set("UserCanWrite", "true");
-            fileInfo->set("PostMessageOrigin", "localhost");
-            fileInfo->set("LastModifiedTime", Util::getIso8601FracformatTime(getFileLastModifiedTime()));
-            fileInfo->set("EnableOwnerTermination", "true");
 
             std::ostringstream jsonStream;
             fileInfo->stringify(jsonStream);
-            std::string responseString = jsonStream.str();
 
-            const std::string mimeType = "application/json; charset=utf-8";
-
-            std::ostringstream oss;
-            oss << "HTTP/1.1 200 OK\r\n"
-                << "Last-Modified: " << Util::getHttpTime(getFileLastModifiedTime()) << "\r\n"
-                << "User-Agent: " << WOPI_AGENT_STRING << "\r\n"
-                << "Content-Length: " << responseString.size() << "\r\n"
-                << "Content-Type: " << mimeType << "\r\n"
-                << "\r\n"
-                << responseString;
-
-            socket->send(oss.str());
-            socket->shutdown();
+            http::Response httpResponse(http::StatusCode::OK);
+            httpResponse.set("Last-Modified", Util::getHttpTime(getFileLastModifiedTime()));
+            httpResponse.setBody(jsonStream.str(), "application/json; charset=utf-8");
+            socket->sendAndShutdown(httpResponse);
 
             return true;
         }
@@ -85,24 +66,18 @@ public:
                   || request.getMethod() == "PROPFIND")
                  && uriReq.getPath() == "/test.ott")
         {
-            LOG_TST("Fake wopi host request, handling " << request.getMethod() << " on "
-                                                        << uriReq.getPath());
+            LOG_TST("FakeWOPIHost: Handling " << request.getMethod() << " on " << uriReq.getPath());
 
-            std::ostringstream oss;
-            oss << "HTTP/1.1 200 OK\r\n"
-                << "Allow: GET\r\n"
-                << "User-Agent: " << WOPI_AGENT_STRING << "\r\n"
-                << "\r\n";
-
-            socket->send(oss.str());
-            socket->shutdown();
+            http::Response httpResponse(http::StatusCode::OK);
+            httpResponse.set("Allow", "GET");
+            socket->sendAndShutdown(httpResponse);
 
             return true;
         }
         // Get the template
         else if (request.getMethod() == "GET" && uriReq.getPath() == "/test.ott")
         {
-            LOG_TST("Fake wopi host request, handling template GetFile: " << uriReq.getPath());
+            LOG_TST("FakeWOPIHost: Handling template GetFile: " << uriReq.getPath());
 
             HttpHelper::sendFileAndShutdown(socket, TDOC "/test.ott", "");
 
@@ -111,7 +86,7 @@ public:
         // Save template
         else if (request.getMethod() == "POST" && uriReq.getPath() == "/wopi/files/10/contents")
         {
-            LOG_TST("Fake wopi host request, handling PutFile: " << uriReq.getPath());
+            LOG_TST("FakeWOPIHost: Handling PutFile: " << uriReq.getPath());
 
             if (!_savedTemplate)
             {
@@ -131,19 +106,16 @@ public:
             const std::streamsize size = request.getContentLength();
             LOK_ASSERT( size > 0 );
 
-            std::ostringstream oss;
-            oss << "HTTP/1.1 200 OK\r\n"
-                << "User-Agent: " << WOPI_AGENT_STRING << "\r\n"
-                << "\r\n"
-                << "{\"LastModifiedTime\": \"" << Util::getHttpTime(getFileLastModifiedTime()) << "\" }";
-
-            socket->send(oss.str());
-            socket->shutdown();
+            const std::string body = "{\"LastModifiedTime\": \"" +
+                                     Util::getIso8601FracformatTime(getFileLastModifiedTime()) + "\" }";
+            http::Response httpResponse(http::StatusCode::OK);
+            httpResponse.setBody(body, "application/json; charset=utf-8");
+            socket->sendAndShutdown(httpResponse);
 
             return true;
         }
 
-        LOG_TST("Fake wopi host unknown request "
+        LOG_TST("FakeWOPIHost: unknown request "
                 << request.getMethod() << " request: " << uriReq.toString() << ". Defaulting.");
         return false;
     }
@@ -161,7 +133,6 @@ public:
                 initWebsocket("/wopi/files/10?access_token=anything");
                 WSD_CMD("load url=" + getWopiSrc());
 
-                SocketPoll::wakeupWorld();
                 break;
             }
             case Phase::CloseDoc:

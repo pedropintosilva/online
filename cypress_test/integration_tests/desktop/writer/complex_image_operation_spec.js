@@ -2,12 +2,13 @@
 
 var helper = require('../../common/helper');
 
-describe('Complex image operation test', function() {
-	var testFileName = 'complex_image_operation.odt';
+describe(['tagdesktop', 'tagnextcloud', 'tagproxy'], 'Complex image operation test', function() {
+	var origTestFileName = 'complex_image_operation.odt';
+	var testFileName;
 
 	beforeEach(function() {
 		localStorage.setItem('image_validation_test', true);
-		helper.beforeAll(testFileName, 'writer');
+		testFileName = helper.beforeAll(origTestFileName, 'writer');
 	});
 
 	afterEach(function() {
@@ -23,7 +24,7 @@ describe('Complex image operation test', function() {
 					var img = new Image();
 
 					img.onerror = function() {
-						cy.contains('Tile is not valid').should('not.exist');
+						cy.cGet('body').contains('Tile is not valid').should('not.exist');
 					};
 
 					img.onload = function() {
